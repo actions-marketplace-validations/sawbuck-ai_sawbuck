@@ -277,7 +277,19 @@ switch (cmd) {
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
         let st = '';
         try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round(((sj.ema != null ? sj.ema : sj.steeringRate) || 0) * 100); st = `${p >= 50 ? '🪢' : '🐎'} steer ${p}%`; } } catch {}
-        const outp = [base, yk, st].filter(Boolean).join(' · ');
+        // configurable template: SAWBUCK_STATUSLINE picks which segments show and in what order
+        // (tokens {status} {sawbuck} {verdict} {steer} {yanks} plus any literal text); empty tokens
+        // collapse so you never get a dangling separator. Unset = the default composition. Mix in
+        // other tools (git branch, model, your own adapters) by composing in your statusline script.
+        const tpl = process.env.SAWBUCK_STATUSLINE;
+        let outp;
+        if (tpl && tpl.trim()) {
+          const tok = { status: base, sawbuck: seg, verdict: last, steer: st, yanks: yk };
+          outp = tpl.replace(/\{(status|sawbuck|verdict|steer|yanks)\}/g, (_, k) => tok[k] || '')
+                    .replace(/\s*·\s*·\s*/g, ' · ').replace(/^\s*·\s*/, '').replace(/\s*·\s*$/, '').replace(/\s{2,}/g, ' ').trim();
+        } else {
+          outp = [base, yk, st].filter(Boolean).join(' · ');
+        }
         if (outp) process.stdout.write(outp);
       }
     } catch {}
