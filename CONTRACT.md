@@ -2,7 +2,7 @@
 
 *Put your coding agent under contract: a win counts only if it survives verification from the source alone, not because the agent said so. The terms below are not a promise the agent makes, they are a result anyone can re-prove.*
 
-**Status:** Draft v0.1 · **License:** MIT · **Reference implementation:** [Sawbuck](https://github.com/sawbuck-ai/sawbuck) (the saddle), [promptwheel](https://github.com/promptwheel-ai/promptwheel) (the check), [@promptwheel/logbook](https://github.com/promptwheel-ai/logbook) (the default memory provider)
+**Status:** Draft v0.1 · **License:** Apache-2.0 · **Reference implementation:** [Sawbuck](https://github.com/sawbuck-ai/sawbuck) (the saddle), [promptwheel](https://github.com/promptwheel-ai/promptwheel) (the check), [@promptwheel/logbook](https://github.com/promptwheel-ai/logbook) (the default memory provider)
 
 This is an open interface for making an AI coding harness trustworthy. It defines how a loop's wins get verified, what a verdict looks like, what counts as gaming the goalposts, and how a repo's history is carried along. Any harness can emit or consume it without using this code. Sawbuck is a reference saddle that implements it; it is not the only possible one.
 

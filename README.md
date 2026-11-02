@@ -92,4 +92,4 @@ Sawbuck is thin glue over two roles, each behind an open interface that points i
 
 In one line: the check is a standard we publish for others to meet; the memory is a socket we expose for others to fill. Sawbuck composes the two.
 
-MIT.
+Apache 2.0.
