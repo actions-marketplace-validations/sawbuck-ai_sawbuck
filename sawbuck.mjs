@@ -273,10 +273,10 @@ switch (cmd) {
         // the live steering readout, when the wrapper forwards the session transcript path
         let yk = '';
         const ti = rest.findIndex((a) => a === '--transcript' || a === '--session');
-        if (ti > -1 && rest[ti + 1]) { try { const { yanks, turns } = tally(readFileSync(rest[ti + 1], 'utf8')); if (turns) yk = `🤠 ${yanks}/${turns} yanks`; } catch {} }
+        if (ti > -1 && rest[ti + 1]) { try { const { yanks, turns } = tally(readFileSync(rest[ti + 1], 'utf8')); if (turns) yk = `🪢 ${yanks}/${turns} yanks`; } catch {} }
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
         let st = '';
-        try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) st = `🤠 steer ${Math.round((sj.steeringRate || 0) * 100)}%`; } catch {}
+        try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round((sj.steeringRate || 0) * 100); st = `${p >= 50 ? '🪢' : '🐎'} steer ${p}%`; } } catch {}
         const outp = [base, yk, st].filter(Boolean).join(' · ');
         if (outp) process.stdout.write(outp);
       }
