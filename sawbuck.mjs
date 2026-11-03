@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
 import { PW } from './bins.mjs';
+import { frameBlock } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
@@ -307,28 +308,7 @@ switch (cmd) {
   default: die(`unknown command '${cmd}'\n\n${help}`);
 }
 
-// --- the per-turn block: frame (forward) + context (backward) ---------------
-// mandates resolved the way promptwheel resolves them: they accumulate down the `extends` chain and a
-// local mandate of the same name overrides an inherited one. Read-only, never throws.
-function resolvedMandates(repo) {
-  const seen = new Set(); const byName = new Map();
-  const load = (file) => {
-    const p = resolve(file); if (seen.has(p)) return; seen.add(p);
-    let cfg = null; try { cfg = JSON.parse(readFileSync(p, 'utf8')); } catch { return; }
-    if (!cfg || typeof cfg !== 'object') return;
-    const ext = cfg.extends == null ? [] : Array.isArray(cfg.extends) ? cfg.extends : [cfg.extends];
-    for (const e of ext) if (typeof e === 'string') load(resolve(dirname(p), e));
-    for (const m of (Array.isArray(cfg.mandates) ? cfg.mandates : [])) if (m && m.name) byName.set(String(m.name), m);
-  };
-  load(join(repo, 'promptwheel.config.json'));
-  return [...byName.values()];
-}
-function frameBlock(repo) {
-  const mandates = resolvedMandates(repo).filter((m) => Array.isArray(m.paths) && m.paths.some((s) => typeof s === 'string' && s.trim()));
-  if (!mandates.length) return '';
-  const lines = mandates.map((m) => `  ${m.paths.filter((s) => typeof s === 'string' && s.trim()).join(' · ')}${m.reason ? `  (${String(m.reason).slice(0, 160)})` : ''}`);
-  return '▣ contract (sawbuck) · hard rules in force this session, enforced by the gate on every turn:\n  protected, do not touch:\n' + lines.join('\n');
-}
+// --- the per-turn block: frame (forward, from contract.mjs) + context (backward) ---------------
 // the read face: ranked relevant history for what you're working on right now. Silent when there is
 // nothing to say, so it is safe on every UserPromptSubmit (that hook's stdout is injected into context;
 // "nothing notable" every turn would be noise). `speak` forces a reply for the explicit command.

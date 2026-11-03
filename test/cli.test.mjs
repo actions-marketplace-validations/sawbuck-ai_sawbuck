@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { scopeChain, recall as recallMem } from '../memory.mjs';
+import { globToRe, mandateHits } from '../contract.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
@@ -510,5 +511,39 @@ test('frame resolves mandates through extends and turn joins frame + history in 
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [] }));
     assert.equal(sawbuck(['frame', '.'], d).trim(), '');
     assert.match(sawbuck(['frame', '--speak', '.'], d), /no mandates/);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('contract: the glob dialect matches promptwheel (** crosses dirs, * stays in a segment, bare names match at any depth)', () => {
+  assert.ok(globToRe('src/auth/**').test('src/auth/login.js'));
+  assert.ok(globToRe('src/auth/**').test('src/auth/deep/er/x.js'));
+  assert.ok(!globToRe('src/auth/**').test('src/authz/x.js'));
+  assert.ok(globToRe('src/*.js').test('src/a.js'));
+  assert.ok(!globToRe('src/*.js').test('src/deep/a.js'));
+  assert.ok(globToRe('secrets.json').test('config/secrets.json'));
+  assert.ok(globToRe('/secrets.json').test('secrets.json'));
+  assert.ok(!globToRe('/secrets.json').test('config/secrets.json'));
+});
+
+test('the Stop hook blocks a turn that leaves a protected path changed, then lets a clean turn end', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'], reason: 'reviewed PR only' }], metrics: [] }));
+    mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n'); writeFileSync(join(d, 'src', 'x.js'), 'b\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'c\n');                       // the agent touched the wall
+    assert.deepEqual(mandateHits(d, ['src/auth/login.js', 'src/x.js']).map((h) => h.files), [['src/auth/login.js']]);
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    let r = JSON.parse(hook('p1'));
+    assert.equal(r.decision, 'block');
+    assert.match(r.reason, /no-auth.*src\/auth\/login\.js/);
+    assert.match(readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8'), /"kind":"mandate"/);
+    r = JSON.parse(hook('p1')); assert.equal(r.decision, 'block', 'still blocked on the second try of the same prompt');
+    r = JSON.parse(hook('p1')); assert.equal(r.decision, 'block');
+    r = JSON.parse(hook('p1')); assert.ok(!r.decision && /stopped blocking/.test(r.systemMessage), 'the block budget is bounded per prompt');
+    g('checkout', '--', 'src/auth/login.js'); writeFileSync(join(d, 'src', 'x.js'), 'd\n');   // reverted the wall, fixed elsewhere
+    const out = hook('p2');
+    assert.ok(!/"decision":"block"/.test(out), 'a clean turn is allowed to end');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

@@ -5,11 +5,12 @@
 // Zero-dep. Usage (wired as a Stop hook): node sawbuck-hook.mjs --repo <path>
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+import { mandateHits } from './contract.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const repo = flag('--repo', process.cwd());
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
@@ -45,6 +46,31 @@ let rec = null;
 try { rec = JSON.parse(readFileSync(join(stDir, 'results.json'), 'utf8')); } catch {}
 const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
 const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
+
+// 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
+// tree on every stop, not only on commits, because an agent usually ends a turn with uncommitted
+// edits. A deterministic path match, milliseconds, no metric run. Block the stop (bounded per prompt)
+// and send the agent back to revert the protected files and make the fix elsewhere.
+if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
+  const changed = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
+  const hits = changed.length ? mandateHits(repo, changed) : [];
+  if (hits.length) {
+    const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
+    const promptId = hookInput.prompt_id || 'none';
+    if (st.mandatePromptId !== promptId) { st.mandatePromptId = promptId; st.mandateBlocks = 0; }
+    const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}`).join('; ');
+    try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' }) + '\n'); } catch {}
+    if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
+      st.mandateBlocks = (st.mandateBlocks || 0) + 1;
+      saveState();
+      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed: ${desc}. Revert every change under the protected paths and make the fix elsewhere (the rule is a wall, not a reminder; the gate fails any change that touches them).` }));
+      process.exit(0);
+    }
+    saveState();
+    process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck stopped blocking after ${MAX_BLOCKS} tries: protected paths are still changed (${desc}).` }));
+    process.exit(0);
+  }
+}
 
 // 3) CONTRACT ENFORCEMENT (Claude Code Stop hook only): if THIS turn's commit was gamed,
 // block the stop and send the agent back to earn the green in the source. Bounded per
