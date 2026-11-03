@@ -81,6 +81,9 @@ Usage:
                             The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
                             shows only what a branch adds; --fail-on exits nonzero (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
+  sawbuck frame [repo]      The contract's hard rules (mandates, inherited ones included) as one compact block;
+                            silent without a contract (--speak explains)
+  sawbuck turn [repo]       frame + context in one block: what attach --claude runs on every prompt
 
   sawbuck trace [repo]      Show every file Sawbuck has placed in this repo (the footprint)
   sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
@@ -186,23 +189,23 @@ switch (cmd) {
     catch (e) { process.exit(e.status || 1); }
     break;
   }
-  case 'context': {
-    // the read face: ranked relevant history for what you're working on right now.
+  case 'context': { const o = contextBlock(repoArg(), flags.has('--speak')); if (o) out(o); break; }
+  case 'frame': {
+    // the prompt face of the contract: re-impress the hard rules (mandates, resolved through `extends`)
+    // as one compact block at the live end of the context, so a deep or freshly compacted session
+    // cannot forget them. Silent without a contract; --speak explains instead.
+    const o = frameBlock(repoArg());
+    if (o) out(o);
+    else if (flags.has('--speak')) out('🐴 sawbuck frame: no mandates in promptwheel.config.json yet. Add one (a protected path) and this re-asserts it every turn and after every compaction, so a deep context cannot forget it.');
+    break;
+  }
+  case 'turn': {
+    // the ONE per-prompt hook: the contract frame (forward: what must hold) and the relevant history
+    // (backward: what broke here before) in a single block, one process per prompt. Silent when
+    // there is nothing to say. Wired by `attach --claude` on UserPromptSubmit and after a compaction.
     const repo = repoArg();
-    const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim(); } catch { return ''; } };
-    // Silent when there is nothing to say, so it is safe on every UserPromptSubmit (that
-    // hook's stdout is injected into context; "nothing notable" every turn would be noise).
-    // --speak forces a reply, for an explicit `sawbuck context` / the /sawbuck-context command.
-    const speak = flags.has('--speak');
-    let changed = g('diff', '--name-only', 'HEAD').split('\n').filter(Boolean);
-    if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
-    if (!changed.length) { if (speak) out('🐴 sawbuck: nothing changed to look up (no working edits, and no previous commit to read).'); break; }
-    const fileArgs = changed.flatMap((f) => ['--file', f]);
-    let o = '';
-    try { o = execFileSync(process.execPath, [join(HERE, 'rank.mjs'), '--repo', repo, ...fileArgs, '--top', '3'], { encoding: 'utf8' }); }
-    catch (e) { o = (e.stdout || '').toString(); }
-    if (/relevant history/.test(o)) out(o);
-    else if (speak) out('🐴 sawbuck: no notable history for the files you are touching (a clean trail).');
+    const o = [frameBlock(repo), contextBlock(repo, false)].filter(Boolean).join('\n');
+    if (o) out(o);
     break;
   }
   case 'recall': {
@@ -302,6 +305,44 @@ switch (cmd) {
     break;
   }
   default: die(`unknown command '${cmd}'\n\n${help}`);
+}
+
+// --- the per-turn block: frame (forward) + context (backward) ---------------
+// mandates resolved the way promptwheel resolves them: they accumulate down the `extends` chain and a
+// local mandate of the same name overrides an inherited one. Read-only, never throws.
+function resolvedMandates(repo) {
+  const seen = new Set(); const byName = new Map();
+  const load = (file) => {
+    const p = resolve(file); if (seen.has(p)) return; seen.add(p);
+    let cfg = null; try { cfg = JSON.parse(readFileSync(p, 'utf8')); } catch { return; }
+    if (!cfg || typeof cfg !== 'object') return;
+    const ext = cfg.extends == null ? [] : Array.isArray(cfg.extends) ? cfg.extends : [cfg.extends];
+    for (const e of ext) if (typeof e === 'string') load(resolve(dirname(p), e));
+    for (const m of (Array.isArray(cfg.mandates) ? cfg.mandates : [])) if (m && m.name) byName.set(String(m.name), m);
+  };
+  load(join(repo, 'promptwheel.config.json'));
+  return [...byName.values()];
+}
+function frameBlock(repo) {
+  const mandates = resolvedMandates(repo).filter((m) => Array.isArray(m.paths) && m.paths.some((s) => typeof s === 'string' && s.trim()));
+  if (!mandates.length) return '';
+  const lines = mandates.map((m) => `  ${m.paths.filter((s) => typeof s === 'string' && s.trim()).join(' · ')}${m.reason ? `  (${String(m.reason).slice(0, 160)})` : ''}`);
+  return '▣ contract (sawbuck) · hard rules in force this session, enforced by the gate on every turn:\n  protected, do not touch:\n' + lines.join('\n');
+}
+// the read face: ranked relevant history for what you're working on right now. Silent when there is
+// nothing to say, so it is safe on every UserPromptSubmit (that hook's stdout is injected into context;
+// "nothing notable" every turn would be noise). `speak` forces a reply for the explicit command.
+function contextBlock(repo, speak) {
+  const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+  let changed = g('diff', '--name-only', 'HEAD').split('\n').filter(Boolean);
+  if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
+  if (!changed.length) return speak ? '🐴 sawbuck: nothing changed to look up (no working edits, and no previous commit to read).' : '';
+  const fileArgs = changed.flatMap((f) => ['--file', f]);
+  let o = '';
+  try { o = execFileSync(process.execPath, [join(HERE, 'rank.mjs'), '--repo', repo, ...fileArgs, '--top', '3'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch (e) { o = (e.stdout || '').toString(); }
+  if (/relevant history/.test(o)) return o.trimEnd();
+  return speak ? '🐴 sawbuck: no notable history for the files you are touching (a clean trail).' : '';
 }
 
 // after attach, prove the check can actually measure something here (the inert-metric trap):
@@ -423,22 +464,25 @@ function wireClaude(repo, opts) {
   let cfg = {};
   if (fileExisted) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it. Add the hooks by hand.`); } }
   if (JSON.stringify(cfg).includes('sawbuck.mjs')) { out(`sawbuck: already attached (${user ? 'user' : 'claude'}) in ${f}`); return; }
-  const ctx = user ? `node ${JSON.stringify(SELF)} context` : `node ${JSON.stringify(SELF)} context ${JSON.stringify(repo)}`;
+  const ctx = user ? `node ${JSON.stringify(SELF)} turn` : `node ${JSON.stringify(SELF)} turn ${JSON.stringify(repo)}`;
   const chk = user ? `node ${JSON.stringify(SELF)} __hook --by claude --stop` : `node ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
   if (dry) {
     out(dryText([
-      `${fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + Stop hooks)`,
+      `${fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
       user ? null : `exclude ${excludeFile(repo)}  (${RECORD_DIRS.join(', ')}${shared ? '' : ', .claude/settings.local.json'})`,
       `create  ${user ? userManifestPath() : manifestPath(repo)}  (attach receipt)`,
     ].filter(Boolean)));
     return;
   }
   cfg.hooks = cfg.hooks || {};
-  const put = (event, command) => {
+  const put = (event, command, matcher) => {
     cfg.hooks[event] = (cfg.hooks[event] || []).filter((h) => !JSON.stringify(h).includes('sawbuck.mjs'));
-    cfg.hooks[event].push({ hooks: [{ type: 'command', command }] });
+    cfg.hooks[event].push({ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] });
   };
   put('UserPromptSubmit', ctx);
+  // right after a compaction the summary has just dropped detail: re-impress the contract frame and the
+  // relevant history there too (SessionStart with the `compact` source injects stdout into context).
+  put('SessionStart', ctx, 'compact');
   put('Stop', chk);
   mkdirSync(dir, { recursive: true });
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
@@ -482,7 +526,7 @@ function unwireClaude(repo, { user }) {
 }
 function removeClaudeEntries(cfg) {
   if (!cfg.hooks) return;
-  for (const ev of ['UserPromptSubmit', 'Stop']) {
+  for (const ev of ['UserPromptSubmit', 'SessionStart', 'Stop']) {
     if (!Array.isArray(cfg.hooks[ev])) continue;
     cfg.hooks[ev] = cfg.hooks[ev].filter((h) => !JSON.stringify(h).includes('sawbuck.mjs'));
     if (!cfg.hooks[ev].length) delete cfg.hooks[ev];     // no empty [] residue

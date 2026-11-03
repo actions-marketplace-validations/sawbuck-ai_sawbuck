@@ -96,7 +96,7 @@ const classify = (r, source) => ({
   file: r.file, line: r.line, kind: String(r.kind ?? '').trim(), content: r.content ?? '',
   since: r.since ?? null, sha: r.sha ?? null,
   documented: r.content ? isDocumented(r.content) : false,
-  testSkip: isTestSkip(r.kind ?? r.content ?? ''),
+  testSkip: typeof r.testSkip === 'boolean' ? r.testSkip : isTestSkip(r.kind ?? r.content ?? ''),   // logbook >=0.9.8 classifies it; the regex is the fallback for older providers
   source,
 });
 

@@ -397,7 +397,7 @@ test('attach --user wires cwd-based (profile-switching) hooks at the user level'
   try {
     sawbuck(['attach', '--user', '.'], d, { HOME: home });
     const cfg = JSON.parse(readFileSync(f, 'utf8'));
-    assert.match(JSON.stringify(cfg.hooks.UserPromptSubmit), /sawbuck\.mjs.*context/, 'context hook wired at user level');
+    assert.match(JSON.stringify(cfg.hooks.UserPromptSubmit), /sawbuck\.mjs.*turn/, 'per-turn hook wired at user level');
     assert.doesNotMatch(JSON.stringify(cfg.hooks.Stop), /--repo/, 'cwd-based: no repo pinned');
     sawbuck(['detach', '--user', '.'], d, { HOME: home });
     assert.ok(!existsSync(f), 'user settings we created are removed (true inverse)');
@@ -410,7 +410,8 @@ test('attach --claude writes gitignored settings.local.json and keeps git status
   try {
     sawbuck(['attach', '--claude', '.'], d);
     const cfg = JSON.parse(readFileSync(f, 'utf8'));
-    assert.match(JSON.stringify(cfg.hooks.UserPromptSubmit), /context/, 'trail-guide (read) hook wired');
+    assert.match(JSON.stringify(cfg.hooks.UserPromptSubmit), /turn/, 'per-turn (frame + history) hook wired');
+    assert.match(JSON.stringify(cfg.hooks.SessionStart), /"matcher":"compact".*turn/, 'the same block is re-injected after a compaction');
     assert.match(JSON.stringify(cfg.hooks.Stop), /__hook/, 'check (reflex) hook wired');
     assert.equal(porcelain(d), '', 'local settings are locally excluded → worktree still clean');
     sawbuck(['attach', '--claude', '.'], d);            // idempotent
@@ -487,5 +488,27 @@ test('check (CLI) leaves an honest source fix uncharted (no false positive throu
     reflect(['--repo', d, '--base', 'HEAD~1', '--head', 'HEAD'], d, { LOGBOOK_NO_CACHE: '1' });
     let r = {}; try { r = JSON.parse(readFileSync(join(d, '.sawbuck', 'results.json'), 'utf8')); } catch { /* no file = no catch */ }
     assert.equal((r.gamed || 0) + (r.regressions || 0), 0, 'a red->green fix earned in source is never charted as a catch');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('frame resolves mandates through extends and turn joins frame + history in one block', () => {
+  const { d, g } = tmpRepo();
+  try {
+    mkdirSync(join(d, 'base'), { recursive: true });
+    writeFileSync(join(d, 'base', 'shared.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'], reason: 'reviewed PR only' }], metrics: [] }));
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ extends: './base/shared.json', mandates: [{ name: 'no-migrations', paths: ['db/migrations/**'] }], metrics: [{ name: 'ok', cmd: 'true', extract: 'exit', direction: 'pass', guard: true }] }));
+    writeFileSync(join(d, 'a.js'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const frame = sawbuck(['frame', '.'], d);
+    assert.match(frame, /protected, do not touch/);
+    assert.match(frame, /src\/auth\/\*\*  \(reviewed PR only\)/, 'the inherited mandate shows with its reason');
+    assert.match(frame, /db\/migrations\/\*\*/, 'the local mandate shows');
+    writeFileSync(join(d, 'a.js'), 'b\n');
+    const turn = sawbuck(['turn', '.'], d, { LOGBOOK_NO_CACHE: '1' });
+    assert.ok(turn.startsWith('▣ contract (sawbuck)'), 'turn leads with the frame');
+    // no mandates -> frame is silent, turn is silent on a clean trail
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [] }));
+    assert.equal(sawbuck(['frame', '.'], d).trim(), '');
+    assert.match(sawbuck(['frame', '--speak', '.'], d), /no mandates/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

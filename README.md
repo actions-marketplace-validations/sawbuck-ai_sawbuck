@@ -56,6 +56,8 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 | `sawbuck status` · `sawbuck log` | the inventory (caught over time + debt now + armed state), in one view; and the recent per-check feed |
 | `sawbuck debt` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
+| `sawbuck frame` | the contract's hard rules (mandates, inherited ones included) as one compact block; silent without a contract |
+| `sawbuck turn` | frame + context in one block: what `attach --claude` runs on every prompt and again right after a compaction |
 | `sawbuck recall` | related notes for your current change from extra memory providers you compose in (bring your own) |
 | `sawbuck trace` · `sawbuck doctor` · `detach --verify` | show the footprint; check the attachment resolves; prove a clean removal |
 | `sawbuck where` · `sawbuck statusline` | list every repo it is attached to; a one-line status-line segment (🐴 watching / N caught / steer %) |
@@ -69,6 +71,8 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
     from editing a test, config, or grader, not the source, so undo that and earn it in the source.
     Run `sawbuck context` first to see what broke in these files before (reverts, weakened tests,
     fragile spots). Never skip, weaken, or delete a test to go green.
+
+**Compaction-proof.** A rule in `AGENTS.md` lives in the context window and survives a compaction only as a paraphrase. A mandate lives in the gate, so it does not need to survive: the check re-reads it from the repo on every turn, and `attach --claude` re-impresses it as a compact block on every prompt and again right after a compaction (`sawbuck turn`), alongside the relevant history for the files being touched. One hook, one block, one process per prompt.
 
 Without a `promptwheel.config.json` the check measures your detected test command. To make it count more (coverage, lint, latency, an eval) or to protect a path with a mandate, `sawbuck init` writes the config and explains each line with evidence from your history.
 
