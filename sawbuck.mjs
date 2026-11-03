@@ -210,9 +210,11 @@ switch (cmd) {
     // fires mid-turn), remember which protected paths were already dirty and what they held, so the
     // Stop hook's wall counts only what this turn changes and leaves a person's own edits alone.
     // Only under --hook (the wiring passes it) is stdin read for the hook's JSON, so a plain
-    // `sawbuck turn` never waits on a pipe. Two rules keep the baseline honest: a file still carrying
-    // the content the last violation flagged is the agent's, not the person's, and is never
-    // baselined; and the Stop hook ignores a baseline recorded well after the prompt began.
+    // `sawbuck turn` never waits on a pipe. Three rules keep the baseline honest: a new baseline is
+    // taken only when the previous turn actually reached a Stop (an interrupt, a crash, or a re-run of
+    // this command mid-turn leaves the last one standing, so nothing the agent left behind is adopted);
+    // a file still carrying the content the last violation flagged is never baselined; and the
+    // baseline's commit does not advance past a flagged commit until a clean stop.
     let hookEvent = '';
     if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit') {
@@ -220,10 +222,18 @@ switch (cmd) {
         if (mandatesInForce(repo).length) {
           const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
           let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
-          const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
-          const files = protectedDirty(repo);
-          for (const f of Object.keys(files)) if (flagged[f] === files[f]) delete files[f];   // the agent's un-reverted edit stays on the wall
-          st.turnBaseline = { at: new Date().toISOString(), files };
+          const now = new Date().toISOString();
+          const prev = st.turnBaseline && typeof st.turnBaseline === 'object' ? st.turnBaseline : null;
+          const stoppedSince = st.lastStopAt && st.lastPromptAt && Date.parse(st.lastStopAt) >= Date.parse(st.lastPromptAt);
+          const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince;
+          if (!unfinished) {
+            const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
+            const files = protectedDirty(repo);
+            for (const f of Object.keys(files)) if (flagged[f] === files[f]) delete files[f];   // the agent's un-reverted edit stays on the wall
+            let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+            st.turnBaseline = { at: now, sha: (st.lastViolation && st.lastViolation.sha) || sha, files };
+          }
+          st.lastPromptAt = now;
           mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
         }
       } catch { /* the frame never fails a prompt */ }

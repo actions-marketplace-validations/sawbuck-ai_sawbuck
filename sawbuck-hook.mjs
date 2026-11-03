@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-import { mandateHits, hashOf } from './contract.mjs';
+import { mandateHits, hashOf, protectedDirty, protectedAmong } from './contract.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const repo = flag('--repo', process.cwd());
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
@@ -46,23 +46,6 @@ let rec = null;
 try { rec = JSON.parse(readFileSync(join(stDir, 'results.json'), 'utf8')); } catch {}
 const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
 const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
-// when the last prompt of this session was typed, from the transcript the hook names (null when unknown):
-// the newest user row that carries text, not a tool result; the tail of the file is enough
-function lastPromptTime(transcriptPath) {
-  try {
-    if (!transcriptPath || !existsSync(transcriptPath)) return null;
-    const text = readFileSync(transcriptPath, 'utf8'); const tail = text.length > 524288 ? text.slice(-524288) : text;
-    const lines = tail.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      let o; try { o = JSON.parse(lines[i]); } catch { continue; }
-      if (!o || o.type !== 'user' || !o.timestamp) continue;
-      const c = o.message && o.message.content;
-      const isText = typeof c === 'string' || (Array.isArray(c) && c.some((p) => p && p.type === 'text') && !c.some((p) => p && p.type === 'tool_result'));
-      if (isText) { const t = Date.parse(o.timestamp); return Number.isFinite(t) ? t : null; }
-    }
-  } catch {}
-  return null;
-}
 
 // 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
 // tree on every stop, not only on commits, because an agent usually ends a turn with uncommitted
@@ -70,34 +53,40 @@ function lastPromptTime(transcriptPath) {
 // and send the agent back to undo its protected edits and make the fix elsewhere. The rules are the
 // working tree's AND the committed contract's (editing the config in the same turn lifts nothing),
 // and a protected file that was already dirty with the same content when the prompt began (the
-// baseline `sawbuck turn` recorded) is the person's own work and does not count.
+// baseline `sawbuck turn --hook` recorded) is the person's own work and does not count. A protected
+// edit COMMITTED since the baseline's commit counts too: a commit mid-turn does not walk through.
 if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
+  const now = new Date().toISOString();
   const dirty = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
-  // the baseline `sawbuck turn --hook` recorded when the prompt began; one recorded well AFTER the
-  // transcript's last prompt was not the prompt's (something re-ran `turn` mid-turn) and is ignored
-  let baseline = (st.turnBaseline && st.turnBaseline.files && typeof st.turnBaseline.files === 'object') ? st.turnBaseline.files : {};
-  const promptAt = lastPromptTime(hookInput.transcript_path);
-  const baseAt = Date.parse(st.turnBaseline && st.turnBaseline.at);
-  if (promptAt && baseAt && baseAt > promptAt + 30000) baseline = {};
+  const base = (st.turnBaseline && typeof st.turnBaseline === 'object') ? st.turnBaseline : null;
+  const baseline = (base && base.files && typeof base.files === 'object') ? base.files : {};
+  const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
   const hashNow = {}; for (const f of dirty) if (Object.prototype.hasOwnProperty.call(baseline, f)) hashNow[f] = hashOf(repo, f);
   const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
-  const changed = dirty.filter((f) => !untouched(f));
+  const changed = [...new Set([...dirty.filter((f) => !untouched(f)), ...committedSince])];
   const leftAlone = dirty.filter(untouched);
   const hits = changed.length ? mandateHits(repo, changed) : [];
-  // remember what was flagged and what it held, so the next prompt's baseline cannot adopt it
-  if (hits.length) { const files = {}; for (const h of hits) for (const f of h.files) files[f] = hashOf(repo, f); st.lastViolation = { at: new Date().toISOString(), files }; }
-  else if (st.lastViolation) { delete st.lastViolation; saveState(); }
+  st.lastStopAt = now;   // the next prompt may take a fresh baseline only because this stop happened
+  if (hits.length) {
+    // remember EVERY changed protected path (dirty or committed since the baseline) and what it holds,
+    // uncapped, and the commit the baseline stood at, so the next prompt cannot adopt any of it
+    const files = protectedDirty(repo);
+    for (const f of protectedAmong(repo, committedSince)) if (!Object.prototype.hasOwnProperty.call(files, f)) files[f] = hashOf(repo, f);
+    st.lastViolation = { at: now, sha: (base && base.sha) || null, files };
+  } else if (st.lastViolation) { delete st.lastViolation; }
+  saveState();
   if (hits.length) {
     const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
     const promptId = hookInput.prompt_id || 'none';
     if (st.mandatePromptId !== promptId) { st.mandatePromptId = promptId; st.mandateBlocks = 0; }
     const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}${h.committed ? ' [this rule is in the committed contract; editing promptwheel.config.json in the working tree does not lift it]' : ''}`).join('; ');
     const spared = leftAlone.length ? ` Edits that were already there before this prompt were left out of this check and must stay as they are: ${leftAlone.join(', ')}.` : '';
+    const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
     try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' }) + '\n'); } catch {}
     if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
       st.mandateBlocks = (st.mandateBlocks || 0) + 1;
       saveState();
-      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}` }));
+      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${upgrade}` }));
       process.exit(0);
     }
     saveState();

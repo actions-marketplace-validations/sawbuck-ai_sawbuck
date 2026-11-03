@@ -594,29 +594,81 @@ test('the baseline cannot launder the agent\'s own protected edit: a file still 
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('a baseline recorded well after the prompt began (something re-ran turn mid-turn) is ignored by the wall', () => {
+test('a turn that never reached a Stop keeps the previous baseline, so neither an interrupt nor a mid-turn re-run of turn adopts the agent\'s edit', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'] }], metrics: [] }));
+    mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n'); writeFileSync(join(d, 'src', 'auth', 'old.js'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    const turn = () => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    const state = () => JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
+    turn();                                                            // prompt 1, clean tree
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');      // the agent edits the wall...
+    turn();                                                            // ...and re-runs turn itself mid-turn (no Stop in between)
+    assert.ok(!('src/auth/login.js' in state().turnBaseline.files), 'the baseline did not move: no Stop happened since the prompt');
+    // the person presses Esc (no Stop), then types the next prompt: still the agent\'s edit, still on the wall
+    turn();
+    assert.ok(!('src/auth/login.js' in state().turnBaseline.files), 'an interrupted turn leaves the baseline standing');
+    assert.equal(JSON.parse(hook('p2')).decision, 'block');
+    // a clean stop lets the next prompt take a fresh baseline, so the person\'s own edit is spared
+    g('checkout', '--', 'src/auth/login.js');
+    assert.ok(!/"decision":"block"/.test(hook('p2')), 'clean');
+    writeFileSync(join(d, 'src', 'auth', 'old.js'), 'my own wip\n');
+    turn();
+    assert.ok('src/auth/old.js' in state().turnBaseline.files, 'after a Stop the baseline is fresh and holds the person\'s edit');
+    assert.ok(!/"decision":"block"/.test(hook('p3')), 'the person\'s edit does not block');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('a protected edit committed mid-turn still counts, and the baseline\'s commit does not advance past it until a clean stop', () => {
   const { d, g } = tmpRepo();
   try {
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'] }], metrics: [] }));
     mkdirSync(join(d, 'src', 'auth'), { recursive: true });
     writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n');
     g('add', '-A'); g('commit', '-q', '-m', 'base');
-    const transcript = join(d, 'transcript.jsonl');
-    const row = (minutesAgo) => JSON.stringify({ type: 'user', timestamp: new Date(Date.now() - minutesAgo * 60000).toISOString(), message: { role: 'user', content: 'do the thing' } }) + '\n';
-    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId, transcript_path: transcript }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: d, encoding: 'utf8' }).trim();
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
     const turn = () => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
-    // the agent edits the wall, then re-runs turn itself ten minutes into the turn to adopt its edit
-    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');
-    writeFileSync(transcript, row(10));
+    const state = () => JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
     turn();
-    assert.ok('src/auth/login.js' in JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).turnBaseline.files, 'the late baseline did record it');
-    assert.equal(JSON.parse(hook('p1')).decision, 'block', 'but the wall ignores a baseline recorded long after the prompt');
-    // a baseline recorded when the prompt began (same minute as the transcript row) is honored
-    g('checkout', '--', 'src/auth/login.js');
-    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'my own wip\n');
-    writeFileSync(transcript, row(0));
+    assert.equal(state().turnBaseline.sha, base);
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n'); g('add', 'src/auth/login.js'); g('commit', '-q', '-m', 'auth fix');   // committed mid-turn: the tree is clean
+    let r = JSON.parse(hook('p1'));
+    assert.equal(r.decision, 'block', 'a commit does not walk through the wall');
+    assert.match(r.reason, /src\/auth\/login\.js/);
+    for (let i = 0; i < 2; i++) hook('p1');
+    assert.match(JSON.parse(hook('p1')).systemMessage || '', /stopped blocking/);
+    turn();                                                            // prompt 2: the baseline must not advance past the flagged commit
+    assert.equal(state().turnBaseline.sha, base, 'the baseline\'s commit stays at the one the violation was measured against');
+    assert.equal(JSON.parse(hook('p2')).decision, 'block', 'still on the wall on the next prompt');
+    // the person takes the commit back out: clean stop, and the baseline advances
+    g('revert', '--no-edit', 'HEAD');
+    assert.ok(!/"decision":"block"/.test(hook('p2')));
     turn();
-    assert.ok(!/"decision":"block"/.test(hook('p2')), 'a baseline recorded at prompt time spares the person\'s edit');
+    assert.notEqual(state().turnBaseline.sha, base, 'after a clean stop the baseline moves to the new HEAD');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('a violation across more than twenty protected files is remembered whole: none of them is adopted by the next baseline', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-tests', paths: ['test/**'] }], metrics: [] }));
+    mkdirSync(join(d, 'test'), { recursive: true });
+    writeFileSync(join(d, 'test', 'seed.js'), '1\n'); g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    const turn = () => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    turn();
+    for (let i = 0; i < 25; i++) writeFileSync(join(d, 'test', `t${i}.js`), 'x\n');
+    for (let i = 0; i < 3; i++) assert.equal(JSON.parse(hook('p1')).decision, 'block');
+    hook('p1');
+    const st = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
+    assert.equal(Object.keys(st.lastViolation.files).length, 25, 'every changed protected path is remembered, not the first twenty');
+    turn();
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).turnBaseline.files), [], 'none of the twenty-five is adopted');
+    assert.equal(JSON.parse(hook('p2')).decision, 'block');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 

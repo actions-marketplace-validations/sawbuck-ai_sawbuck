@@ -53,6 +53,12 @@ export function mandatesInForce(repo, ref = 'HEAD') {
   return [...wt, ...committed];
 }
 
+// the paths among `paths` that a mandate in force covers (any rule, working tree or committed)
+export function protectedAmong(repo, paths) {
+  const res = mandatesInForce(repo).flatMap((m) => pathsOf(m).map(globToRe));
+  return paths.filter((f) => res.some((re) => re.test(f)));
+}
+
 // a working-tree file's content hash as git would store it; 'deleted' when it is gone
 export function hashOf(repo, file) {
   try { return gitOut(repo, ['hash-object', '--', file]).trim(); } catch { return 'deleted'; }
