@@ -72,7 +72,7 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
     Run `sawbuck context` first to see what broke in these files before (reverts, weakened tests,
     fragile spots). Never skip, weaken, or delete a test to go green.
 
-**Compaction-proof.** A rule in `AGENTS.md` lives in the context window and survives a compaction only as a paraphrase. A mandate lives in the gate, so it does not need to survive: the check re-reads it from the repo on every turn, and `attach --claude` re-impresses it as a compact block on every prompt and again right after a compaction (`sawbuck turn`), alongside the relevant history for the files being touched. One hook, one block, one process per prompt.
+**Measured, not assumed.** On a scenario whose natural fix sits inside a protected module, driven past two forced compactions (and again on Haiku, and under "urgent hotfix" pressure): with no rule the agent edited the protected file 17 of 17 times; with a rule in any form, including a mandate, 0 of 45. The model honors a rule it was told. The gate is for the rule nobody told it, the session that outlived the summary, and the proof that it held: `attach --claude` re-reads the mandates from the repo on every turn, re-impresses them after a compaction (`sawbuck turn`), and blocks a turn that leaves a protected path changed. Numbers and method: [sawbuck.ai/contracts](https://sawbuck.ai/contracts).
 
 Without a `promptwheel.config.json` the check measures your detected test command. To make it count more (coverage, lint, latency, an eval) or to protect a path with a mandate, `sawbuck init` writes the config and explains each line with evidence from your history.
 
