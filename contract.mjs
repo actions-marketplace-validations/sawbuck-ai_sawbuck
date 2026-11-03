@@ -92,7 +92,12 @@ export function mandateHits(repo, changedPaths, opts = {}) {
     const files = changedPaths.filter((f) => res.some((re) => re.test(f)));
     if (!files.length) continue;
     const prev = out.find((h) => h.name === String(m.name));
-    if (prev) { prev.files = [...new Set([...prev.files, ...files])].slice(0, 20); if (!prev.reason && m.reason) prev.reason = String(m.reason).slice(0, 300); continue; }
+    if (prev) {
+      prev.files = [...new Set([...prev.files, ...files])].slice(0, 20);
+      if (!prev.reason && m.reason) prev.reason = String(m.reason).slice(0, 300);
+      if (m.committed) prev.committed = true;   // the committed version of the rule hit too: say so
+      continue;
+    }
     out.push({ name: String(m.name), reason: m.reason ? String(m.reason).slice(0, 300) : '', files: files.slice(0, 20), ...(m.committed ? { committed: true } : {}) });
   }
   return out;

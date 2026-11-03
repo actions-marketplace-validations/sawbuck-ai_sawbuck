@@ -46,6 +46,23 @@ let rec = null;
 try { rec = JSON.parse(readFileSync(join(stDir, 'results.json'), 'utf8')); } catch {}
 const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
 const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
+// when the last prompt of this session was typed, from the transcript the hook names (null when unknown):
+// the newest user row that carries text, not a tool result; the tail of the file is enough
+function lastPromptTime(transcriptPath) {
+  try {
+    if (!transcriptPath || !existsSync(transcriptPath)) return null;
+    const text = readFileSync(transcriptPath, 'utf8'); const tail = text.length > 524288 ? text.slice(-524288) : text;
+    const lines = tail.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+      if (!o || o.type !== 'user' || !o.timestamp) continue;
+      const c = o.message && o.message.content;
+      const isText = typeof c === 'string' || (Array.isArray(c) && c.some((p) => p && p.type === 'text') && !c.some((p) => p && p.type === 'tool_result'));
+      if (isText) { const t = Date.parse(o.timestamp); return Number.isFinite(t) ? t : null; }
+    }
+  } catch {}
+  return null;
+}
 
 // 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
 // tree on every stop, not only on commits, because an agent usually ends a turn with uncommitted
@@ -56,11 +73,20 @@ const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFile
 // baseline `sawbuck turn` recorded) is the person's own work and does not count.
 if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const dirty = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
-  const baseline = (st.turnBaseline && st.turnBaseline.files && typeof st.turnBaseline.files === 'object') ? st.turnBaseline.files : {};
-  const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashOf(repo, f) === baseline[f];
+  // the baseline `sawbuck turn --hook` recorded when the prompt began; one recorded well AFTER the
+  // transcript's last prompt was not the prompt's (something re-ran `turn` mid-turn) and is ignored
+  let baseline = (st.turnBaseline && st.turnBaseline.files && typeof st.turnBaseline.files === 'object') ? st.turnBaseline.files : {};
+  const promptAt = lastPromptTime(hookInput.transcript_path);
+  const baseAt = Date.parse(st.turnBaseline && st.turnBaseline.at);
+  if (promptAt && baseAt && baseAt > promptAt + 30000) baseline = {};
+  const hashNow = {}; for (const f of dirty) if (Object.prototype.hasOwnProperty.call(baseline, f)) hashNow[f] = hashOf(repo, f);
+  const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
   const changed = dirty.filter((f) => !untouched(f));
   const leftAlone = dirty.filter(untouched);
   const hits = changed.length ? mandateHits(repo, changed) : [];
+  // remember what was flagged and what it held, so the next prompt's baseline cannot adopt it
+  if (hits.length) { const files = {}; for (const h of hits) for (const f of h.files) files[f] = hashOf(repo, f); st.lastViolation = { at: new Date().toISOString(), files }; }
+  else if (st.lastViolation) { delete st.lastViolation; saveState(); }
   if (hits.length) {
     const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
     const promptId = hookInput.prompt_id || 'none';

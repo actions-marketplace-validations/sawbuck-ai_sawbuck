@@ -209,14 +209,21 @@ switch (cmd) {
     // When a PROMPT begins (the UserPromptSubmit hook, never the SessionStart[compact] one, which
     // fires mid-turn), remember which protected paths were already dirty and what they held, so the
     // Stop hook's wall counts only what this turn changes and leaves a person's own edits alone.
+    // Only under --hook (the wiring passes it) is stdin read for the hook's JSON, so a plain
+    // `sawbuck turn` never waits on a pipe. Two rules keep the baseline honest: a file still carrying
+    // the content the last violation flagged is the agent's, not the person's, and is never
+    // baselined; and the Stop hook ignores a baseline recorded well after the prompt began.
     let hookEvent = '';
-    if (!process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
+    if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit') {
       try {
         if (mandatesInForce(repo).length) {
           const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
           let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
-          st.turnBaseline = { at: new Date().toISOString(), files: protectedDirty(repo) };
+          const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
+          const files = protectedDirty(repo);
+          for (const f of Object.keys(files)) if (flagged[f] === files[f]) delete files[f];   // the agent's un-reverted edit stays on the wall
+          st.turnBaseline = { at: new Date().toISOString(), files };
           mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
         }
       } catch { /* the frame never fails a prompt */ }
@@ -459,7 +466,7 @@ function wireClaude(repo, opts) {
   const fileExisted = existsSync(f);
   let cfg = {};
   if (fileExisted) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it. Add the hooks by hand.`); } }
-  const ctx = user ? `node ${JSON.stringify(SELF)} turn` : `node ${JSON.stringify(SELF)} turn ${JSON.stringify(repo)}`;
+  const ctx = user ? `node ${JSON.stringify(SELF)} turn --hook` : `node ${JSON.stringify(SELF)} turn --hook ${JSON.stringify(repo)}`;
   const chk = user ? `node ${JSON.stringify(SELF)} __hook --by claude --stop` : `node ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
   // attached already? "already attached" only when every hook of THIS version is present; an older
   // attachment (say, without the SessionStart[compact] hook) is upgraded in place, never left stale.

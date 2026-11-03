@@ -539,7 +539,10 @@ test('the wall counts only what the turn changed: a protected file the person le
     writeFileSync(join(d, 'src', 'auth', 'new.js'), 'my untracked\n');               // and an untracked file of theirs
     assert.deepEqual(Object.keys(protectedDirty(d)).sort(), ['src/auth/new.js', 'src/auth/old.js']);
     // the prompt begins: `turn` on the UserPromptSubmit hook records the baseline (a compaction re-run does not)
-    const turn = (event) => execFileSync(process.execPath, [CLI, 'turn', d], { input: JSON.stringify({ hook_event_name: event }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    const turn = (event) => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: event }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    // without --hook the hook JSON on stdin is ignored (and stdin is never waited on)
+    execFileSync(process.execPath, [CLI, 'turn', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    assert.ok(!existsSync(join(d, '.sawbuck', 'state.json')) || !JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).turnBaseline, 'no baseline without --hook');
     turn('UserPromptSubmit');
     const st = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
     assert.deepEqual(Object.keys(st.turnBaseline.files).sort(), ['src/auth/new.js', 'src/auth/old.js']);
@@ -563,6 +566,60 @@ test('the wall counts only what the turn changed: a protected file the person le
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
+test('the baseline cannot launder the agent\'s own protected edit: a file still carrying the last violation\'s content is never baselined', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'] }], metrics: [] }));
+    mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n'); writeFileSync(join(d, 'src', 'x.js'), 'b\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    const turn = () => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    turn();                                                                     // prompt 1 begins, tree clean
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');               // the agent edits the wall
+    for (let i = 0; i < 3; i++) assert.equal(JSON.parse(hook('p1')).decision, 'block');
+    assert.match(JSON.parse(hook('p1')).systemMessage || '', /stopped blocking/, 'the budget runs out and the turn ends with the edit still there');
+    const st = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
+    assert.ok(st.lastViolation && st.lastViolation.files['src/auth/login.js'], 'the violation and its content are remembered');
+    turn();                                                                     // prompt 2 begins: "ok, continue"
+    const st2 = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
+    assert.ok(!('src/auth/login.js' in st2.turnBaseline.files), 'the un-reverted agent edit is not adopted as pre-existing');
+    const r = JSON.parse(hook('p2'));
+    assert.equal(r.decision, 'block', 'the wall re-arms on the new prompt, as it did before baselines existed');
+    assert.match(r.reason, /src\/auth\/login\.js/);
+    // the person reverts it: the next prompt is clean and the memory of the violation clears
+    g('checkout', '--', 'src/auth/login.js');
+    assert.ok(!/"decision":"block"/.test(hook('p3')));
+    assert.ok(!JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).lastViolation);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('a baseline recorded well after the prompt began (something re-ran turn mid-turn) is ignored by the wall', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'] }], metrics: [] }));
+    mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    const transcript = join(d, 'transcript.jsonl');
+    const row = (minutesAgo) => JSON.stringify({ type: 'user', timestamp: new Date(Date.now() - minutesAgo * 60000).toISOString(), message: { role: 'user', content: 'do the thing' } }) + '\n';
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId, transcript_path: transcript }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    const turn = () => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    // the agent edits the wall, then re-runs turn itself ten minutes into the turn to adopt its edit
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');
+    writeFileSync(transcript, row(10));
+    turn();
+    assert.ok('src/auth/login.js' in JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).turnBaseline.files, 'the late baseline did record it');
+    assert.equal(JSON.parse(hook('p1')).decision, 'block', 'but the wall ignores a baseline recorded long after the prompt');
+    // a baseline recorded when the prompt began (same minute as the transcript row) is honored
+    g('checkout', '--', 'src/auth/login.js');
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'my own wip\n');
+    writeFileSync(transcript, row(0));
+    turn();
+    assert.ok(!/"decision":"block"/.test(hook('p2')), 'a baseline recorded at prompt time spares the person\'s edit');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
 test('the wall unions the committed contract: dropping a mandate from the working-tree config does not disarm it', () => {
   const { d, g } = tmpRepo();
   try {
@@ -580,6 +637,11 @@ test('the wall unions the committed contract: dropping a mandate from the workin
     assert.deepEqual(inForce.map((m) => [m.name, !!m.committed]).sort(), [['no-auth', false], ['no-auth', true], ['no-db', true]], 'both versions of the edited rule, and the deleted one, are in force');
     const hits = mandateHits(d, ['src/auth/login.js', 'promptwheel.config.json']);
     assert.deepEqual(hits.map((h) => [h.name, h.files, !!h.committed]), [['no-auth', ['src/auth/login.js'], true]]);
+    // when the working-tree version of a rule hits too, the merged entry still says the committed one did
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/login.js'] }], metrics: [] }));
+    const both = mandateHits(d, ['src/auth/login.js', 'src/auth/other.js']);
+    assert.deepEqual(both.map((h) => [h.name, h.files.sort(), !!h.committed]), [['no-auth', ['src/auth/login.js', 'src/auth/other.js'], true]]);
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/legacy/**'] }], metrics: [] }));   // back to the narrowed tree for the rest
     assert.deepEqual(mandateHits(d, ['src/auth/login.js'], { ref: null }), [], 'the working tree alone would have let it through');
     const r = JSON.parse(execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: 'p1' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } }));
     assert.equal(r.decision, 'block');
@@ -603,7 +665,7 @@ test('attach --claude upgrades an older attachment in place instead of saying al
     const out = sawbuck(['attach', '--claude', d], d);
     assert.match(out, /updated the project Claude Code hooks/);
     const up = JSON.parse(readFileSync(f, 'utf8'));
-    assert.ok(up.hooks.SessionStart.some((h) => h.matcher === 'compact' && h.hooks.some((x) => / turn /.test(x.command))), 'the compact hook is added');
+    assert.ok(up.hooks.SessionStart.some((h) => h.matcher === 'compact' && h.hooks.some((x) => / turn --hook /.test(x.command))), 'the compact hook is added, with --hook');
     assert.ok(up.hooks.UserPromptSubmit.every((h) => h.hooks.every((x) => !/ context /.test(x.command))), 'the old command is replaced, not duplicated');
     assert.equal(up.hooks.UserPromptSubmit.filter((h) => JSON.stringify(h).includes('sawbuck.mjs')).length, 1);
     assert.match(sawbuck(['attach', '--claude', d], d), /already attached/);
