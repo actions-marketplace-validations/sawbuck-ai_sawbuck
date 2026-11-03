@@ -14,28 +14,21 @@
 // never by printing []. git-truth stays authoritative; other providers add supplementary notes.
 
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
+import { LB } from './bins.mjs';
 import { join, dirname, relative, resolve, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
 
-function logbookBin() {
-  if (process.env.SAWBUCK_MEMORY_BIN) return process.env.SAWBUCK_MEMORY_BIN; // back-compat single-provider override
-  if (process.env.LB_BIN) return process.env.LB_BIN;
-  for (const spec of ['@promptwheel/logbook/bin/logbook.mjs', '@promptwheel/logbook']) { try { return require.resolve(spec); } catch {} }
-  return join(HERE, '..', 'logbook', 'bin', 'logbook.mjs');
-}
 const envKey = (name) => 'SAWBUCK_MEMORY_' + name.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_BIN';
 // the ordered provider list. Each: { name, bin, dialect: 'logbook' | 'contract' }.
 const SHIPPED = new Set(['obsidian', 'mem0', 'local', 'claude']); // reference contract providers that ship in providers/
 export function providers() {
   const spec = (process.env.SAWBUCK_MEMORY || 'logbook').split(',').map((s) => s.trim()).filter(Boolean);
   return spec.map((name) => {
-    if (name === 'logbook') return { name, bin: logbookBin(), dialect: 'logbook' };
+    if (name === 'logbook') return { name, bin: LB, dialect: 'logbook' };
     if (SHIPPED.has(name)) return { name, bin: process.env[envKey(name)] || join(HERE, 'providers', name + '.mjs'), dialect: 'contract' };
     return { name, bin: process.env[envKey(name)] || name, dialect: 'contract' }; // a bin path, or a name with an env-set bin
   });

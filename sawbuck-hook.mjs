@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry (M0).
+// sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry.
 // Each turn: if a new commit landed, run reflect on it; then render the dispatch
 // on a fresh catch OR every N turns (config). State in .sawbuck/state.json.
 // Zero-dep. Usage (wired as a Stop hook): node sawbuck-hook.mjs --repo <path>

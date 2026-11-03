@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// sawbuck, the saddle CLI. Zero-dep.
+// sawbuck, the CLI. Zero-dep.
 // `attach` wires Sawbuck's reflex into a repo (a git post-commit hook by default,
 // or Claude Code hooks); `detach` removes it and leaves the repo exactly as it
 // was. Isolation invariant: the repo never imports Sawbuck, and detach is a true
@@ -17,18 +17,12 @@ import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSy
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { createRequire } from 'node:module';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
-import { tally, resolveSessionPath } from './yank.mjs';
+import { PW } from './bins.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
-const require = createRequire(import.meta.url);
-// resolve the promptwheel engine bin: env override, installed package, then the dev sibling
-const PW = process.env.PW_BIN
-  || ['promptwheel/bin/promptwheel.mjs', 'promptwheel'].reduce((r, s) => { try { return r || require.resolve(s); } catch { return r; } }, '')
-  || join(HERE, '..', 'promptwheel', 'bin', 'promptwheel.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
 function gateReport(repo, a) {
   let o = '', code = 0;
@@ -61,51 +55,43 @@ const dry = flags.has('--dry-run');
 let version = '0.0.0';
 try { version = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).version; } catch {}
 
-const help = `sawbuck ${version}: a saddle for your repo
+const help = `sawbuck ${version}: sign your agent to a contract
 
 Usage:
+  sawbuck check [repo]      Verify your latest change right now (working tree if dirty, else the last
+                            commit). Zero-config, no attach, no hook. The fastest way to see it work.
+                            Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
   sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block]
-                            Generate the contract (promptwheel.config.json): a stack starter, tuned and
-                            explained by what your git history shows actually breaks. Also writes a short
-                            contract guide into AGENTS.md so your agent knows the rules (--no-agent-block
-                            to skip). Wizard in a terminal, non-interactive in a pipe/CI/agent (or --yes).
-  sawbuck attach [repo]     Wire Sawbuck into a repo (default: a git post-commit hook)
-      --claude              instead wire project Claude Code hooks (writes .claude/settings.local.json)
+                            Write the contract (promptwheel.config.json), tuned and explained by what your
+                            git history shows actually breaks, plus a short contract guide in AGENTS.md
+                            (--no-agent-block to skip). Wizard in a terminal, non-interactive in a pipe/CI (or --yes).
+  sawbuck attach [repo]     Enforce the contract on every commit (a git post-commit hook)
+      --claude              instead on every Claude Code turn (project hooks in .claude/settings.local.json)
       --shared              with --claude, write the tracked .claude/settings.json (team-shared, visible in git)
-      --user                wire USER-LEVEL Claude hooks that profile-switch by cwd (attach once, every project)
+      --user                user-level Claude hooks that follow your cwd (attach once, every project)
       --dry-run             print the exact footprint it would leave, and write nothing
   sawbuck detach [repo] [--claude | --user] [--all] [--verify] [--purge]
-                            Remove Sawbuck and restore the repo; --verify proves it came back clean;
-                            --purge also deletes the record (.sawbuck/, zero trace); --all does every repo
-  sawbuck trace [repo]      Show exactly what Sawbuck has placed in this repo (the footprint)
-  sawbuck doctor [repo]     Check attachments are healthy (hook still resolves to a live sawbuck); --all for every repo
+                            Remove it and restore the repo (no flag: whatever is attached here); --verify
+                            proves it came back clean; --purge also deletes the record (.sawbuck/)
+  sawbuck status [repo]     The inventory: caught over time + debt accruing now + whether it is armed. --json
+  sawbuck log [repo] [-n N] Recent checks, newest first (verified / gamed / regression)
+  sawbuck debt [repo] [--since REF] [--fail-on undocumented|test|any|N]
+                            The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
+                            shows only what a branch adds; --fail-on exits nonzero (a CI gate)
+  sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
+
+  sawbuck trace [repo]      Show every file Sawbuck has placed in this repo (the footprint)
+  sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
   sawbuck where             List every repo Sawbuck is attached to
-  sawbuck statusline        One-line segment for your status line (🐴 watching | N caught)
-  sawbuck status [repo]     The inventory: everything it has accumulated here, in one view, caught
-                            over time + debt accruing now + whether it is armed. --json for the feed
-  sawbuck log [repo] [-n N] Recent activity, newest first: every check (verified / gamed / regression)
-  sawbuck check [repo]      Try it: verify your latest change right now (working tree if dirty, else the
-                            last commit). Zero-config, no attach, no hook. The fastest way to see it work.
-  sawbuck rank [--base R --head R] [--file P ...]
-                            Show the relevant past findings for the paths a change touches
-  sawbuck context [repo]    Ranked relevant history for your current working changes (the read face)
-  sawbuck recall [repo]     Related notes for your current changes from extra memory providers
-                            (SAWBUCK_MEMORY=logbook,obsidian + OBSIDIAN_VAULT); supplementary to context
+  sawbuck statusline        One-line segment for your status line (🐴 watching | N caught | steer %)
+
+  sawbuck recall [repo]     Related notes for your changes from extra memory providers
+                            (SAWBUCK_MEMORY=logbook,obsidian + OBSIDIAN_VAULT), alongside context
   sawbuck memory-conformance <bin>
                             Check a provider bin speaks the Memory Contract (recall/debt/record)
-  sawbuck debt [repo] [--since REF] [--fail-on undocumented|test|any|N]
-                            The whole-repo live suppression debt: what is still silenced in HEAD now,
-                            risk-ranked (severity x file fragility), undocumented flagged. --since REF
-                            shows only the debt a branch adds; --fail-on exits nonzero for a CI gate
-  sawbuck run --attempt '<cmd>' [--loops N]
-                            Thin harness: load context, run one attempt through the keep-if-verified gate
-  sawbuck yank [--session <path>] [--json]
-                            The steering meter: how much you had to steer (yank the reins) this session,
-                            read from your Claude Code transcript. The check guards the turns you did not
-                            steer — a miss there is the risk. Yank rate falling = the reins getting looser.
   sawbuck --help | --version
 
-Rides two engines: promptwheel (the check) + @promptwheel/logbook (memory).`;
+Engines: promptwheel (the check) + @promptwheel/logbook (memory). Zero-LLM, offline, free.`;
 
 const die = (msg) => { process.stderr.write(`sawbuck: ${msg}\n`); process.exit(1); };
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
@@ -134,13 +120,16 @@ switch (cmd) {
     // stderr ignored so a benign failing probe (e.g. rev-parse HEAD~1 on a one-commit repo) does not
     // leak a scary "fatal:" line before sawbuck's own message.
     const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+    // 64 (EX_USAGE) for every "could not run" below, never a verdict code: a script or CI must not read it as gamed (2).
+    if (!g('rev-parse', '--git-dir')) { out(`🐴 sawbuck: ${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`); process.exit(64); }
+    if (!g('rev-parse', '--verify', 'HEAD')) { out('🐴 sawbuck: no commit yet. Make one, then `sawbuck check` verifies your next change against it.'); process.exit(64); }
     const dirty = g('status', '--porcelain').length > 0;
     // nothing to verify yet: a clean tree with no previous commit to diff against (a fresh repo). Say so
     // plainly instead of the generic "could not run" below, so the first run is not a dead end.
-    if (!dirty && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(2); }
+    if (!dirty && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
     const where = dirty ? 'working' : 'last';
     const { rep, code } = gateReport(repo, dirty ? ['run', '--working'] : ['run', '--base', 'HEAD~1', '--head', 'HEAD']);
-    if (!rep || !rep.verdict) { out('🐴 sawbuck: could not run the check here. Make sure this is a git repo with a commit, and a test command (or run `sawbuck init`).'); process.exit(2); }
+    if (!rep || !rep.verdict) { out('🐴 sawbuck: could not run the check here. Make sure this is a git repo with a commit, and a test command (or run `sawbuck init`).'); process.exit(64); }
     const m = (rep.metrics || [])[0];
     if (rep.verdict === 'pass') out(`🐴 ✓ verified: your ${where} change earned it. ${m ? '"' + m.name + '"' : 'The metric'} held, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
@@ -223,11 +212,6 @@ switch (cmd) {
     out(r.pass ? '   ✓ conforms to the Memory Contract.' : '   ✗ does not conform (see above).');
     process.exit(r.pass ? 0 : 1);
   }
-  case 'run': {
-    try { execFileSync(process.execPath, [join(HERE, 'run.mjs'), ...rest], { stdio: 'inherit' }); }
-    catch (e) { process.exit(e.status || 1); }
-    break;
-  }
   case '__hook': {
     try { execFileSync(process.execPath, [HOOK, ...rest], { stdio: 'inherit' }); } catch (e) { process.exit(e.status || 0); }
     break;
@@ -246,7 +230,14 @@ switch (cmd) {
     const repo = repoArg();
     if (flags.has('--user')) unwireClaude(repo, { user: true });
     else if (flags.has('--claude')) unwireClaude(repo, {});
-    else unwireGit(repo);
+    else {
+      // no flag: reverse whatever this repo's receipt says is attached (git and/or project Claude
+      // hooks), so a bare `detach` is always the inverse of the `attach` you ran.
+      const a = readManifest(manifestPath(repo)).attachments || {};
+      const hasClaude = !!(a.claude || a['claude-shared']);
+      if (hasClaude) unwireClaude(repo, {});
+      if (a.git || !hasClaude) unwireGit(repo);
+    }
     if (purge) purgeRecord(repo);
     if (flags.has('--verify')) verifyClean(repo);
     break;
@@ -270,50 +261,25 @@ switch (cmd) {
         const mem = existsSync(join(repo, 'LOGBOOK.md')) || existsSync(join(repo, 'events.jsonl'));
         const seg = caught > 0 ? `🐴 sawbuck · ${caught} caught` : active ? `🐴 sawbuck · watching` : armed ? `🐴 sawbuck · ready` : mem ? `🐴 sawbuck · memory` : '';
         const base = seg ? (last ? `${seg} · ${last}` : seg) : '';
-        // the live steering readout, when the wrapper forwards the session transcript path
-        let yk = '';
-        const ti = rest.findIndex((a) => a === '--transcript' || a === '--session');
-        if (ti > -1 && rest[ti + 1]) { try { const { yanks, turns } = tally(readFileSync(rest[ti + 1], 'utf8')); if (turns) yk = `🪢 ${yanks}/${turns} yanks`; } catch {} }
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
         let st = '';
-        try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round(((sj.ema != null ? sj.ema : sj.steeringRate) || 0) * 100); st = `${p >= 50 ? '🪢' : '🐎'} steer ${p}%`; } } catch {}
+        try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round(((sj.ema != null ? sj.ema : sj.steeringRate) || 0) * 100); st = `${p >= 50 ? '✊' : '🐎'} steer ${p}%`; } } catch {}
         // configurable template: SAWBUCK_STATUSLINE picks which segments show and in what order
-        // (tokens {status} {sawbuck} {verdict} {steer} {yanks} plus any literal text); empty tokens
-        // collapse so you never get a dangling separator. Unset = the default composition. Mix in
-        // other tools (git branch, model, your own adapters) by composing in your statusline script.
+        // (tokens {status} {sawbuck} {verdict} {steer} plus any literal text); empty tokens collapse
+        // so you never get a dangling separator. Unset = the default composition. Mix in other
+        // tools (git branch, model, your own adapters) by composing in your statusline script.
         const tpl = process.env.SAWBUCK_STATUSLINE;
         let outp;
         if (tpl && tpl.trim()) {
-          const tok = { status: base, sawbuck: seg, verdict: last, steer: st, yanks: yk };
-          outp = tpl.replace(/\{(status|sawbuck|verdict|steer|yanks)\}/g, (_, k) => tok[k] || '')
+          const tok = { status: base, sawbuck: seg, verdict: last, steer: st };
+          outp = tpl.replace(/\{(status|sawbuck|verdict|steer)\}/g, (_, k) => tok[k] || '')
                     .replace(/\s*·\s*·\s*/g, ' · ').replace(/^\s*·\s*/, '').replace(/\s*·\s*$/, '').replace(/\s{2,}/g, ' ').trim();
         } else {
-          outp = [base, yk, st].filter(Boolean).join(' · ');
+          outp = [base, st].filter(Boolean).join(' · ');
         }
         if (outp) process.stdout.write(outp);
       }
     } catch {}
-    break;
-  }
-  case 'yank': {
-    // the live steering meter (the reins hook): how much did you have to steer this session?
-    // A MIRROR read from the Claude Code transcript; the check guards the turns you did NOT steer.
-    const si = rest.findIndex((a) => a === '--session' || a === '--transcript');
-    const sess = resolveSessionPath(si > -1 ? rest[si + 1] : null, process.cwd());
-    if (!sess) { out('🐴 sawbuck: no session transcript found to read (pass --session <path.jsonl>).'); process.exit(2); }
-    let text = ''; try { text = readFileSync(sess, 'utf8'); } catch { out('🐴 sawbuck: could not read the session transcript.'); process.exit(2); }
-    const { turns, yanks, rate, recent } = tally(text);
-    if (flags.has('--json')) { out(JSON.stringify({ turns, yanks, rate, recent })); break; }
-    const pct = Math.round(rate * 100);
-    out('🐴 reins: steering this session');
-    if (yanks === 0) {
-      out(`   0 hard yanks across ${turns} turns — you did not have to pull the reins hard.`);
-    } else {
-      out(`   ${yanks} hard yank${yanks === 1 ? '' : 's'} across ${turns} turns (${pct}%) — times you pulled me back hard.`);
-      if (turns - yanks > 0) out(`   the check guards the other ${turns - yanks} turns you trusted me with — a miss there is the risk.`);
-      if (recent.length) out(`   recent: ${recent.map((r) => '"' + r + '"').join(' · ')}`);
-    }
-    out('   (terse course-corrections only; the full steer rate, incl. discursive redirects, is the harvest layer.)');
     break;
   }
   default: die(`unknown command '${cmd}'\n\n${help}`);
@@ -383,7 +349,7 @@ function wireGit(repo) {
   const pc = join(repo, '.git', 'hooks', 'post-commit');
   const existed = existsSync(pc);
   let body = existed ? readFileSync(pc, 'utf8') : '#!/bin/sh\n';
-  if (body.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); warnNoConfig(repo); return; }
+  if (body.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
   if (!body.startsWith('#!')) body = '#!/bin/sh\n' + body;
   if (!body.endsWith('\n')) body += '\n';
   if (dry) {
@@ -402,7 +368,6 @@ function wireGit(repo) {
   writeManifest(manifestPath(repo), m);
   regAdd(repo, 'git');
   out(`sawbuck: attached (git post-commit) in ${repo}`);
-  warnNoConfig(repo);
 }
 function unwireGit(repo) {
   const pc = join(repo, '.git', 'hooks', 'post-commit');
@@ -438,7 +403,7 @@ function wireClaude(repo, opts) {
   const fileExisted = existsSync(f);
   let cfg = {};
   if (fileExisted) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it. Add the hooks by hand.`); } }
-  if (JSON.stringify(cfg).includes('sawbuck.mjs')) { out(`sawbuck: already attached (${user ? 'user' : 'claude'}) in ${f}`); if (!user) warnNoConfig(repo); return; }
+  if (JSON.stringify(cfg).includes('sawbuck.mjs')) { out(`sawbuck: already attached (${user ? 'user' : 'claude'}) in ${f}`); return; }
   const ctx = user ? `node ${JSON.stringify(SELF)} context` : `node ${JSON.stringify(SELF)} context ${JSON.stringify(repo)}`;
   const chk = user ? `node ${JSON.stringify(SELF)} __hook --by claude --stop` : `node ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
   if (dry) {
@@ -468,7 +433,6 @@ function wireClaude(repo, opts) {
   out(`sawbuck: wired ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f}`);
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
   else if (!shared) out('  (settings.local.json is gitignored; use --shared to commit the hooks for your team)');
-  if (!user) warnNoConfig(repo);
 }
 function unwireClaude(repo, { user }) {
   const mp = user ? userManifestPath() : manifestPath(repo);
@@ -607,7 +571,3 @@ function detachAll(purge) {
 
 // --- shared helpers ---------------------------------------------------------
 function dryText(plan) { return ['sawbuck --dry-run: would leave this footprint (writing nothing):', ...plan.map((p) => '  ' + p), '  all of it reversible with `detach`.'].join('\n'); }
-function warnNoConfig() {
-  // superseded by verifyAttach, which runs after every attach and reports exactly what the check
-  // can measure (zero-config now auto-detects your test command, so a missing config is not an error).
-}

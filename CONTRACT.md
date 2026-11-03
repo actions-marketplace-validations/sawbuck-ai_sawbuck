@@ -2,9 +2,9 @@
 
 *Put your coding agent under contract: a win counts only if it survives verification from the source alone, not because the agent said so. The terms below are not a promise the agent makes, they are a result anyone can re-prove.*
 
-**Status:** Draft v0.1 · **License:** Apache-2.0 · **Reference implementation:** [Sawbuck](https://github.com/sawbuck-ai/sawbuck) (the saddle), [promptwheel](https://github.com/promptwheel-ai/promptwheel) (the check), [@promptwheel/logbook](https://github.com/promptwheel-ai/logbook) (the default memory provider)
+**Status:** Draft v0.1 · **License:** Apache-2.0 · **Reference implementation:** [Sawbuck](https://github.com/sawbuck-ai/sawbuck) (the CLI), [promptwheel](https://github.com/promptwheel-ai/promptwheel) (the check), [@promptwheel/logbook](https://github.com/promptwheel-ai/logbook) (the default memory provider)
 
-This is an open interface for making an AI coding harness trustworthy. It defines how a loop's wins get verified, what a verdict looks like, what counts as gaming the goalposts, and how a repo's history is carried along. Any harness can emit or consume it without using this code. Sawbuck is a reference saddle that implements it; it is not the only possible one.
+This is an open interface for making an AI coding harness trustworthy. It defines how a loop's wins get verified, what a verdict looks like, what counts as gaming the goalposts, and how a repo's history is carried along. Any harness can emit or consume it without using this code. Sawbuck is a reference implementation; it is not the only possible one.
 
 The contract has one property that holds all of it together: a verdict is **deterministic and reproducible from `(base, head, config)` alone**. No LLM is in the path, and nothing is read from the agent's trajectory, so the result cannot be obfuscated against and does not change when you ask it twice.
 
@@ -39,9 +39,7 @@ The agent consumes this as a per-turn reward it cannot inflate. The harness cons
   "head": "e4f5g6h",
   "mode": "refs",
   "repeat": 3,
-  "cohort": "ci",
   "verdict": "gamed",
-  "subsystems": ["api", "auth"],
   "metrics": [
     {
       "name": "tests_pass",
@@ -87,11 +85,11 @@ A win is **`gamed`** when it does not survive a **source-only re-run**: revert e
 
 **Protected terms (declared, optionally enforced).** `evaluatorPaths` is also the declaration surface for immutability: the files a repo names there are its fixed terms, the goalposts the agent does not get to move. The baseline is detection (a win that depended on changing a protected term reads `gamed`). A stronger conformance level *enforces* it: the audit gate (CI, or a hook the agent cannot bypass) fails any change to a protected term unless a human signs off, so the terms cannot be moved mid-game. Note the honest limit: a file cannot be made truly immutable to an agent that has write access to the repo. The guarantee comes from the un-bypassable gate, not from the filesystem.
 
-**Declared override (an intentional test change).** The check flags a win that came only from moving the goalposts, not from the source. Sometimes that move is legitimate: a test that asserted the wrong thing, an obsolete test removed, a guard intentionally retired. The sanctioned way through is to DECLARE it, not to silently weaken the gate. A `Sawbuck-Allow: <reason>` trailer on the commit (or `--allow "<reason>"` for a working-tree or CI run) acknowledges the change, so a would-be `gamed` reads `pass` with the acknowledgment recorded in `allowed` (the reason, and the metric or gate names it cleared). The check does not judge intent; it forces intent to be explicit and auditable. An UNdeclared test-only win is still `gamed`; a declared one is on the record, so a reviewer sees the reason instead of a silent green. It covers the edit, the delete, and the new file alike. The declaration lives in the commit, so it is immutable and attributable: revoking it is a review act, not a deletion, and a reasonless trailer does not override.
+**Declared override (an intentional test change).** The check flags a win that came only from moving the goalposts, not from the source. Sometimes that move is legitimate: a test that asserted the wrong thing, an obsolete test removed, a guard intentionally retired. The sanctioned way through is to DECLARE it, not to silently weaken the gate. A `Sawbuck-Allow: <reason>` trailer on the commit (`Promptwheel-Allow:` is the same thing; or `--allow "<reason>"` for a working-tree or CI run) acknowledges the change, so a would-be `gamed` reads `pass` with the acknowledgment recorded in `allowed` (the reason, and the metric or gate names it cleared). The check does not judge intent; it forces intent to be explicit and auditable. An UNdeclared test-only win is still `gamed`; a declared one is on the record, so a reviewer sees the reason instead of a silent green. It covers the edit, the delete, and the new file alike. The declaration lives in the commit, so it is immutable and attributable: revoking it is a review act, not a deletion, and a reasonless trailer does not override.
 
 ## 4. The context record (the trail knowledge)
 
-A conforming saddle also carries the repo's history as deterministic memory: a ledger derived from git (hotspots, reverted approaches, suppressed or weakened tests, fragile areas), surfaced per turn as a ranked slice for the files being touched. It is a projection of git, never a second source of truth, so it is always reconstructable and never drifts from what actually happened.
+A conforming implementation also carries the repo's history as deterministic memory: a ledger derived from git (hotspots, reverted approaches, suppressed or weakened tests, fragile areas), surfaced per turn as a ranked slice for the files being touched. It is a projection of git, never a second source of truth, so it is always reconstructable and never drifts from what actually happened.
 
 ---
 
@@ -102,7 +100,7 @@ A conforming saddle also carries the repo's history as deterministic memory: a l
 - A conforming **harness** runs the check as the audit gate (so the agent cannot self-clear its own win).
 - A conforming **context record** is a deterministic projection of git (§4).
 
-An implementation may support a subset and say so. The reference saddle (Sawbuck) implements all four.
+An implementation may support a subset and say so. The reference implementation (Sawbuck) implements all four.
 
 ## Versioning
 

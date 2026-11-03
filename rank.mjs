@@ -45,7 +45,7 @@ const codeish = (p) => /\.(m?[jt]sx?|cjs|py|go|rs|rb|java|kt|c|cc|cpp|h|hpp|php|
 // eslint-disable). The relevance lead: sharpen the signal, don't flatten it.
 const isTest = (p) => /(^|\/)(tests?|__tests__|specs?)\//i.test(p) || /[._-](test|spec)\.[a-z0-9]+$/i.test(p) || /(^|\/)test_[^/]+\.py$/i.test(p);
 
-// Per-language suppression normalization. The 100-repo study (STUDY-100.md) found a suppression's
+// Per-language suppression normalization. A 100-repo study found a suppression's
 // raw count is an idiom artifact, not a risk level: a `# noqa` is background noise in Python (141
 // markers/repo) but a `t.Skip` is notable in Go. So a hit is discounted by how ubiquitous its
 // idiom is in the FILE's language. Discount-only [0.4, 1]: common idioms shrink, rare ones stay at
@@ -80,7 +80,7 @@ const normMult = (p, kind) => {
 // with SAWBUCK_DEBT_MIN. This is how debt rises by itself in the per-turn context, no command run.
 const DEBT_MIN = Math.max(1, +(process.env.SAWBUCK_DEBT_MIN) || 6);
 
-// Still-live filter (lead #4) + ambient debt, via the memory adapter (the Memory Contract's `debt`
+// Still-live filter + ambient debt, via the memory adapter (the Memory Contract's `debt`
 // capability), scoped to the touched paths so the per-turn hook stays cheap. A suppression on a path
 // now CLEAN of suppressions is churn, not current risk (the study: AutoMapper carries 4 live
 // `[Ignore]` vs ~158/repo across C# history). The adapter runs the provider's own detection + gating

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// reflect.mjs, the Sawbuck feedback edge (M0).
+// reflect.mjs, the Sawbuck feedback edge.
 //
 // Run the check (the promptwheel engine) on the latest commit; on a gamed or
 // regression result, deterministic ground truth, record a finding in the
@@ -18,23 +18,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import { record as memRecord } from './memory.mjs';
+import { PW } from './bins.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
-// Resolve the check engine CLI: env override, then the installed package (published
-// install), then the monorepo sibling (dev checkout). The MEMORY engine is reached only
-// through memory.mjs (the Memory Contract seam), never resolved or shelled directly here.
-const engineBin = (envVar, pkgSubpath, devPath) => {
-  if (process.env[envVar]) return process.env[envVar];
-  // deep bin subpath (no-exports pkgs, e.g. promptwheel), then the bare package name
-  // (pkgs whose exports map "." to the bin, e.g. @promptwheel/logbook), then the dev sibling.
-  const bare = pkgSubpath.replace(/\/bin\/[^/]*$/, '');
-  for (const spec of [pkgSubpath, bare]) { try { return require.resolve(spec); } catch {} }
-  return devPath;
-};
-const PW = engineBin('PW_BIN', 'promptwheel/bin/promptwheel.mjs', join(HERE, '..', 'promptwheel', 'bin', 'promptwheel.mjs'));
+// The MEMORY engine is reached only through memory.mjs (the Memory Contract seam), never
+// resolved or shelled directly here.
 
 const flag = (name, def) => { const i = process.argv.indexOf(name); return i > -1 ? process.argv[i + 1] : def; };
 const repo = flag('--repo', process.cwd());
@@ -83,8 +72,8 @@ const reason = kind === 'gamed'
 
 // --- 3) record the finding in memory (unreviewed, machine-authored note) ----
 // The Memory Contract's `record` capability, through the adapter (no direct engine shell here).
-// M0 keeps it simple: a commit-attached digest note. M1 adds --span grounding
-// + true coupling (the fix diff -> "change X also needs Y").
+// Kept simple: a commit-attached digest note. A later pass could add --span grounding
+// and true coupling (the fix diff -> "change X also needs Y").
 memRecord(repo, { sha, reason: reason.slice(0, 280), side: 'diff', evidenceFile, by: 'sawbuck' });
 
 // --- 4) tick the results record (the visible proof-of-work) -----------------

@@ -17,23 +17,9 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
-const engineBin = (envVar, pkgSubpath, devPath) => {
-  if (process.env[envVar]) return process.env[envVar];
-  // deep bin subpath (no-exports pkgs, e.g. promptwheel), then the bare package name
-  // (pkgs whose exports map "." to the bin, e.g. @promptwheel/logbook), then the dev sibling.
-  const bare = pkgSubpath.replace(/\/bin\/[^/]*$/, '');
-  for (const spec of [pkgSubpath, bare]) { try { return require.resolve(spec); } catch {} }
-  return devPath;
-};
-const PW = engineBin('PW_BIN', 'promptwheel/bin/promptwheel.mjs', join(HERE, '..', 'promptwheel', 'bin', 'promptwheel.mjs'));
-const LB = engineBin('LB_BIN', '@promptwheel/logbook/bin/logbook.mjs', join(HERE, '..', 'logbook', 'bin', 'logbook.mjs'));
+import { PW, LB } from './bins.mjs';
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
@@ -145,7 +131,7 @@ function report() {
   for (const m of cfg.metrics) out('    - ' + describeMetric(m));
   if (evidence) { out('\n  investigated this repo:'); for (const l of evidenceLines()) out(l); }
   out('\n  next:  sawbuck attach           # enforce the contract every commit');
-  out('         sawbuck run --working    # gate your uncommitted changes now');
+  out('         sawbuck check            # verify your uncommitted changes now');
 }
 
 function runWizard() {

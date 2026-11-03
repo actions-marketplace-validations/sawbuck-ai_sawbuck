@@ -465,21 +465,6 @@ test('the reflex keeps the record out of git status under any attach mode (incl.
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('run drives an attempt through the keep-if-verified gate (dummy agent)', () => {
-  const d = mkdtempSync(join(tmpdir(), 'sawbuck-run-'));
-  const g = (...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8' });
-  try {
-    g('init', '-q'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't');
-    writeFileSync(join(d, '.gitignore'), '.promptwheel/\n.sawbuck/\n');
-    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ linkNodeModules: false, metrics: [{ name: 'todos', cmd: 'grep -c TODO app.js || true', extract: 'number', direction: 'down', guard: true }] }));
-    writeFileSync(join(d, 'app.js'), 'a // TODO\nb // TODO\nc // TODO\n');
-    g('add', '-A'); g('commit', '-qm', 'base');
-    // dummy "agent": removes one TODO -> metric improves -> the gate keeps it
-    const o = sawbuck(['run', '--attempt', "sed -i '0,/ \\/\\/ TODO/s///' app.js", '--loops', '1'], d, { LOGBOOK_NO_CACHE: '1' });
-    assert.match(o, /-> kept/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('where lists an attached repo and drops it after detach', () => {
   const { d } = tmpRepo();
   try {

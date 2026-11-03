@@ -1,9 +1,12 @@
 {
   "name": "sawbuck",
-  "version": "0.1.24",
-  "description": "Sign your agent to a contract so it does what you want: a deterministic, zero-LLM check that re-proves every win from the agent's source edits alone, so a green that came from editing the test is caught and reverted. A saddle for your coding harness.",
+  "version": "0.1.25",
+  "description": "Sign your agent to a contract: a deterministic, zero-LLM check re-proves every win from the agent's source edits alone, so a green that came from editing the test, grader, or config is caught and sent back. Works in Claude Code, Codex, git hooks, and CI.",
   "type": "module",
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sawbuck-ai/sawbuck.git"
@@ -20,6 +23,7 @@
   },
   "files": [
     "sawbuck.mjs",
+    "bins.mjs",
     "init.mjs",
     "reflect.mjs",
     "dispatch.mjs",
@@ -28,14 +32,11 @@
     "debt.mjs",
     "status.mjs",
     "memory.mjs",
-    "yank.mjs",
     "providers/obsidian.mjs",
     "providers/mem0.mjs",
     "providers/local.mjs",
     "providers/claude.mjs",
-    "run.mjs",
     "README.md",
-    "GLOSSARY.md",
     "CONTRACT.md"
   ]
 }
