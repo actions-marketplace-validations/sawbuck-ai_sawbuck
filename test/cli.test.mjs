@@ -99,6 +99,9 @@ test('event feed: the check logs every result (gamed + verified) and sawbuck log
     assert.match(log, /sawbuck activity/);
     assert.match(log, /verified/);
     assert.match(log, /gamed/);
+    // `-n N` is a flag with a value, not the repo path (it used to resolve to a directory named -n)
+    const one = sawbuck(['log', '-n', '1'], d);
+    assert.match(one, /sawbuck activity \(last 1\)/, '-n limits the feed instead of being read as the repo path');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 

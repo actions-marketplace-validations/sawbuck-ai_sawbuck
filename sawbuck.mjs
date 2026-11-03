@@ -49,7 +49,8 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const rest = argv.slice(1);
 const flags = new Set(rest.filter((a) => a.startsWith('--')));
-const positional = rest.filter((a) => !a.startsWith('--'));
+// `-n N` (sawbuck log) is a flag with a value, not a repo path.
+const positional = rest.filter((a, i) => !a.startsWith('--') && a !== '-n' && rest[i - 1] !== '-n');
 const repoArg = () => resolve(positional[0] || '.');
 const dry = flags.has('--dry-run');
 
