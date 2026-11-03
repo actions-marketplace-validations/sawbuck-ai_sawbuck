@@ -19,7 +19,9 @@ sawbuck attach --claude   # or every Claude Code turn (a project-scoped Stop hoo
 **Zero-config:** it auto-detects your test command, so there is nothing to write to start.
 On attach it tells you exactly what it can measure here (and how to fix it if it can't).
 `sawbuck init` is only for *customizing* what counts (coverage, latency, a cost budget, a protected path).
-In CI instead of a local hook? use the GitHub Action below. For every project at once: `sawbuck attach --user`.
+In CI, the same check runs as the [promptwheel GitHub Action](https://github.com/promptwheel-ai/promptwheel#in-ci-and-in-claude-code) (`uses: promptwheel-ai/promptwheel@v0`); the debt gate below is this repo's own Action. For every project at once: `sawbuck attach --user`.
+
+One entry point each: a person types `sawbuck`; CI and libraries use `promptwheel` (the engine underneath, `import { check }`). `sawbuck check` passes every `promptwheel run` flag through, so you never need both.
 
 What a check looks like:
 
@@ -47,7 +49,7 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 
 | command | what |
 |---|---|
-| `sawbuck check` | verify your latest change (working tree if dirty, else the last commit); zero-config, no attach, no record |
+| `sawbuck check [--base R --head R] [--repeat N] [--allow "reason"] [--json]` | verify your latest change (working tree if dirty, else the last commit, or a range); zero-config, no attach, no record. Every `promptwheel run` flag passes through: this is the engine with a plain-spoken verdict |
 | `sawbuck init` | write the contract (`promptwheel.config.json`), tuned by what your git history shows actually breaks |
 | `sawbuck attach [--claude \| --user]` | enforce it (git post-commit / project Claude hooks / user-level for every project) |
 | `sawbuck detach [--claude \| --user]` | remove it; no flag reverses whatever is attached here |

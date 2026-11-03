@@ -11,6 +11,21 @@
     "type": "git",
     "url": "git+https://github.com/sawbuck-ai/sawbuck.git"
   },
+  "homepage": "https://sawbuck.ai",
+  "bugs": {
+    "url": "https://github.com/sawbuck-ai/sawbuck/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "reward-hacking",
+    "code-quality",
+    "ci",
+    "git-hooks",
+    "developer-tools",
+    "promptwheel"
+  ],
   "scripts": {
     "test": "node --test"
   },
@@ -18,8 +33,8 @@
     "sawbuck": "sawbuck.mjs"
   },
   "dependencies": {
-    "promptwheel": "^0.7.0",
-    "@promptwheel/logbook": "^0.9.0"
+    "@promptwheel/logbook": "^0.9.6",
+    "promptwheel": "^0.7.5"
   },
   "files": [
     "sawbuck.mjs",

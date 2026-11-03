@@ -58,8 +58,10 @@ try { version = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).ver
 const help = `sawbuck ${version}: sign your agent to a contract
 
 Usage:
-  sawbuck check [repo]      Verify your latest change right now (working tree if dirty, else the last
-                            commit). Zero-config, no attach, no hook. The fastest way to see it work.
+  sawbuck check [repo] [--base R --head R] [--repeat N] [--allow "<reason>"] [--json]
+                            Verify your latest change right now (working tree if dirty, else the last
+                            commit, or the range you name). Zero-config, no attach, no hook. The
+                            fastest way to see it work. Every promptwheel run flag passes through.
                             Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
   sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block]
                             Write the contract (promptwheel.config.json), tuned and explained by what your
@@ -116,25 +118,42 @@ switch (cmd) {
     // one-shot: gate your latest change right now (working tree if dirty, else the last commit),
     // zero-config (the engine auto-detects your test command), and say plainly whether the win was
     // earned. No attach, no hook, no record. The try-it-first on-ramp.
-    const repo = repoArg();
+    // `sawbuck check` IS `promptwheel run` with a plain-spoken verdict: every engine flag passes
+    // through (--base/--head/--repeat/--allow/--json/--no-detect-gaming), so there is one entry
+    // point for a person and the engine stays the one for CI and libraries.
+    const VALUE_FLAGS = new Set(['--base', '--head', '--repeat', '--allow']);
+    const pass = []; const pos = []; let json = false, base = null, head = null;
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i];
+      if (a === '--json') { json = true; continue; }
+      if (VALUE_FLAGS.has(a)) { const v = rest[++i]; if (v == null) die(`${a} needs a value`); if (a === '--base') base = v; else if (a === '--head') head = v; else pass.push(a, v); continue; }
+      if (a.startsWith('--')) { pass.push(a); continue; }
+      pos.push(a);
+    }
+    const repo = resolve(pos[0] || '.');
     // stderr ignored so a benign failing probe (e.g. rev-parse HEAD~1 on a one-commit repo) does not
     // leak a scary "fatal:" line before sawbuck's own message.
     const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
     // 64 (EX_USAGE) for every "could not run" below, never a verdict code: a script or CI must not read it as gamed (2).
     if (!g('rev-parse', '--git-dir')) { out(`🐴 sawbuck: ${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`); process.exit(64); }
     if (!g('rev-parse', '--verify', 'HEAD')) { out('🐴 sawbuck: no commit yet. Make one, then `sawbuck check` verifies your next change against it.'); process.exit(64); }
-    const dirty = g('status', '--porcelain').length > 0;
+    const dirty = !base && !head && g('status', '--porcelain').length > 0;
     // nothing to verify yet: a clean tree with no previous commit to diff against (a fresh repo). Say so
     // plainly instead of the generic "could not run" below, so the first run is not a dead end.
-    if (!dirty && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
-    const where = dirty ? 'working' : 'last';
-    const { rep, code } = gateReport(repo, dirty ? ['run', '--working'] : ['run', '--base', 'HEAD~1', '--head', 'HEAD']);
+    if (!dirty && !base && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
+    const where = dirty ? 'working' : (base || head) ? `${base || 'HEAD~1'}..${head || 'HEAD'}` : 'last';
+    const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
+    const { rep, code } = gateReport(repo, [...args, ...pass]);
     if (!rep || !rep.verdict) { out('🐴 sawbuck: could not run the check here. Make sure this is a git repo with a commit, and a test command (or run `sawbuck init`).'); process.exit(64); }
+    if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
+    for (const md of rep.mandates || []) out(`🐴 ⛔ mandate "${md.name}" violated${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; a mandate stays in force for the change that removes it]' : ''}`);
     if (rep.verdict === 'pass') out(`🐴 ✓ verified: your ${where} change earned it. ${m ? '"' + m.name + '"' : 'The metric'} held, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
+    else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a hard rule in the contract was broken, however green the rest is.');
     else if (rep.verdict === 'fail') out(`🐴 ✗ regression: a guarded metric got worse (${(rep.metrics || []).filter((x) => x.guard && !x.ok).map((x) => x.name).join(', ') || 'a guard'}).`);
     else out('🐴 ≈ inconclusive: the check ran but could not measure your metric (it did not run in isolation). Point it at your real test command: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json.');
+    if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
   case 'log': {
