@@ -2,7 +2,7 @@
 
 **Sign your agent to a contract so it does what you want.**
 
-A saddle for your coding harness. You write the contract (what a real win looks like); Sawbuck enforces it, re-proving every win from the agent's **source** edits alone, so a result that only passed because the agent edited the test, mocked the grader, or loosened a rule gets flagged and reverted. Deterministic, zero-LLM, un-gameable. Break it in and it carries your repo's history along: what broke in these files before, surfaced before you touch them.
+You write the contract (what a real win looks like); Sawbuck enforces it, re-proving every win from the agent's **source** edits alone, so a result that only passed because the agent edited the test, mocked the grader, or loosened a rule gets flagged and reverted. Deterministic, zero-LLM, un-gameable. Break it in and it carries your repo's history along: what broke in these files before, surfaced before you touch them.
 
 > Sawbuck is the reference implementation of the [Verified-Outcome Contract](CONTRACT.md): the open interface for a coding loop you can trust.
 
