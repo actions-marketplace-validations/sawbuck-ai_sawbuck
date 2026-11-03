@@ -12,7 +12,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { scopeChain, recall as recallMem } from '../memory.mjs';
-import { globToRe, mandateHits } from '../contract.mjs';
+import { globToRe, mandateHits, mandatesInForce, protectedDirty } from '../contract.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
@@ -526,6 +526,90 @@ test('contract: the glob dialect matches promptwheel (** crosses dirs, * stays i
   assert.ok(globToRe('secrets.json').test('config/secrets.json'));
   assert.ok(globToRe('/secrets.json').test('secrets.json'));
   assert.ok(!globToRe('/secrets.json').test('config/secrets.json'));
+});
+
+test('the wall counts only what the turn changed: a protected file the person left dirty before the prompt is spared', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'] }], metrics: [] }));
+    mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(d, 'src', 'auth', 'old.js'), 'a\n'); writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n'); writeFileSync(join(d, 'src', 'x.js'), 'b\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    writeFileSync(join(d, 'src', 'auth', 'old.js'), 'my wip\n');                      // the PERSON's own uncommitted edit
+    writeFileSync(join(d, 'src', 'auth', 'new.js'), 'my untracked\n');               // and an untracked file of theirs
+    assert.deepEqual(Object.keys(protectedDirty(d)).sort(), ['src/auth/new.js', 'src/auth/old.js']);
+    // the prompt begins: `turn` on the UserPromptSubmit hook records the baseline (a compaction re-run does not)
+    const turn = (event) => execFileSync(process.execPath, [CLI, 'turn', d], { input: JSON.stringify({ hook_event_name: event }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    turn('UserPromptSubmit');
+    const st = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
+    assert.deepEqual(Object.keys(st.turnBaseline.files).sort(), ['src/auth/new.js', 'src/auth/old.js']);
+    const hook = (promptId) => execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    // the agent only touched src/x.js: the person's dirty protected files do not block the stop
+    writeFileSync(join(d, 'src', 'x.js'), 'c\n');
+    assert.ok(!/"decision":"block"/.test(hook('p1')), 'pre-existing protected edits are not the turn\'s');
+    // the agent also edits a protected file: blocked, naming only its own file, sparing the person's
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');
+    const r = JSON.parse(hook('p2'));
+    assert.equal(r.decision, 'block');
+    assert.match(r.reason, /Protected paths changed in this turn: "no-auth": src\/auth\/login\.js/);
+    assert.match(r.reason, /do not revert anything you did not change/);
+    assert.match(r.reason, /left out of this check.*src\/auth\/old\.js/); assert.match(r.reason, /left out of this check.*src\/auth\/new\.js/);
+    // the agent changes the person's file too: now it counts (the content moved past the baseline)
+    writeFileSync(join(d, 'src', 'auth', 'old.js'), 'agent rewrote it\n');
+    assert.match(JSON.parse(hook('p3')).reason, /src\/auth\/login\.js, src\/auth\/old\.js|src\/auth\/old\.js, src\/auth\/login\.js/);
+    // a compaction re-run of turn mid-turn must NOT re-baseline the agent's edits as pre-existing
+    turn('SessionStart');
+    assert.equal(JSON.parse(hook('p3')).decision, 'block', 'SessionStart[compact] leaves the baseline alone');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('the wall unions the committed contract: dropping a mandate from the working-tree config does not disarm it', () => {
+  const { d, g } = tmpRepo();
+  try {
+    mkdirSync(join(d, 'base'), { recursive: true });
+    writeFileSync(join(d, 'base', 'shared.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'], reason: 'reviewed PR only' }], metrics: [] }));
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ extends: './base/shared.json', mandates: [{ name: 'no-db', paths: ['db/**'] }], metrics: [] }));
+    mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'a\n');
+    g('add', '-A'); g('commit', '-q', '-m', 'base');
+    assert.deepEqual(mandatesInForce(d).map((m) => m.name).sort(), ['no-auth', 'no-db']);
+    // the agent narrows the inherited rule to nothing and deletes the local one, uncommitted, then breaks both
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/legacy/**'] }], metrics: [] }));
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'b\n');
+    const inForce = mandatesInForce(d);
+    assert.deepEqual(inForce.map((m) => [m.name, !!m.committed]).sort(), [['no-auth', false], ['no-auth', true], ['no-db', true]], 'both versions of the edited rule, and the deleted one, are in force');
+    const hits = mandateHits(d, ['src/auth/login.js', 'promptwheel.config.json']);
+    assert.deepEqual(hits.map((h) => [h.name, h.files, !!h.committed]), [['no-auth', ['src/auth/login.js'], true]]);
+    assert.deepEqual(mandateHits(d, ['src/auth/login.js'], { ref: null }), [], 'the working tree alone would have let it through');
+    const r = JSON.parse(execFileSync(process.execPath, [join(HERE, '..', 'sawbuck-hook.mjs'), '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: 'p1' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } }));
+    assert.equal(r.decision, 'block');
+    assert.match(r.reason, /no-auth.*src\/auth\/login\.js.*committed contract/);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('attach --claude upgrades an older attachment in place instead of saying already attached', () => {
+  const { d } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'a.js'), '1\n');
+    sawbuck(['attach', '--claude', d], d);
+    const f = join(d, '.claude', 'settings.local.json');
+    const cfg = JSON.parse(readFileSync(f, 'utf8'));
+    assert.ok(cfg.hooks.SessionStart && cfg.hooks.SessionStart.some((h) => h.matcher === 'compact'), 'this version wires SessionStart[compact]');
+    assert.match(sawbuck(['attach', '--claude', d], d), /already attached/);
+    // an attachment from a version without the SessionStart hook (and the older `context` command)
+    delete cfg.hooks.SessionStart;
+    cfg.hooks.UserPromptSubmit = cfg.hooks.UserPromptSubmit.map((h) => ({ ...h, hooks: h.hooks.map((x) => ({ ...x, command: x.command.replace(' turn ', ' context ') })) }));
+    writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+    const out = sawbuck(['attach', '--claude', d], d);
+    assert.match(out, /updated the project Claude Code hooks/);
+    const up = JSON.parse(readFileSync(f, 'utf8'));
+    assert.ok(up.hooks.SessionStart.some((h) => h.matcher === 'compact' && h.hooks.some((x) => / turn /.test(x.command))), 'the compact hook is added');
+    assert.ok(up.hooks.UserPromptSubmit.every((h) => h.hooks.every((x) => !/ context /.test(x.command))), 'the old command is replaced, not duplicated');
+    assert.equal(up.hooks.UserPromptSubmit.filter((h) => JSON.stringify(h).includes('sawbuck.mjs')).length, 1);
+    assert.match(sawbuck(['attach', '--claude', d], d), /already attached/);
+    sawbuck(['detach', d], d);
+    assert.ok(!existsSync(f), 'detach still removes the file the first attach created');
+  } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
 test('the Stop hook blocks a turn that leaves a protected path changed, then lets a clean turn end', () => {

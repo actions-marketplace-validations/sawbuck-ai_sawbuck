@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
 import { PW } from './bins.mjs';
-import { frameBlock } from './contract.mjs';
+import { frameBlock, mandatesInForce, protectedDirty } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
@@ -206,6 +206,21 @@ switch (cmd) {
     // (backward: what broke here before) in a single block, one process per prompt. Silent when
     // there is nothing to say. Wired by `attach --claude` on UserPromptSubmit and after a compaction.
     const repo = repoArg();
+    // When a PROMPT begins (the UserPromptSubmit hook, never the SessionStart[compact] one, which
+    // fires mid-turn), remember which protected paths were already dirty and what they held, so the
+    // Stop hook's wall counts only what this turn changes and leaves a person's own edits alone.
+    let hookEvent = '';
+    if (!process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
+    if (hookEvent === 'UserPromptSubmit') {
+      try {
+        if (mandatesInForce(repo).length) {
+          const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
+          let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+          st.turnBaseline = { at: new Date().toISOString(), files: protectedDirty(repo) };
+          mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
+        }
+      } catch { /* the frame never fails a prompt */ }
+    }
     const o = [frameBlock(repo), contextBlock(repo, false)].filter(Boolean).join('\n');
     if (o) out(o);
     break;
@@ -444,12 +459,19 @@ function wireClaude(repo, opts) {
   const fileExisted = existsSync(f);
   let cfg = {};
   if (fileExisted) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it. Add the hooks by hand.`); } }
-  if (JSON.stringify(cfg).includes('sawbuck.mjs')) { out(`sawbuck: already attached (${user ? 'user' : 'claude'}) in ${f}`); return; }
   const ctx = user ? `node ${JSON.stringify(SELF)} turn` : `node ${JSON.stringify(SELF)} turn ${JSON.stringify(repo)}`;
   const chk = user ? `node ${JSON.stringify(SELF)} __hook --by claude --stop` : `node ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
+  // attached already? "already attached" only when every hook of THIS version is present; an older
+  // attachment (say, without the SessionStart[compact] hook) is upgraded in place, never left stale.
+  let upgrading = false;
+  if (JSON.stringify(cfg).includes('sawbuck.mjs')) {
+    const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk)) { out(`sawbuck: already attached (${user ? 'user' : 'claude'}) in ${f}`); return; }
+    upgrading = true;
+  }
   if (dry) {
     out(dryText([
-      `${fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
+      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
       user ? null : `exclude ${excludeFile(repo)}  (${RECORD_DIRS.join(', ')}${shared ? '' : ', .claude/settings.local.json'})`,
       `create  ${user ? userManifestPath() : manifestPath(repo)}  (attach receipt)`,
     ].filter(Boolean)));
@@ -470,11 +492,13 @@ function wireClaude(repo, opts) {
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
   const mp = user ? userManifestPath() : manifestPath(repo);
   const m = readManifest(mp);
-  m.attachments = { ...m.attachments, [mode]: { file: f, fileCreated: !fileExisted, dirCreated: !dirExisted } };
+  const prev = (m.attachments || {})[mode];   // an upgrade keeps the receipt of what the first attach created
+  m.attachments = { ...m.attachments, [mode]: { file: f, fileCreated: prev ? !!prev.fileCreated : !fileExisted, dirCreated: prev ? !!prev.dirCreated : !dirExisted } };
   if (!user) syncExclude(repo, m);
   writeManifest(mp, m);
   regAdd(repo, mode);
-  out(`sawbuck: wired ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f}`);
+  out(upgrading ? `sawbuck: updated the ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f} to this version`
+                : `sawbuck: wired ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f}`);
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
   else if (!shared) out('  (settings.local.json is gitignored; use --shared to commit the hooks for your team)');
 }

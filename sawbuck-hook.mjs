@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-import { mandateHits } from './contract.mjs';
+import { mandateHits, hashOf } from './contract.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const repo = flag('--repo', process.cwd());
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
@@ -50,20 +50,28 @@ const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFile
 // 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
 // tree on every stop, not only on commits, because an agent usually ends a turn with uncommitted
 // edits. A deterministic path match, milliseconds, no metric run. Block the stop (bounded per prompt)
-// and send the agent back to revert the protected files and make the fix elsewhere.
+// and send the agent back to undo its protected edits and make the fix elsewhere. The rules are the
+// working tree's AND the committed contract's (editing the config in the same turn lifts nothing),
+// and a protected file that was already dirty with the same content when the prompt began (the
+// baseline `sawbuck turn` recorded) is the person's own work and does not count.
 if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
-  const changed = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
+  const dirty = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
+  const baseline = (st.turnBaseline && st.turnBaseline.files && typeof st.turnBaseline.files === 'object') ? st.turnBaseline.files : {};
+  const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashOf(repo, f) === baseline[f];
+  const changed = dirty.filter((f) => !untouched(f));
+  const leftAlone = dirty.filter(untouched);
   const hits = changed.length ? mandateHits(repo, changed) : [];
   if (hits.length) {
     const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
     const promptId = hookInput.prompt_id || 'none';
     if (st.mandatePromptId !== promptId) { st.mandatePromptId = promptId; st.mandateBlocks = 0; }
-    const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}`).join('; ');
+    const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}${h.committed ? ' [this rule is in the committed contract; editing promptwheel.config.json in the working tree does not lift it]' : ''}`).join('; ');
+    const spared = leftAlone.length ? ` Edits that were already there before this prompt were left out of this check and must stay as they are: ${leftAlone.join(', ')}.` : '';
     try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' }) + '\n'); } catch {}
     if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
       st.mandateBlocks = (st.mandateBlocks || 0) + 1;
       saveState();
-      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed: ${desc}. Revert every change under the protected paths and make the fix elsewhere (the rule is a wall, not a reminder; the gate fails any change that touches them).` }));
+      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}` }));
       process.exit(0);
     }
     saveState();
