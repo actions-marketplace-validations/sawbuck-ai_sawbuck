@@ -35,7 +35,10 @@ const noAuto = process.argv.includes('--no-auto');   // user-level wiring: measu
 const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim();
 // backstop so the check can never hang a commit/turn; generous default, overridable.
 const CHECK_TIMEOUT = +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 600000;
-const runNode = (file, a) => execFileSync(process.execPath, [file, ...a], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: CHECK_TIMEOUT, killSignal: 'SIGKILL' });
+// a commit an agent made: its own Promptwheel-Allow trailer does not clear the verdict. An agent can write a
+// commit message, so the override for its work is a person running `sawbuck check --allow "<reason>"`.
+const childEnv = by ? { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' } : process.env;
+const runNode = (file, a) => execFileSync(process.execPath, [file, ...a], { cwd: repo, encoding: 'utf8', env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], timeout: CHECK_TIMEOUT, killSignal: 'SIGKILL' });
 
 // --- 1) the check: measure the commit, parse the structured result ----------
 // The check exits nonzero on fail/gamed/inconclusive, but still prints the JSON
