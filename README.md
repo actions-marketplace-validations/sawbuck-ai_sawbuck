@@ -34,16 +34,16 @@ $ sawbuck check        # after fixing the source and restoring the test
 🐴 ✓ verified: your working change earned it. "tests_pass" held, and the source carried the win.
 ```
 
-Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `64` could not run (not a git repo, no commit, no test command).
+Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `64` could not run (not a git repo, no commit); no detectable test command reads `3` inconclusive.
 
 ## What it does
 
-- **Verifies the win.** `check` re-runs your metric from the source diff alone. A faked green (a deleted, weakened, or skipped test; a mocked grader; an edited golden file; a loosened config) reads `gamed`. Deterministic, zero-LLM, $0, and it cannot be argued with because it never reads the trajectory. Red-teamed across 9 language ecosystems and 26 adversarial scenarios ([promptwheel/bench/REDTEAM.md](https://github.com/promptwheel-ai/promptwheel/blob/main/bench/REDTEAM.md)).
+- **Verifies the win.** `check` re-runs your metric from the source diff alone. A faked green (a deleted, weakened, or skipped test; a mocked grader; an edited golden file; a loosened config) reads `gamed`. Deterministic, zero-LLM, $0, and it cannot be argued with because it never reads the trajectory. Red-teamed across 9 ecosystems and 26 adversarial scenarios ([promptwheel/bench/REDTEAM.md](https://github.com/promptwheel-ai/promptwheel/blob/main/bench/REDTEAM.md)).
 - **Says what it cannot see.** A cheat that lives inside the source itself (a value hardcoded to the one visible case, logic keyed to the test environment) is invisible to a source-only re-run, by construction. That limit is in [the contract](CONTRACT.md#3-the-integrity-boundary-what-counts-as-gaming), not hidden.
 - **Remembers what broke.** `context` surfaces the relevant history (reverts, fragile areas, test-weakening) for the files you are touching: a ranked trail guide, before you act.
 - **Shows you everything.** `status` is the inventory: what it has caught for you over time, the debt accruing now, and whether it is armed here, in one view. On-demand, so it is quiet until you go looking.
 - **Rides on, does not replace.** Sawbuck is the verify + memory layer. Your agent and your loop stay yours.
-- **Clean on and off.** `attach` touches nothing in your worktree (the hook lives in `.git/`, the record is excluded locally); `detach` is a true inverse. `trace` shows every byte it placed, and `detach --verify` proves the repo came back unchanged.
+- **Clean on and off.** the default `attach` touches nothing in your worktree (the hook lives in `.git/`, the record is excluded locally); `--claude` writes one git-excluded settings file; `detach` is a true inverse. `trace` shows every byte it placed, and `detach --verify` proves the repo came back unchanged.
 
 ## Commands
 

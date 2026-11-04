@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
 import { PW } from './bins.mjs';
-import { frameBlock, mandatesInForce, protectedDirty } from './contract.mjs';
+import { frameBlock, mandatesInForce, protectedDirty, blobAt } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
@@ -200,12 +200,12 @@ switch (cmd) {
     catch (e) { process.exit(e.status || 1); }
     break;
   }
-  case 'context': { const o = contextBlock(repoArg(), flags.has('--speak')); if (o) out(o); break; }
+  case 'context': { const o = contextBlock(repoRoot(), flags.has('--speak')); if (o) out(o); break; }
   case 'frame': {
     // the prompt face of the contract: re-impress the hard rules (mandates, resolved through `extends`)
     // as one compact block at the live end of the context, so a deep or freshly compacted session
     // cannot forget them. Silent without a contract; --speak explains instead.
-    const o = frameBlock(repoArg());
+    const o = frameBlock(repoRoot());
     if (o) out(o);
     else if (flags.has('--speak')) out('🐴 sawbuck frame: no mandates in promptwheel.config.json yet. Add one (a protected path) and this re-asserts it every turn and after every compaction, so a deep context cannot forget it.');
     break;
@@ -214,7 +214,10 @@ switch (cmd) {
     // the ONE per-prompt hook: the contract frame (forward: what must hold) and the relevant history
     // (backward: what broke here before) in a single block, one process per prompt. Silent when
     // there is nothing to say. Wired by `attach --claude` on UserPromptSubmit and after a compaction.
-    const repo = repoArg();
+    // the repository the way the Stop hook sees it: the root of the cwd under user-level wiring (a
+    // subdirectory belongs to its repo), the pinned path under project wiring; '' outside a repo
+    const top = gitTop(repoArg());
+    const repo = top || repoArg();
     // When a PROMPT begins (the UserPromptSubmit hook, never the SessionStart[compact] one, which
     // fires mid-turn), remember which protected paths were already dirty and what they held, so the
     // Stop hook's wall counts only what this turn changes and leaves a person's own edits alone.
@@ -224,33 +227,40 @@ switch (cmd) {
     // this command mid-turn leaves the last one standing, so nothing the agent left behind is adopted);
     // a file still carrying the content the last violation flagged is never baselined; and the
     // baseline's commit does not advance past a flagged commit until a clean stop or a commit the
-    // person made between turns.
+    // person made between turns that no longer carries the flagged content.
     let hookEvent = '';
     if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
-    if (hookEvent === 'UserPromptSubmit') {
+    if (hookEvent === 'UserPromptSubmit' && top) {
       try {
+        const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
+        let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+        const now = new Date().toISOString();
         if (mandatesInForce(repo).length) {
-          const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
-          let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
-          const now = new Date().toISOString();
           const prev = st.turnBaseline && typeof st.turnBaseline === 'object' ? st.turnBaseline : null;
           const stoppedSince = st.lastStopAt && st.lastPromptAt && Date.parse(st.lastStopAt) >= Date.parse(st.lastPromptAt);
           const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince;
           if (!unfinished) {
             const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
-            const files = protectedDirty(repo);
-            for (const f of Object.keys(files)) if (flagged[f] === files[f]) delete files[f];   // the agent's un-reverted edit stays on the wall
+            const before = (st.lastViolation && st.lastViolation.before && typeof st.lastViolation.before === 'object') ? st.lastViolation.before : {};
+            // the content is stored (hash-object -w), so a person's edit the agent later overwrites can
+            // be restored by hash; a file still carrying the flagged content is baselined at the content
+            // the person had before the agent touched it, or not at all
+            const files = protectedDirty(repo, { store: true });
+            for (const f of Object.keys(files)) if (flagged[f] === files[f]) { if (before[f] && before[f] !== 'deleted') files[f] = before[f]; else delete files[f]; }
             let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
             // HEAD moved since the last Stop: the agent was not running, so the commits between turns
             // are the person's (accepting a change, a pull, a branch switch) and the baseline starts
-            // there. Otherwise the baseline's commit does not advance past a flagged commit.
+            // there, UNLESS HEAD still carries a flagged file's content: then the pin holds (a commit
+            // a background process landed after the Stop does not walk the agent's change through).
             const moved = !!(sha && st.lastStopHead && sha !== st.lastStopHead);
-            if (moved && st.lastViolation) delete st.lastViolation.sha;
-            st.turnBaseline = { at: now, sha: (!moved && st.lastViolation && st.lastViolation.sha) || sha, files };
+            const stillInHead = moved && Object.entries(flagged).some(([f, h]) => { const b = blobAt(repo, sha, f); return h === 'deleted' ? b === '' : (!!h && b === h); });
+            const pin = !!(st.lastViolation && st.lastViolation.sha);
+            if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
+            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files };
           }
-          st.lastPromptAt = now;
-          mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
         }
+        st.lastPromptAt = now;   // every prompt, mandates or not: the walls key their block budgets on it when the harness sends no prompt_id
+        mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
       } catch { /* the frame never fails a prompt */ }
     }
     const o = [frameBlock(repo), contextBlock(repo, false)].filter(Boolean).join('\n');
@@ -260,8 +270,8 @@ switch (cmd) {
   case 'recall': {
     // the notes face: supplementary relevant notes for your current changes, from any non-git memory
     // provider (e.g. an Obsidian vault). On-demand. Git history + live debt come from context / debt.
-    const repo = repoArg();
-    const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim(); } catch { return ''; } };
+    const repo = repoRoot();
+    const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
     let changed = g('diff', '--name-only', 'HEAD').split('\n').filter(Boolean);
     if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
     if (!changed.length) { out('🐴 sawbuck: nothing changed to look up.'); break; }

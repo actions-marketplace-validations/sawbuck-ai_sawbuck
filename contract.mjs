@@ -59,22 +59,30 @@ export function protectedAmong(repo, paths) {
   return paths.filter((f) => res.some((re) => re.test(f)));
 }
 
-// a working-tree file's content hash as git would store it; 'deleted' when it is gone
-export function hashOf(repo, file) {
-  try { return gitOut(repo, ['hash-object', '--', file]).trim(); } catch { return 'deleted'; }
+// a working-tree file's content hash as git would store it; 'deleted' when it is gone. With `store`,
+// the content is also written into the object database (`hash-object -w`), so a person's edit that
+// the baseline recorded can be restored by hash later even after the agent overwrote the file.
+export function hashOf(repo, file, { store = false } = {}) {
+  try { return gitOut(repo, ['hash-object', ...(store ? ['-w'] : []), '--', file]).trim(); } catch { return 'deleted'; }
 }
 
 // the protected paths that are dirty right now, each with its content hash: the baseline `turn`
 // records when a prompt begins, so the Stop hook counts only what the turn itself changed and leaves
 // a person's own pre-existing edits alone. {} when nothing protected is dirty (or not a git repo).
-export function protectedDirty(repo) {
+// `store` keeps each file's content in the object database (see hashOf), which the baseline does.
+export function protectedDirty(repo, { store = false } = {}) {
   let changed = [];
   try { changed = [...new Set([...gitOut(repo, ['diff', '--name-only', 'HEAD']).split('\n'), ...gitOut(repo, ['ls-files', '--others', '--exclude-standard']).split('\n')].filter(Boolean))]; }
   catch { return {}; }
   const res = mandatesInForce(repo).flatMap((m) => pathsOf(m).map(globToRe));
   const out = {};
-  for (const f of changed) if (res.some((re) => re.test(f))) out[f] = hashOf(repo, f);
+  for (const f of changed) if (res.some((re) => re.test(f))) out[f] = hashOf(repo, f, { store });
   return out;
+}
+
+// the blob hash a tracked path has at `ref` ('' when the path is not there)
+export function blobAt(repo, ref, file) {
+  try { return gitOut(repo, ['rev-parse', `${ref}:${file}`]).trim(); } catch { return ''; }
 }
 
 // the same glob dialect as promptwheel's evaluatorPaths / mandates (ported verbatim): a bare name
