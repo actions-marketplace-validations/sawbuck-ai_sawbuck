@@ -99,7 +99,7 @@ export function globToRe(glob) {
 // which changed paths violate which mandate: [{ name, reason, files, committed? }]. The rules are the
 // working tree's plus the committed ones (mandatesInForce); pass { ref: null } for the working tree alone.
 export function mandateHits(repo, changedPaths, opts = {}) {
-  const list = opts.ref === null ? resolvedMandates(repo) : mandatesInForce(repo, opts.ref || 'HEAD');
+  const list = opts.list || (opts.ref === null ? resolvedMandates(repo) : mandatesInForce(repo, opts.ref || 'HEAD'));
   const out = [];
   for (const m of list) {
     const res = pathsOf(m).map(globToRe);

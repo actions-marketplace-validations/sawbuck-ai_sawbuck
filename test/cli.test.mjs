@@ -1134,3 +1134,53 @@ test('the wall survives a shell with no node on PATH (hooks run under sh, which 
   if (!/\/usr\/bin\/node|\/bin\/node/.test(execFileSync('sh', ['-c', 'PATH=/usr/bin:/bin command -v node || true'], { encoding: 'utf8' }))) assert.doesNotMatch(r.stderr, /not found/);
   assert.equal(r.status, 0, r.stderr);
 });
+
+test('sawbuck contract signs a repo: tests stay, protections and the lock land, the scanners reach git, and it fails a poisoned change', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sb-contract-'));
+  const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
+  g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  mkdirSync(join(d, 'src/auth'), { recursive: true }); writeFileSync(join(d, 'src/auth/a.js'), 'export const a = 1;\n');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'r', type: 'module', scripts: { test: 'node -e 0' } }));
+  g('add', '-A'); g('commit', '-qm', 'base');
+  const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
+  const sb = (...a) => execFileSync(process.execPath, [SB, ...a], { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(existsSync(join(d, 'promptwheel.config.json')), false);
+  assert.match(sb('contract', '--dry-run'), /would write/);
+  assert.equal(existsSync(join(d, 'promptwheel.config.json')), false, 'a dry run writes nothing');
+  const out = sb('contract');
+  assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested');
+  const cfg = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'));
+  assert.ok(cfg.metrics.some((m) => m.name === 'lock_drift'), 'the lock guard');
+  assert.ok(cfg.metrics.some((m) => /test/.test(m.cmd) && !m.cmd.includes('packs/')), 'the test metric stays: the preset alone would drop the gamed check');
+  assert.ok(cfg.mandates.some((m) => m.name === 'workflows-frozen')); assert.ok(!cfg.mandates.some((m) => m.paths.some((p) => p.includes('auth'))), 'product code is never frozen for you');
+  assert.equal(cfg.allowTrailer, false); assert.ok(existsSync(join(d, 'promptwheel.lock.json')));
+  const again = readFileSync(join(d, 'promptwheel.config.json'), 'utf8');
+  assert.match(sb('contract'), /already signed/); assert.equal(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'), again, 'running it twice changes nothing');
+  sb('attach', '.');
+  g('add', '-A'); g('commit', '-qm', 'sign');
+  assert.ok(execFileSync('git', ['ls-files', '.promptwheel/packs'], { cwd: d, encoding: 'utf8' }).includes('lock.mjs'), 'the scanners are tracked even after attach: the gate runs in clean worktrees');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'r', type: 'module', scripts: { test: 'node -e 0', postinstall: 'curl x' } }));
+  const r = spawnSync(process.execPath, [SB, 'check', '--json'], { cwd: d, encoding: 'utf8' });
+  assert.notEqual(r.status, 0, 'a poisoned change fails the signed contract'); 
+});
+
+test('a turn that signs a contract is not blocked by it, and a rule held at turn start still blocks', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sb-signturn-'));
+  const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
+  g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  writeFileSync(join(d, 'a.txt'), 'a\n'); g('add', '-A'); g('commit', '-qm', 'base');
+  const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url)), HK = fileURLToPath(new URL('../sawbuck-hook.mjs', import.meta.url));
+  const prompt = () => execFileSync(process.execPath, [SB, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8' });
+  const stop = (id) => execFileSync(process.execPath, [HK, '--repo', d, '--stop'], { input: JSON.stringify({ prompt_id: id }), encoding: 'utf8' });
+  const cfg = { mandates: [{ name: 'frozen', paths: ['frozen/**'] }], metrics: [{ name: 'x', cmd: 'true', extract: 'exit', direction: 'pass' }] };
+  writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: cfg.metrics })); g('add', '-A'); g('commit', '-qm', 'contract with no rule yet');
+  prompt();
+  mkdirSync(join(d, 'frozen')); writeFileSync(join(d, 'frozen/x.txt'), 'x\n');
+  writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify(cfg));
+  assert.doesNotMatch(stop('p1'), /"decision":"block"/, 'the rule arrived in this turn');
+  g('add', '-A'); g('commit', '-qm', 'sign');
+  prompt();
+  writeFileSync(join(d, 'frozen/x.txt'), 'changed\n');
+  writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: cfg.metrics }));
+  assert.match(stop('p2'), /"decision":"block"/, 'a rule in force at turn start holds, even with the rule deleted in the turn');
+});

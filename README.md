@@ -60,6 +60,7 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 | `sawbuck turn` | frame + context in one block: what `attach --claude` runs on every prompt and again right after a compaction |
 | `sawbuck recall` | related notes for your current change from extra memory providers you compose in (bring your own) |
 | `sawbuck trace` · `sawbuck doctor` · `detach --verify` | show the footprint; check the attachment resolves; prove a clean removal |
+| `sawbuck contract` | one command to sign a repo: keeps your contract, adds tests and tripwires if there are none, protected paths, the supply-chain guards, and the architecture lock. `--dry-run` previews it. |
 | `sawbuck where` · `sawbuck statusline` | list every repo it is attached to; a one-line status-line segment (🐴 watching / N caught / steer %) |
 
 ## Give your agent the contract
