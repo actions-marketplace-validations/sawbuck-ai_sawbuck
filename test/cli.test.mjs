@@ -1184,3 +1184,20 @@ test('a turn that signs a contract is not blocked by it, and a rule held at turn
   writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: cfg.metrics }));
   assert.match(stop('p2'), /"decision":"block"/, 'a rule in force at turn start holds, even with the rule deleted in the turn');
 });
+
+test('sawbuck contract works in a repo already attached, and one that gitignores .promptwheel/', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sb-contract2-'));
+  const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
+  g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'r', type: 'module', scripts: { test: 'node -e 0' } }));
+  writeFileSync(join(d, '.gitignore'), 'node_modules\n.promptwheel/\n'); g('add', '-A'); g('commit', '-qm', 'base');
+  // an exclude block as an older attach wrote it
+  writeFileSync(join(d, '.git/info/exclude'), '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/\n# <<< sawbuck <<<\n');
+  const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
+  execFileSync(process.execPath, [SB, 'contract'], { cwd: d, stdio: 'ignore' });
+  g('add', '-A'); g('commit', '-qm', 'sign');
+  assert.ok(execFileSync('git', ['ls-files', '.promptwheel/packs'], { cwd: d, encoding: 'utf8' }).includes('lock.mjs'), 'the scanners reach git');
+  assert.ok(!execFileSync('git', ['ls-files'], { cwd: d, encoding: 'utf8' }).includes('outcomes'), 'the record stays out');
+  const r = spawnSync(process.execPath, [SB, 'check', '--base', 'HEAD~1', '--head', 'HEAD', '--no-auto', '--json'], { cwd: d, encoding: 'utf8', env: process.env });
+  assert.ok(!/null/.test(JSON.stringify(JSON.parse(r.stdout.slice(r.stdout.indexOf('{'))).metrics.filter((m) => m.name === 'lock_drift').map((m) => m.after))), 'the guard measures at head');
+});

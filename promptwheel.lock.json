@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "items": [
+    "cap:.:exec",
+    "cap:providers:net",
+    "dep:@promptwheel/logbook",
+    "dep:promptwheel",
+    "entry:bin:sawbuck",
+    "host:api.mem0.ai",
+    "module:.",
+    "module:providers",
+    "scripthash:package.json:test:f90321a3f3beab5b",
+    "workflow:.github/workflows/ci.yml"
+  ]
+}

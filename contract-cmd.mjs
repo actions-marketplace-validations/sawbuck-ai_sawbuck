@@ -5,7 +5,7 @@
 // freezing those is a person's decision.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, cpSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { PW } from './bins.mjs';
@@ -40,6 +40,14 @@ try {
     const pack = join(repo, '.promptwheel', 'packs', 'supply-chain');
     mkdirSync(pack, { recursive: true });
     cpSync(join(scratch, '.promptwheel', 'packs', 'supply-chain'), pack, { recursive: true });
+    // the gate measures in clean worktrees, so the scanners must reach git. A repo attached earlier, or one that
+    // ignores .promptwheel/ for the outcome record, would hide them and every guard would read unmeasurable.
+    for (const f of [join(repo, '.gitignore'), resolve(repo, execFileSync('git', ['-C', repo, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim())]) {
+      if (!existsSync(f)) continue;
+      const text = readFileSync(f, 'utf8');
+      const next = text.replace(/^\.promptwheel\/?[ \t]*$/gm, '.promptwheel/*\n!.promptwheel/packs/');
+      if (next !== text) writeFileSync(f, next);
+    }
     const locked = existsSync(join(repo, 'promptwheel.lock.json'));
     if (!locked) run([join(pack, 'lock.mjs'), 'write', repo], repo);
     const added = (cfg.mandates.length - before.m) + (cfg.metrics.length - before.g);
