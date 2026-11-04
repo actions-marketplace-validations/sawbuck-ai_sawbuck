@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureExcluded } from './exclude.mjs';
 // sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry.
 // Each turn: if a new commit landed, run reflect on it; then render the dispatch
 // on a fresh catch OR every N turns (config). State in .sawbuck/state.json.
@@ -202,20 +203,3 @@ saveState();
 // dirties the worktree, including under `attach --user`, which is global and cannot
 // set this up per-repo at attach time. Idempotent; markers match the CLI's so a
 // per-repo `detach` removes them.
-function ensureExcluded(r) {
-  try {
-    // the repository's own exclude file, wherever its git dir is (a worktree or submodule keeps it elsewhere)
-    const rel = sh(r, 'rev-parse', '--git-path', 'info/exclude');
-    if (!rel) return;
-    const f = resolve(r, rel);
-    // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
-    // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n.claude/settings.local.json\n# <<< sawbuck <<<\n';
-    const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
-    const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
-    const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;
-    if (next === body) return;
-    mkdirSync(dirname(f), { recursive: true });
-    writeFileSync(f, next);
-  } catch {}
-}

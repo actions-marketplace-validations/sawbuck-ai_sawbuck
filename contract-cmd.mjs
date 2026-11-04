@@ -3,6 +3,7 @@
 // here, adds your tests and tripwires if there is none, then the supply-chain protections and the architecture
 // lock. Zero-LLM. Re-running changes nothing. Protected product code (auth, billing) is suggested, never added:
 // freezing those is a person's decision.
+import { ensureExcluded } from './exclude.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, cpSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
@@ -48,6 +49,7 @@ try {
       const next = text.replace(/^\.promptwheel\/?[ \t]*$/gm, '.promptwheel/*\n!.promptwheel/packs/');
       if (next !== text) writeFileSync(f, next);
     }
+    ensureExcluded(repo);
     const locked = existsSync(join(repo, 'promptwheel.lock.json'));
     if (!locked) run([join(pack, 'lock.mjs'), 'write', repo], repo);
     const added = (cfg.mandates.length - before.m) + (cfg.metrics.length - before.g);

@@ -14,6 +14,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { erasedBlock } from './rewrites.mjs';
+import { ensureExcluded } from './exclude.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -244,6 +245,7 @@ switch (cmd) {
     if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit' && top) {
       try {
+        ensureExcluded(repo);   // before the first write: under user-level hooks nothing else has done it yet
         const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
         let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
         const now = new Date().toISOString();
