@@ -6,6 +6,17 @@ You write the contract (what a real win looks like); Sawbuck enforces it, re-pro
 
 > Sawbuck is the reference implementation of the [Verified-Outcome Contract](CONTRACT.md): the open interface for a coding loop you can trust.
 
+In Claude Code, install the plugin and keep working:
+
+```
+/plugin marketplace add sawbuck-ai/reins
+/plugin install sawbuck-reins@sawbuck
+```
+
+The first time you open a git repository with no contract, Claude finishes your task and offers once to sign it. Say yes and every turn is checked from then on.
+
+Or from the command line:
+
 ```sh
 # 1 · try it (no install, no commitment): verify your latest change right now
 npx sawbuck check
