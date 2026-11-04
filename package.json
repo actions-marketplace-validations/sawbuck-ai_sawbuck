@@ -38,6 +38,7 @@
   },
   "files": [
     "sawbuck.mjs",
+    "rewrites.mjs",
     "contract-cmd.mjs",
     "bins.mjs",
     "contract.mjs",

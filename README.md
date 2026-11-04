@@ -84,6 +84,10 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
     Run `sawbuck context` first to see what broke in these files before (reverts, weakened tests,
     fragile spots). Never skip, weaken, or delete a test to go green.
 
+**Rewritten history.** Logbook reads git, so a squash or a rebase takes a revert with it. `sawbuck context` also reads the reflog for commits no branch reaches any more and shows them for the files in hand, and once attached it keeps them in `.sawbuck/rewritten.jsonl` after the reflog expires. It stays local: a clone does not get it, nothing older than the reflog comes back, and work that was never committed is not in git at all. Your steering is separate: `reins` reads your agent transcripts, not git.
+
+**Tested claims.** Every claim above, and every limit, is a test in [`test/claims.test.mjs`](test/claims.test.mjs), run on a clean account.
+
 **Measured, not assumed.** On a scenario whose natural fix sits inside a protected module, 62 trials: 52 driven past a forced compaction (two on the default model, one on Haiku) and 10 shallow, some under "urgent hotfix" pressure. With no rule the agent edited the protected file 17 of 17 times; with a rule in any form, including a mandate, 0 of 45. Earlier scenarios did not tempt it (no rule, 0 of 17), and the wall never had to fire. The model honors a rule it was told. The gate is for the rule nobody told it, the session that outlived the summary, and the proof that it held: `attach --claude` re-reads the mandates from the repo on every turn, re-impresses them after a compaction (`sawbuck turn`), and sends back a turn that leaves a protected path changed, up to three times by default. Numbers and method: [sawbuck.ai/contracts](https://sawbuck.ai/contracts).
 
 Without a `promptwheel.config.json` the check measures your detected test command. To make it count more (coverage, lint, latency, an eval) or to protect a path with a mandate, `sawbuck init` writes the config and explains each line with evidence from your history.

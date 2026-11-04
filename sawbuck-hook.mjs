@@ -50,7 +50,9 @@ const writeRec = (r) => { try { mkdirSync(stDir, { recursive: true }); writeFile
 const logActivity = (ev) => { try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...ev }) + '\n'); } catch {} };
 const hasCommit = (ref) => { try { execFileSync('git', ['-C', repo, 'cat-file', '-e', `${ref}^{commit}`], { stdio: 'ignore' }); return true; } catch { return false; } };
 let rec = readRec();
-if (head && st.lastSha && head !== st.lastSha) {
+// the first turn after attach has no lastSha yet: its baseline is what that turn started from
+const from = st.lastSha || (st.turnBaseline && st.turnBaseline.sha) || '';
+if (head && from && head !== from) {
   let standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
   if (standing && !hasCommit(rec.latest.base)) {
     // the span can no longer be re-proved (a rebase, a squash, a pruned branch took its base away):
@@ -61,7 +63,7 @@ if (head && st.lastSha && head !== st.lastSha) {
     writeRec(rec);
     standing = false;
   }
-  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : st.lastSha, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
+  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : from, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
   rec = readRec();
 }
 st.lastSha = head || st.lastSha;

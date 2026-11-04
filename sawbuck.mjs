@@ -13,6 +13,7 @@
 // proves the repo came back clean; `doctor` checks the attachment still resolves.
 
 import { execFileSync } from 'node:child_process';
+import { erasedBlock } from './rewrites.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -386,14 +387,17 @@ switch (cmd) {
 // "nothing notable" every turn would be noise). `speak` forces a reply for the explicit command.
 function contextBlock(repo, speak) {
   const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
-  let changed = g('diff', '--name-only', 'HEAD').split('\n').filter(Boolean);
+  // new files count: re-creating what was reverted is the case the history is for
+  let changed = [...new Set([...g('diff', '--name-only', 'HEAD').split('\n'), ...g('ls-files', '--others', '--exclude-standard').split('\n')])].filter(Boolean);
   if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
   if (!changed.length) return speak ? '🐴 sawbuck: nothing changed to look up (no working edits, and no previous commit to read).' : '';
   const fileArgs = changed.flatMap((f) => ['--file', f]);
   let o = '';
   try { o = execFileSync(process.execPath, [join(HERE, 'rank.mjs'), '--repo', repo, ...fileArgs, '--top', '3'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
   catch (e) { o = (e.stdout || '').toString(); }
-  if (/relevant history/.test(o)) return o.trimEnd();
+  const erased = erasedBlock(repo, changed);
+  if (/relevant history/.test(o)) return [o.trimEnd(), erased].filter(Boolean).join('\n');
+  if (erased) return erased;
   return speak ? '🐴 sawbuck: no notable history for the files you are touching (a clean trail).' : '';
 }
 
