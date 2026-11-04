@@ -1089,3 +1089,10 @@ test('the block names how to restore a person\'s edit the agent overwrote, and t
     assert.ok(!/"decision":"block"/.test(hook({ prompt_id: 'p2' })), 'the restored file is the person\'s again: the turn ends');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test('supply chain: the Action runs this exact release and the engines are pinned exactly', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const action = readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
+  assert.match(action, new RegExp('npx -y sawbuck@' + pkg.version.replace(/\./g, '\\.') + ' '), 'action.yml pins the package version');
+  for (const [name, range] of Object.entries(pkg.dependencies)) assert.match(range, /^\d+\.\d+\.\d+$/, name + ' is an exact version');
+});
