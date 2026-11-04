@@ -1,7 +1,7 @@
 // contract.mjs: the contract's hard rules, read the way promptwheel reads them. Shared by the CLI
 // (frame / turn) and the Stop hook (the turn-level wall), so there is one resolver and one renderer.
 // Read-only, never throws, zero-dep.
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, isAbsolute, posix } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -123,4 +123,14 @@ export function frameBlock(repo) {
   if (!mandates.length) return '';
   const lines = mandates.map((m) => `  ${m.paths.filter((s) => typeof s === 'string' && s.trim()).join(' · ')}${m.reason ? `  (${String(m.reason).slice(0, 160)})` : ''}`);
   return '▣ contract (sawbuck) · hard rules in force this session, enforced by the gate on every turn:\n  protected, do not touch:\n' + lines.join('\n');
+}
+
+// the repo's architecture lock, if the supply-chain preset is installed: structure the lock has not seen, and a
+// fingerprint of the resolved dependency tree. null when there is no lock here. Read-only, and fast (under 200 ms
+// on the largest repo tried), so it can run at every turn end.
+export function lockState(repo) {
+  const tool = join(repo, '.promptwheel', 'packs', 'supply-chain', 'lock.mjs');
+  if (!existsSync(tool) || !existsSync(join(repo, 'promptwheel.lock.json'))) return null;
+  const run = (...a) => execFileSync(process.execPath, [tool, ...a], { cwd: repo, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  try { return { drift: JSON.parse(run('drift', '.', '--json')), pins: run('pins', '.') }; } catch { return null; }
 }
