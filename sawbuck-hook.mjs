@@ -89,7 +89,9 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
   const changed = [...new Set([...dirty.filter((f) => !untouched(f)), ...committedSince])];
   const leftAlone = dirty.filter(untouched);
-  const hits = changed.length ? mandateHits(repo, changed) : [];
+  // the rules in force when the turn began: a rule this turn adds does not apply to it, so signing a contract does
+  // not block itself, and one it deletes or narrows still holds
+  const hits = changed.length ? mandateHits(repo, changed, base && Array.isArray(base.rules) ? { list: base.rules } : {}) : [];
   st.lastStopAt = now;   // the next prompt may take a fresh baseline only because this stop happened
   st.lastStopHead = head || null;   // and where HEAD stood: a commit between turns is the person's, not the agent's
   if (hits.length) {
@@ -197,7 +199,7 @@ function ensureExcluded(r) {
     const f = resolve(r, rel);
     // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
     // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n# <<< sawbuck <<<\n';
+    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n# <<< sawbuck <<<\n';
     const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
     const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
     const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;

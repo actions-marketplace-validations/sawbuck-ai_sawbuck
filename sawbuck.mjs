@@ -43,7 +43,7 @@ const BLOCK_RE = new RegExp(`\\n?${S_START}[\\s\\S]*?${S_END}\\n?`, 'g');
 // plus the logbook's root working-set (ledger cache, digests, annotation planes). It is
 // memory, not the user's source, a user who wants LOGBOOK.md committed still can explicitly
 // (exclude only affects UNtracked files).
-const RECORD_DIRS = ['.sawbuck/', '.promptwheel/', 'events.jsonl', 'annotations.jsonl', 'annotation-reviews.jsonl', 'decision-cards.jsonl', 'LOGBOOK.md', 'JOURNEY.md'];
+const RECORD_DIRS = ['.sawbuck/', '.promptwheel/*', '!.promptwheel/packs/', 'events.jsonl', 'annotations.jsonl', 'annotation-reviews.jsonl', 'decision-cards.jsonl', 'LOGBOOK.md', 'JOURNEY.md'];
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -90,6 +90,7 @@ Usage:
   sawbuck trace [repo]      Show every file Sawbuck has placed in this repo (the footprint)
   sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
   sawbuck where             List every repo Sawbuck is attached to
+  sawbuck contract          Sign this repo: tests, tripwires, protected paths, and the architecture lock (--dry-run to preview)
   sawbuck statusline        One-line segment for your status line (🐴 watching | N caught | steer %)
 
   sawbuck recall [repo]     Related notes for your changes from extra memory providers
@@ -116,6 +117,13 @@ if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0)
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { out(help); process.exit(0); }
 
 switch (cmd) {
+  case 'contract': {
+    const top = gitTop(repoArg());
+    if (!top) usage(`${repoArg()} is not a git repository (a contract signs one; run it inside your project)`);
+    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => a === '--dry-run')], { stdio: 'inherit' }); }
+    catch (e) { process.exit(e.status || 1); }
+    break;
+  }
   case 'init': {
     try { execFileSync(process.execPath, [join(HERE, 'init.mjs'), ...rest], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
@@ -235,7 +243,7 @@ switch (cmd) {
         const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
         let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
         const now = new Date().toISOString();
-        if (mandatesInForce(repo).length) {
+        {   // a baseline even with no rules yet: a turn that signs a contract is judged by the contract it began with
           const prev = st.turnBaseline && typeof st.turnBaseline === 'object' ? st.turnBaseline : null;
           const stoppedSince = st.lastStopAt && st.lastPromptAt && Date.parse(st.lastStopAt) >= Date.parse(st.lastPromptAt);
           const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince;
@@ -256,7 +264,7 @@ switch (cmd) {
             const stillInHead = moved && Object.entries(flagged).some(([f, h]) => { const b = blobAt(repo, sha, f); return h === 'deleted' ? b === '' : (!!h && b === h); });
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
-            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo) };
+            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo) };
           }
         }
         st.lastPromptAt = now;   // every prompt, mandates or not: the walls key their block budgets on it when the harness sends no prompt_id
