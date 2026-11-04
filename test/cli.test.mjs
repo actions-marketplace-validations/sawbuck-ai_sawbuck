@@ -1120,3 +1120,17 @@ test('the lock at turn level: a change of structure is told to the person once, 
   writeFileSync(join(d, 'pins.txt'), '2');
   assert.match(stop(), /resolved dependency tree/);
 });
+
+test('the wall survives a shell with no node on PATH (hooks run under sh, which does not load nvm)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sb-nonode-'));
+  const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
+  g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  writeFileSync(join(d, 'a.txt'), 'a\n'); g('add', '-A'); g('commit', '-qm', 'base');
+  const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
+  execFileSync(process.execPath, [SB, 'attach', '--claude', d], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: d });
+  const cfg = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8'));
+  const cmd = cfg.hooks.Stop[0].hooks[0].command;
+  const r = spawnSync('/bin/sh', ['-c', cmd], { env: { PATH: '/usr/bin:/bin' }, input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
+  if (!/\/usr\/bin\/node|\/bin\/node/.test(execFileSync('sh', ['-c', 'PATH=/usr/bin:/bin command -v node || true'], { encoding: 'utf8' }))) assert.doesNotMatch(r.stderr, /not found/);
+  assert.equal(r.status, 0, r.stderr);
+});

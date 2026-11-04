@@ -144,7 +144,7 @@ test('stabilizer: the git hook resolves sawbuck at runtime (survives a reinstall
     sawbuck(['attach', '.'], d);
     const hook = readFileSync(join(d, '.git', 'hooks', 'post-commit'), 'utf8');
     assert.match(hook, /command -v sawbuck/, 'prefers a sawbuck on PATH');
-    assert.match(hook, /node "/, 'falls back to the absolute path');
+    assert.match(hook, /command -v node \|\| echo '[^']+'\)" "/, 'falls back to the absolute path, and finds node without PATH');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
