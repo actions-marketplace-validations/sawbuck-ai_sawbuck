@@ -15,7 +15,7 @@
 import { execFileSync } from 'node:child_process';
 import { erasedBlock } from './rewrites.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { basename, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
@@ -190,7 +190,7 @@ switch (cmd) {
     if (!lines.length) { out('sawbuck: no activity recorded yet (the check logs here on each commit/turn).'); break; }
     const ni = rest.indexOf('-n');
     const n = ni > -1 ? (parseInt(rest[ni + 1], 10) || 20) : 20;
-    const icon = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' };
+    const icon = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎', mandate: '⛔' };
     const recent = lines.slice(-n).reverse();
     out(`sawbuck activity (last ${recent.length}):`);
     for (const l of recent) {
@@ -344,10 +344,12 @@ switch (cmd) {
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.
     try {
-      const repo = process.cwd();
-      if (existsSync(join(repo, '.git'))) {
+      const repo = gitTop(process.cwd());
+      if (!repo) process.stdout.write('🐴 sawbuck · no repo here');
+      if (repo) {
+        const name = basename(repo);
         let caught = 0;
-        try { const r = JSON.parse(readFileSync(join(repo, '.sawbuck', 'results.json'), 'utf8')); caught = (r.regressions || 0) + (r.gamed || 0); } catch {}
+        try { const r = JSON.parse(readFileSync(join(repo, '.sawbuck', 'results.json'), 'utf8')); caught = (r.regressions || 0) + (r.gamed || 0) + (r.mandates || 0); } catch {}
         // the last verdict from the activity feed (includes verified passes), so you see it working each turn
         let last = '';
         try { const L = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').trim().split('\n'); const e = JSON.parse(L[L.length - 1]); last = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' }[e.kind] || ''; } catch {}
@@ -355,20 +357,22 @@ switch (cmd) {
         const active = existsSync(join(repo, '.sawbuck', 'state.json'));
         const armed = existsSync(join(repo, 'promptwheel.config.json')) || existsSync(join(repo, 'package.json'));
         const mem = existsSync(join(repo, 'LOGBOOK.md')) || existsSync(join(repo, 'events.jsonl'));
-        const seg = caught > 0 ? `🐴 sawbuck · ${caught} caught` : active ? `🐴 sawbuck · watching` : armed ? `🐴 sawbuck · ready` : mem ? `🐴 sawbuck · memory` : '';
-        const base = seg ? (last ? `${seg} · ${last}` : seg) : '';
+        const label = caught > 0 ? `${caught} caught` : active ? 'watching' : armed ? 'ready' : mem ? 'memory' : '';
+        const seg = label ? `🐴 sawbuck · ${label}` : '';
+        const named = label ? `🐴 sawbuck · ${name} · ${label}` : '';   // which repo it detected, in the default line
+        const base = named ? (last ? `${named} · ${last}` : named) : '';
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
         let st = '';
         try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round(((sj.ema != null ? sj.ema : sj.steeringRate) || 0) * 100); st = `${p >= 50 ? '✊' : '🐎'} steer ${p}%`; } } catch {}
         // configurable template: SAWBUCK_STATUSLINE picks which segments show and in what order
-        // (tokens {status} {sawbuck} {verdict} {steer} plus any literal text); empty tokens collapse
+        // (tokens {status} {sawbuck} {repo} {verdict} {steer} plus any literal text); empty tokens collapse
         // so you never get a dangling separator. Unset = the default composition. Mix in other
         // tools (git branch, model, your own adapters) by composing in your statusline script.
         const tpl = process.env.SAWBUCK_STATUSLINE;
         let outp;
         if (tpl && tpl.trim()) {
-          const tok = { status: base, sawbuck: seg, verdict: last, steer: st };
-          outp = tpl.replace(/\{(status|sawbuck|verdict|steer)\}/g, (_, k) => tok[k] || '')
+          const tok = { status: base, sawbuck: seg, repo: label ? name : '', verdict: last, steer: st };
+          outp = tpl.replace(/\{(status|sawbuck|repo|verdict|steer)\}/g, (_, k) => tok[k] || '')
                     .replace(/\s*·\s*·\s*/g, ' · ').replace(/^\s*·\s*/, '').replace(/\s*·\s*$/, '').replace(/\s{2,}/g, ' ').trim();
         } else {
           outp = [base, st].filter(Boolean).join(' · ');
@@ -522,6 +526,12 @@ export function nodeCmd(execPath = process.execPath, platform = process.platform
 }
 function wireClaude(repo, opts) {
   const { user, shared } = opts;
+  // user-level hooks already cover every repo; a second set would run each check twice and spend the
+  // send-back budget twice as fast. --shared is a deliberate team file, so it is written anyway.
+  if (!user && !shared) {
+    const uf = claudeFile(repo, { user: true }).f;
+    try { if (readFileSync(uf, 'utf8').includes('sawbuck.mjs')) { out(`sawbuck: already watching here through your user-level hooks (${uf}); nothing to add`); return; } } catch {}
+  }
   const { dir, f } = claudeFile(repo, opts);
   const dirExisted = existsSync(dir);
   const fileExisted = existsSync(f);

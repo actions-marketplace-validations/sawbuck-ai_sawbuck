@@ -124,7 +124,16 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
     const accept = committedHit ? ' To accept this change on purpose, change the mandate in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
-    logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
+    // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
+    // a block must not replace a gamed verdict that is still standing.
+    if (st.mandateCountedPrompt !== promptId) {
+      st.mandateCountedPrompt = promptId;
+      const r = readRec() || { regressions: 0, gamed: 0, latest: null };
+      r.mandates = (r.mandates || 0) + 1;
+      r.lastMandate = { name: hits[0].name, file: hits[0].files[0], at: now };
+      writeRec(r);
+      logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
+    }
     if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
       st.mandateBlocks = (st.mandateBlocks || 0) + 1;
       saveState();
