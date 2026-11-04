@@ -33,7 +33,11 @@ const bare = live.filter((it) => !it.documented && it.content).length;
 if (since && typeof since === 'string') {
   const norm = (s) => String(s).trim().replace(/\s+/g, ' ');
   // the delta base: the raw suppression set at REF (the adapter's ref mode), subtracted from HEAD.
-  const base = new Set((memDebt(repo, { ref: since }) || []).map((r) => r.file + '\u0000' + norm(r.content)));
+  // null = the ref could not be read (not fetched, a typo): unmeasurable is NOT an empty base, or
+  // every pre-existing suppression would read as newly added and a --fail-on gate would fail falsely.
+  const baseRows = memDebt(repo, { ref: since });
+  if (baseRows === null) { console.error(`sawbuck debt: could not read the suppression ledger at ${since} (is the ref fetched? in GitHub Actions use actions/checkout with fetch-depth: 0)`); process.exit(1); }
+  const base = new Set(baseRows.map((r) => r.file + '\u0000' + norm(r.content)));
   const added = live.filter((it) => it.content && !base.has(it.file + '\u0000' + norm(it.content)));
   const skips = added.filter((it) => it.testSkip).length, undoc = added.filter((it) => !it.documented).length;
   // the gate: fail (exit 1) when the branch adds the kind of debt --fail-on names.

@@ -101,6 +101,15 @@ Usage:
 Engines: promptwheel (the check) + @promptwheel/logbook (memory). Zero-LLM, offline, free.`;
 
 const die = (msg) => { process.stderr.write(`sawbuck: ${msg}\n`); process.exit(1); };
+const usage = (msg) => { process.stderr.write(`sawbuck: ${msg}\n`); process.exit(64); };   // could not run: never a verdict code
+// the repository a path belongs to (its toplevel), so a command run from a subdirectory lands at the
+// root: hooks pinned to the root, the receipt and the exclude under its git dir. '' outside a repo.
+function gitTop(p) { try { return execFileSync('git', ['-C', p, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } }
+const repoRoot = () => gitTop(repoArg()) || repoArg();
+// paths inside the repository's git dir, asked of git: a worktree or a submodule keeps its git dir
+// elsewhere (.git is a FILE there), so join(repo, '.git', ...) is wrong in exactly the repos where it hurts
+function gitPath(repo, rel) { try { return resolve(repo, execFileSync('git', ['-C', repo, 'rev-parse', '--git-path', rel], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch { return join(repo, '.git', rel); } }
+function gitDir(repo) { try { return resolve(repo, execFileSync('git', ['-C', repo, 'rev-parse', '--git-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch { return join(repo, '.git'); } }
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
@@ -214,7 +223,8 @@ switch (cmd) {
     // taken only when the previous turn actually reached a Stop (an interrupt, a crash, or a re-run of
     // this command mid-turn leaves the last one standing, so nothing the agent left behind is adopted);
     // a file still carrying the content the last violation flagged is never baselined; and the
-    // baseline's commit does not advance past a flagged commit until a clean stop.
+    // baseline's commit does not advance past a flagged commit until a clean stop or a commit the
+    // person made between turns.
     let hookEvent = '';
     if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit') {
@@ -231,7 +241,12 @@ switch (cmd) {
             const files = protectedDirty(repo);
             for (const f of Object.keys(files)) if (flagged[f] === files[f]) delete files[f];   // the agent's un-reverted edit stays on the wall
             let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-            st.turnBaseline = { at: now, sha: (st.lastViolation && st.lastViolation.sha) || sha, files };
+            // HEAD moved since the last Stop: the agent was not running, so the commits between turns
+            // are the person's (accepting a change, a pull, a branch switch) and the baseline starts
+            // there. Otherwise the baseline's commit does not advance past a flagged commit.
+            const moved = !!(sha && st.lastStopHead && sha !== st.lastStopHead);
+            if (moved && st.lastViolation) delete st.lastViolation.sha;
+            st.turnBaseline = { at: now, sha: (!moved && st.lastViolation && st.lastViolation.sha) || sha, files };
           }
           st.lastPromptAt = now;
           mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
@@ -273,8 +288,11 @@ switch (cmd) {
     break;
   }
   case 'attach': {
-    const repo = repoArg();
-    if (flags.has('--user')) { wireClaude(repo, { user: true }); if (!dry) verifyAttach(repo); break; }
+    const user = flags.has('--user');
+    const top = gitTop(repoArg());
+    if (!top && !user) usage(`${repoArg()} is not a git repository (attach wires one; run it inside your project, or name its path)`);
+    const repo = top || repoArg();
+    if (user) { wireClaude(repo, { user: true }); if (!dry) verifyAttach(repo); break; }
     if (flags.has('--claude')) { wireClaude(repo, { shared: flags.has('--shared') }); if (!dry) verifyAttach(repo); break; }
     wireGit(repo);
     if (!dry) verifyAttach(repo);
@@ -283,7 +301,7 @@ switch (cmd) {
   case 'detach': {
     const purge = flags.has('--purge');
     if (flags.has('--all')) { detachAll(purge); break; }
-    const repo = repoArg();
+    const repo = repoRoot();
     if (flags.has('--user')) unwireClaude(repo, { user: true });
     else if (flags.has('--claude')) unwireClaude(repo, {});
     else {
@@ -298,8 +316,8 @@ switch (cmd) {
     if (flags.has('--verify')) verifyClean(repo);
     break;
   }
-  case 'trace': { traceRepo(repoArg()); break; }
-  case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoArg()); break; }
+  case 'trace': { traceRepo(repoRoot()); break; }
+  case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'where': { whereAttached(); break; }
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.
@@ -362,7 +380,8 @@ function contextBlock(repo, speak) {
 // run the gate on the last commit and say what it can or cannot measure, so you never attach
 // into silent nothing. Best-effort and bounded; the wire already succeeded regardless.
 function verifyAttach(repo) {
-  const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim(); } catch { return ''; } };
+  // stderr ignored: a benign failing probe (rev-parse HEAD~1 on a one-commit repo) must not leak a "fatal:" line
+  const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
   if (!g('rev-parse', 'HEAD')) { out('   attached. Make a commit, then run `sawbuck check` to see it work.'); return; }
   out('   verifying I can measure here (one-time)...');
   const base = g('rev-parse', '--verify', 'HEAD~1') ? 'HEAD~1' : 'HEAD';
@@ -373,7 +392,7 @@ function verifyAttach(repo) {
 }
 
 // --- the attach receipt (out of the worktree, inside .git) ------------------
-function manifestPath(repo) { return join(repo, '.git', 'sawbuck', 'attach.json'); }
+function manifestPath(repo) { return join(gitDir(repo), 'sawbuck', 'attach.json'); }
 function userManifestPath() { return join(homedir(), '.sawbuck', 'user-attach.json'); }
 function readManifest(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return { version: 1, attachments: {} }; } }
 function writeManifest(p, m) {
@@ -388,7 +407,7 @@ function rmIfEmptyDir(d) { try { if (existsSync(d) && readdirSync(d).length === 
 // --- .git/info/exclude: keep the worktree clean without touching .gitignore --
 // Rewrites a single marked block to the union of excludes the current
 // attachments need. Never deletes the file (an empty one is git's own default).
-function excludeFile(repo) { return join(repo, '.git', 'info', 'exclude'); }
+function excludeFile(repo) { return gitPath(repo, 'info/exclude'); }
 function syncExclude(repo, manifest) {
   const need = new Set();
   const a = manifest.attachments || {};
@@ -418,8 +437,8 @@ function hookBlock(repo) {
   return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; else node ${JSON.stringify(SELF)} __hook --repo ${r}; fi || true\n${S_END}\n`;
 }
 function wireGit(repo) {
-  if (!existsSync(join(repo, '.git'))) die(`${repo} is not a git repo (no .git)`);
-  const pc = join(repo, '.git', 'hooks', 'post-commit');
+  if (!gitTop(repo)) usage(`${repo} is not a git repository`);
+  const pc = gitPath(repo, 'hooks/post-commit');
   const existed = existsSync(pc);
   let body = existed ? readFileSync(pc, 'utf8') : '#!/bin/sh\n';
   if (body.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
@@ -443,7 +462,7 @@ function wireGit(repo) {
   out(`sawbuck: attached (git post-commit) in ${repo}`);
 }
 function unwireGit(repo) {
-  const pc = join(repo, '.git', 'hooks', 'post-commit');
+  const pc = gitPath(repo, 'hooks/post-commit');
   const m = readManifest(manifestPath(repo));
   const hasReceipt = !!m.attachments?.git;
   if (!existsSync(pc) && !hasReceipt) { out('sawbuck: nothing to detach'); return; }
@@ -560,7 +579,7 @@ function isTrivialSettings(cfg) { return Object.keys(cfg).length === 0; }
 // --- trace / verify / doctor / purge: show, prove, and clean the footprint --
 function footprint(repo) {
   const items = [];
-  const pc = join(repo, '.git', 'hooks', 'post-commit');
+  const pc = gitPath(repo, 'hooks/post-commit');
   try { if (existsSync(pc) && readFileSync(pc, 'utf8').includes(S_START)) items.push({ what: pc, state: 'git hook' }); } catch {}
   for (const f of [join(repo, '.claude', 'settings.local.json'), join(repo, '.claude', 'settings.json'), join(homedir(), '.claude', 'settings.json')]) {
     try { if (existsSync(f) && readFileSync(f, 'utf8').includes('sawbuck.mjs')) items.push({ what: f, state: 'claude hooks' }); } catch {}
@@ -601,7 +620,7 @@ function onPath() {
 function extractBaked(text) { const m = text.match(/node "([^"]+)"/); return m ? m[1] : null; }
 function doctorRepo(repo) {
   const checks = [];
-  const pc = join(repo, '.git', 'hooks', 'post-commit');
+  const pc = gitPath(repo, 'hooks/post-commit');
   try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) checks.push({ mode: 'git', file: pc, baked: extractBaked(b) }); } } catch {}
   for (const [mode, f] of [['claude', join(repo, '.claude', 'settings.local.json')], ['claude-shared', join(repo, '.claude', 'settings.json')]]) {
     try { if (existsSync(f)) { const b = readFileSync(f, 'utf8'); if (b.includes('sawbuck.mjs')) checks.push({ mode, file: f, baked: extractBaked(b) }); } } catch {}

@@ -5,10 +5,10 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { scopeChain, recall as recallMem } from '../memory.mjs';
@@ -746,5 +746,183 @@ test('the Stop hook blocks a turn that leaves a protected path changed, then let
     g('checkout', '--', 'src/auth/login.js'); writeFileSync(join(d, 'src', 'x.js'), 'd\n');   // reverted the wall, fixed elsewhere
     const out = hook('p2');
     assert.ok(!/"decision":"block"/.test(out), 'a clean turn is allowed to end');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+// --- review-4 fixes (0.1.31): the wall's memory, between-turn commits, the standing gamed verdict,
+// an unreadable debt base, attach from a subdirectory or a worktree, user-level wiring, the budget key
+const HOOKF = join(HERE, '..', 'sawbuck-hook.mjs');
+const wallRepo = (files) => {
+  const { d, g } = tmpRepo();
+  writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'no-auth', paths: ['src/auth/**'] }], metrics: [] }));
+  mkdirSync(join(d, 'src', 'auth'), { recursive: true });
+  for (const f of files) writeFileSync(join(d, f), 'a\n');
+  g('add', '-A'); g('commit', '-q', '-m', 'base');
+  const hook = (input) => execFileSync(process.execPath, [HOOKF, '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+  const turn = () => execFileSync(process.execPath, [CLI, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+  const state = () => JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8'));
+  return { d, g, hook, turn, state };
+};
+const named = (raw) => { let t = ''; try { t = JSON.parse(raw).reason || ''; } catch { t = raw; } const m = /changed in this turn: (.*?)\. Undo the changes/.exec(t); return m ? m[1] : ''; };
+
+test('a violation remembers only the turn\'s own protected changes: the person\'s spared file is never flagged or named', () => {
+  const { d, g, hook, turn, state } = wallRepo(['src/auth/old.js', 'src/auth/login.js']);
+  try {
+    writeFileSync(join(d, 'src', 'auth', 'old.js'), 'my wip\n');            // the person's own edit, before the prompt
+    turn();
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');           // the agent edits the wall
+    const outs = [];
+    for (let i = 0; i < 4; i++) outs.push(hook({ prompt_id: 'p1' }));       // three blocks, then the budget runs out
+    assert.deepEqual(Object.keys(state().lastViolation.files), ['src/auth/login.js'], 'only the turn\'s own change is remembered');
+    turn();                                                                  // prompt 2
+    assert.ok('src/auth/old.js' in state().turnBaseline.files, 'the person\'s file is baselined again');
+    const again = hook({ prompt_id: 'p2' });                                 // the agent's edit is still there: blocked, naming only login.js
+    assert.equal(JSON.parse(again).decision, 'block');
+    assert.equal(named(again), '"no-auth": src/auth/login.js');
+    g('checkout', '--', 'src/auth/login.js');                                // the agent undoes its own change
+    const clean = hook({ prompt_id: 'p2' });
+    assert.ok(!/"decision":"block"/.test(clean), 'with the agent\'s edit undone the turn ends, the person\'s wip untouched');
+    for (const o of outs) assert.ok(!named(o).includes('old.js'), 'no block ever names the person\'s file');
+    assert.equal(readFileSync(join(d, 'src', 'auth', 'old.js'), 'utf8'), 'my wip\n');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('a commit the person makes between turns is theirs: the baseline starts there and a clean turn is not blocked over it', () => {
+  const { d, g, hook, turn, state } = wallRepo(['src/auth/login.js']);
+  try {
+    turn();
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n'); g('add', 'src/auth/login.js'); g('commit', '-q', '-m', 'auth change (mid-turn)');
+    for (let i = 0; i < 3; i++) assert.equal(JSON.parse(hook({ prompt_id: 'p1' })).decision, 'block');
+    assert.match(JSON.parse(hook({ prompt_id: 'p1' })).systemMessage || '', /stopped blocking/);
+    // between turns the agent is not running: the person reviews the tree, keeps it, and commits their own work
+    writeFileSync(join(d, 'notes.md'), 'reviewed, keeping the auth change\n'); g('add', '-A'); g('commit', '-q', '-m', 'person: notes');
+    const head = execFileSync('git', ['-C', d, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    turn();
+    assert.equal(state().turnBaseline.sha, head, 'the baseline starts at the person\'s commit');
+    const out = hook({ prompt_id: 'p2' });                                   // the agent touched nothing this turn
+    assert.ok(!/"decision":"block"/.test(out), 'a commit made between turns is not charged to the agent');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('the block budget is per prompt even when the harness sends no prompt_id', () => {
+  const { d, hook, turn } = wallRepo(['src/auth/login.js']);
+  try {
+    turn();
+    writeFileSync(join(d, 'src', 'auth', 'login.js'), 'agent\n');
+    for (let i = 0; i < 3; i++) assert.equal(JSON.parse(hook({})).decision, 'block');
+    assert.match(JSON.parse(hook({})).systemMessage || '', /stopped blocking/, 'the budget for this prompt is spent');
+    turn();                                                                  // the next prompt: a fresh budget, keyed on the prompt's timestamp
+    assert.equal(JSON.parse(hook({})).decision, 'block', 'the wall is back for the new prompt, not spent for the repo\'s lifetime');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('the gamed wall holds through a follow-up commit and comes down only when the span re-proves from the source', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ linkNodeModules: false, repeat: 1, metrics: [{ name: 'tests_pass', cmd: 'node --test calc.test.mjs 2>&1', extract: 'exit', direction: 'pass', guard: true }] }));
+    writeFileSync(join(d, 'calc.mjs'), 'export const sub = (a, b) => a + b; // BUG\n');
+    const honest = "import {test} from 'node:test';import assert from 'node:assert';import {sub} from './calc.mjs';\ntest('sub',()=>assert.strictEqual(sub(5,3),2));\n";
+    writeFileSync(join(d, 'calc.test.mjs'), honest);
+    g('add', '-A'); g('commit', '-q', '-m', 'base (red)');
+    const hook = (promptId) => execFileSync(process.execPath, [HOOKF, '--repo', d, '--by', 'claude', '--stop'], { input: JSON.stringify({ prompt_id: promptId }), encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, LOGBOOK_NO_CACHE: '1' } });
+    const rec = () => JSON.parse(readFileSync(join(d, '.sawbuck', 'results.json'), 'utf8'));
+    hook('p0');                                                              // arm on the base commit
+    writeFileSync(join(d, 'calc.test.mjs'), honest.replace('2));', '8));'));   // the cheat: the test expects the bug
+    g('commit', '-q', '-am', 'make it green');
+    let r = JSON.parse(hook('p1'));
+    assert.equal(r.decision, 'block'); assert.match(r.reason, /gamed/);
+    assert.equal(rec().gamed, 1);
+    g('commit', '-q', '--allow-empty', '-m', 'retry');                       // HEAD moves, nothing fixed
+    r = JSON.parse(hook('p1'));
+    assert.equal(r.decision, 'block', 'an empty commit does not clear the wall: the span is re-proved from the original base');
+    assert.equal(rec().gamed, 1, 'the standing catch is not counted twice');
+    assert.equal(rec().latest.kind, 'gamed');
+    writeFileSync(join(d, 'calc.mjs'), 'export const sub = (a, b) => a - b;\n'); writeFileSync(join(d, 'calc.test.mjs'), honest);
+    g('commit', '-q', '-am', 'fix sub in source');
+    const out = hook('p2');
+    assert.ok(!/"decision":"block"/.test(out), 'the real fix clears the wall');
+    assert.equal(rec().latest.kind, 'verified', 'the record says the span re-proved');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('debt --since refuses an unreadable base ref instead of reporting every suppression as new', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'a.js'), 'export const v = 1; // eslint-disable-line\n'); g('commit', '-qam', 'a bare suppression');
+    const r = spawnSync(process.execPath, [CLI, 'debt', '--since', 'no-such-ref', '--fail-on', '--json'], { cwd: d, encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /could not read the suppression ledger at no-such-ref/);
+    assert.match(r.stderr, /fetch-depth: 0/);
+    assert.doesNotMatch(r.stdout, /"added"/, 'no delta is reported from an unreadable base');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('attach --claude from a subdirectory wires the repository root, and inside a git worktree it uses that worktree\'s git dir', () => {
+  const { d, g } = tmpRepo();
+  const wt = join(mkdtempSync(join(tmpdir(), 'sawbuck-wt-')), 'wt');
+  try {
+    const root = realpathSync(d);
+    const sub = join(d, 'pkg'); mkdirSync(sub);
+    sawbuck(['attach', '--claude', '.'], sub);
+    const f = join(d, '.claude', 'settings.local.json');
+    assert.ok(existsSync(f), 'settings written at the root');
+    assert.ok(!existsSync(join(sub, '.claude')) && !existsSync(join(sub, '.git')), 'nothing created in the subdirectory');
+    const stopCmd = JSON.parse(readFileSync(f, 'utf8')).hooks.Stop.find((h) => JSON.stringify(h).includes('sawbuck.mjs')).hooks[0].command;
+    assert.ok(stopCmd.includes(`--repo ${JSON.stringify(root)}`), 'the hook is pinned to the root');
+    sawbuck(['detach', '--claude', '.'], sub);
+    assert.ok(!existsSync(f), 'detach from the subdirectory finds the root\'s attachment');
+    // a linked worktree: .git is a file there, the git dir lives under the main repo
+    g('worktree', 'add', '-q', wt, '-b', 'wt-branch');
+    sawbuck(['attach', '--claude', '.'], wt);
+    assert.ok(existsSync(join(wt, '.claude', 'settings.local.json')));
+    const gd = resolve(wt, execFileSync('git', ['-C', wt, 'rev-parse', '--git-dir'], { encoding: 'utf8' }).trim());
+    assert.ok(existsSync(join(gd, 'sawbuck', 'attach.json')), 'the receipt lands under the worktree\'s git dir');
+    const ex = resolve(wt, execFileSync('git', ['-C', wt, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim());
+    assert.match(readFileSync(ex, 'utf8'), /# >>> sawbuck >>>/, 'the exclude block is in the repository\'s own exclude file');
+    assert.equal(porcelain(wt), '', 'the worktree stays clean');
+    sawbuck(['detach', '--claude', '.'], wt);
+    assert.ok(!existsSync(join(gd, 'sawbuck', 'attach.json')) && !existsSync(join(wt, '.claude', 'settings.local.json')), 'detach reverses it');
+  } finally { rmSync(d, { recursive: true, force: true }); rmSync(dirname(wt), { recursive: true, force: true }); }
+});
+
+test('reflect --no-auto measures only where a contract exists (user-level wiring never auto-gates a repo)', () => {
+  const { d, g } = tmpRepo();
+  try {
+    writeFileSync(join(d, 'package.json'), '{"name":"x","type":"module","scripts":{"test":"node -e 0"}}'); g('add', '-A'); g('commit', '-qm', 'pkg');
+    writeFileSync(join(d, 'a.js'), 'export const v = 2;\n'); g('commit', '-qam', 'change');
+    reflect(['--repo', d, '--base', 'HEAD~1', '--head', 'HEAD', '--no-auto'], d, { LOGBOOK_NO_CACHE: '1' });
+    assert.ok(!existsSync(join(d, '.promptwheel', 'outcomes.jsonl')), 'nothing measured, nothing recorded');
+    assert.ok(!existsSync(join(d, '.sawbuck', 'activity.jsonl')), 'no activity line either');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('the Stop hook leaves a non-repository alone (user-level wiring runs in every cwd)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sawbuck-nogit-'));
+  try {
+    const r = spawnSync(process.execPath, [HOOKF, '--by', 'claude', '--stop'], { cwd: d, input: '{}', encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, '');
+    assert.ok(!existsSync(join(d, '.sawbuck')), 'no state written outside a repository');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('attach in a one-commit repo verifies without leaking a git fatal line', () => {
+  const { d } = tmpRepo();
+  try {
+    const r = spawnSync(process.execPath, [CLI, 'attach', '.'], { cwd: d, encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME } });
+    assert.equal(r.status, 0);
+    assert.doesNotMatch(r.stderr, /fatal:/);
+    assert.match(r.stdout, /verifying I can measure here/);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('status shows the steer rate when the reins judge has scored turns here, and nothing when it has not', () => {
+  const { d } = tmpRepo();
+  try {
+    assert.doesNotMatch(sawbuck(['status', '.'], d), /Steer rate/);
+    mkdirSync(join(d, '.sawbuck'), { recursive: true });
+    writeFileSync(join(d, '.sawbuck', 'steer.json'), JSON.stringify({ scored: 10, steering: 4, ema: 0.3, steeringRate: 0.4 }));
+    assert.match(sawbuck(['status', '.'], d), /Steer rate\s+·\s+30% of your recent turns redirected the agent \(10 scored/);
+    assert.deepEqual(JSON.parse(sawbuck(['status', '.', '--json'], d)).steer, { rate: 30, scored: 10 });
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

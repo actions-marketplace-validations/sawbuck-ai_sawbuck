@@ -6,20 +6,26 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 import { mandateHits, hashOf, protectedDirty, protectedAmong } from './contract.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
-const repo = flag('--repo', process.cwd());
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
 const stop = process.argv.includes('--stop');   // wired as the Claude Code Stop hook: enforce the contract on a gamed turn
+// user-level wiring passes no --repo: the hook runs in whatever cwd the session has, so it resolves the
+// repository root itself (a subdirectory belongs to its repo) and leaves a non-repository alone: no
+// state, no exclude block, nothing written where there is nothing to verify.
+const userMode = !process.argv.includes('--repo');
+const sh = (cwd, ...a) => { try { return execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const repo = flag('--repo', '') || sh(process.cwd(), 'rev-parse', '--show-toplevel') || process.cwd();
+const git = (...a) => sh(repo, ...a);
+if (!git('rev-parse', '--git-dir')) process.exit(0);
 let hookInput = {};
 if (stop) { try { hookInput = JSON.parse(readFileSync(0, 'utf8') || '{}'); } catch {} }   // the Stop hook's JSON on stdin (stop_hook_active, prompt_id, ...)
 ensureExcluded(repo);   // keep the record out of git status under ANY attach mode (incl. --user)
 
-const git = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim(); } catch { return ''; } };
 const CHECK_TIMEOUT = +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 600000;   // never hang a turn
 const node = (f, a) => { try { return execFileSync(process.execPath, [f, ...a], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: CHECK_TIMEOUT, killSignal: 'SIGKILL' }); } catch (e) { return (e.stdout || '').toString(); } };
 
@@ -33,17 +39,23 @@ const stPath = join(stDir, 'state.json');
 let st = { lastSha: '', turns: 0, shownTotal: 0 };
 try { if (existsSync(stPath)) st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
 
-// 1) new commit(s) since last turn → run the check on them
+// 1) new commit(s) since last turn → run the check on them. A gamed verdict stands until the span it
+// was measured over re-proves verified: while the latest record is gamed, the re-run keeps that
+// record's base, so a follow-up commit (an amend, an empty commit, unrelated work) cannot clear the
+// wall without the source fix the re-proof demands. Under user-level wiring the check runs only where
+// a contract exists (--no-auto): nobody's whole test suite runs three times in a repo they never set up.
 const head = git('rev-parse', 'HEAD');
+const readRec = () => { try { return JSON.parse(readFileSync(join(stDir, 'results.json'), 'utf8')); } catch { return null; } };
+let rec = readRec();
 if (head && st.lastSha && head !== st.lastSha) {
-  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', st.lastSha, '--head', head, ...(by ? ['--by', by] : [])]);
+  const standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
+  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : st.lastSha, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
+  rec = readRec();
 }
 st.lastSha = head || st.lastSha;
 st.turns += 1;
 
-// 2) read the record of what the check has charted
-let rec = null;
-try { rec = JSON.parse(readFileSync(join(stDir, 'results.json'), 'utf8')); } catch {}
+// 2) the record of what the check has charted (read above, after any re-run)
 const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
 const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
 
@@ -67,17 +79,22 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const leftAlone = dirty.filter(untouched);
   const hits = changed.length ? mandateHits(repo, changed) : [];
   st.lastStopAt = now;   // the next prompt may take a fresh baseline only because this stop happened
+  st.lastStopHead = head || null;   // and where HEAD stood: a commit between turns is the person's, not the agent's
   if (hits.length) {
-    // remember EVERY changed protected path (dirty or committed since the baseline) and what it holds,
-    // uncapped, and the commit the baseline stood at, so the next prompt cannot adopt any of it
-    const files = protectedDirty(repo);
-    for (const f of protectedAmong(repo, committedSince)) if (!Object.prototype.hasOwnProperty.call(files, f)) files[f] = hashOf(repo, f);
+    // remember EVERY protected path THIS TURN changed (dirty past the baseline, or committed since
+    // it) and what it holds, uncapped, plus the commit the baseline stood at, so the next prompt
+    // cannot adopt any of it. Only the turn's own changes: a person's file the baseline spared stays
+    // spared, or the next clean turn would be blocked over work that was never the agent's.
+    const files = {};
+    for (const f of protectedAmong(repo, changed)) files[f] = hashOf(repo, f);
     st.lastViolation = { at: now, sha: (base && base.sha) || null, files };
   } else if (st.lastViolation) { delete st.lastViolation; }
   saveState();
   if (hits.length) {
     const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
-    const promptId = hookInput.prompt_id || 'none';
+    // the budget is per prompt: prompt_id when the harness sends one, else the prompt's own timestamp
+    // (written by `sawbuck turn --hook`), never a constant that would spend the budget for good
+    const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
     if (st.mandatePromptId !== promptId) { st.mandatePromptId = promptId; st.mandateBlocks = 0; }
     const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}${h.committed ? ' [this rule is in the committed contract; editing promptwheel.config.json in the working tree does not lift it]' : ''}`).join('; ');
     const spared = leftAlone.length ? ` Edits that were already there before this prompt were left out of this check and must stay as they are: ${leftAlone.join(', ')}.` : '';
@@ -102,7 +119,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
 const gamedThisTurn = rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.sha === (head || '').slice(0, 8);
 if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
-  const promptId = hookInput.prompt_id || 'none';
+  const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
   if (st.blockPromptId !== promptId) { st.blockPromptId = promptId; st.blockCount = 0; }
   st.shownTotal = total;
   const where = rec.latest.file;
@@ -134,8 +151,10 @@ saveState();
 // per-repo `detach` removes them.
 function ensureExcluded(r) {
   try {
-    if (!existsSync(join(r, '.git'))) return;
-    const f = join(r, '.git', 'info', 'exclude');
+    // the repository's own exclude file, wherever its git dir is (a worktree or submodule keeps it elsewhere)
+    const rel = sh(r, 'rev-parse', '--git-path', 'info/exclude');
+    if (!rel) return;
+    const f = resolve(r, rel);
     // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
     // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
     const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n# <<< sawbuck <<<\n';

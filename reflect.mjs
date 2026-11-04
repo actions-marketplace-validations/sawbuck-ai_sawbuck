@@ -30,6 +30,7 @@ const repo = flag('--repo', process.cwd());
 const base = flag('--base', 'HEAD~1');
 const head = flag('--head', 'HEAD');
 const by = flag('--by', '');   // the agent that authored the change (Claude-first: the Claude hook passes 'claude'); empty = unattributed (raw-git path)
+const noAuto = process.argv.includes('--no-auto');   // user-level wiring: measure only where a contract exists, never auto-gate a stranger's suite
 
 const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim();
 // backstop so the check can never hang a commit/turn; generous default, overridable.
@@ -42,7 +43,7 @@ const runNode = (file, a) => execFileSync(process.execPath, [file, ...a], { cwd:
 function check() {
   const parse = (out) => { const i = out.indexOf('{'); return i < 0 ? null : JSON.parse(out.slice(i)); };
   try {
-    return parse(runNode(PW, ['run', '--base', base, '--head', head, '--json']));
+    return parse(runNode(PW, ['run', '--base', base, '--head', head, '--json', ...(noAuto ? ['--no-auto'] : [])]));
   } catch (e) {
     return parse((e.stdout || '').toString());
   }
@@ -52,6 +53,20 @@ const report = check();
 if (!report || !report.verdict) process.exit(0);          // couldn't measure → nothing to learn
 const verdict = report.verdict;                            // engine contract: 'gamed' | 'fail' | ...
 appendActivity(verdict, report);   // the event feed logs EVERY measurable check, so you can watch it work (verified too, not only catches)
+// the results record, and the base this run measured from (a full sha), so a gamed verdict can be
+// held against the SAME span until it re-proves: the hook re-runs base..HEAD, not last-commit..HEAD
+const recDir = join(repo, '.sawbuck');
+const recPath = join(recDir, 'results.json');
+let rec = { regressions: 0, gamed: 0, latest: null };
+try { if (existsSync(recPath)) rec = JSON.parse(readFileSync(recPath, 'utf8')); } catch {}
+let baseSha = ''; try { baseSha = git('rev-parse', `${base}^{commit}`); } catch {}
+const standing = !!(rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.base === baseSha);
+const writeRec = () => { try { mkdirSync(recDir, { recursive: true }); writeFileSync(recPath, JSON.stringify(rec, null, 2) + '\n'); } catch {} };
+if (verdict === 'pass' && standing) {
+  // the span the gamed verdict was measured over now passes from the source: the wall comes down
+  rec.latest = { sha: git('rev-parse', head).slice(0, 8), kind: 'verified', base: baseSha, file: rec.latest.file, reason: 'the source earned the green over the span the gamed verdict was measured on', at: new Date().toISOString(), by: by || null };
+  writeRec();
+}
 if (verdict !== 'gamed' && verdict !== 'fail') process.exit(0);   // only breakage is worth recording
 
 // map the engine verdict to Sawbuck's plain outcome words
@@ -73,17 +88,15 @@ const reason = kind === 'gamed'
 // --- 3) record the finding in memory (unreviewed, machine-authored note) ----
 // The Memory Contract's `record` capability, through the adapter (no direct engine shell here).
 // Kept simple: a commit-attached digest note. A later pass could add --span grounding
-// and true coupling (the fix diff -> "change X also needs Y").
-memRecord(repo, { sha, reason: reason.slice(0, 280), side: 'diff', evidenceFile, by: 'sawbuck' });
+// and true coupling (the fix diff -> "change X also needs Y"). A gamed verdict still standing
+// over the same span is the same catch, not a new one: no second note, no second tick.
+const repeatOfStanding = standing && kind === 'gamed';
+if (!repeatOfStanding) memRecord(repo, { sha, reason: reason.slice(0, 280), side: 'diff', evidenceFile, by: 'sawbuck' });
 
 // --- 4) tick the results record (the visible proof-of-work) -----------------
-const recDir = join(repo, '.sawbuck');
-const recPath = join(recDir, 'results.json');
-let rec = { regressions: 0, gamed: 0, latest: null };
-try { if (existsSync(recPath)) rec = JSON.parse(readFileSync(recPath, 'utf8')); } catch {}
-if (kind === 'gamed') rec.gamed += 1; else rec.regressions += 1;
-rec.latest = { sha: sha.slice(0, 8), kind, file: evidenceFile, reason: reason.replace(/^sawbuck: /, '').slice(0, 140), at: new Date().toISOString(), by: by || null };
-try { mkdirSync(recDir, { recursive: true }); writeFileSync(recPath, JSON.stringify(rec, null, 2) + '\n'); } catch {}
+if (!repeatOfStanding) { if (kind === 'gamed') rec.gamed += 1; else rec.regressions += 1; }
+rec.latest = { sha: sha.slice(0, 8), kind, base: baseSha || null, file: evidenceFile, reason: reason.replace(/^sawbuck: /, '').slice(0, 140), at: new Date().toISOString(), by: by || null };
+writeRec();
 
 // --- 5) quiet by default (dispatch surfaces on cadence); one line to stderr -
 process.stderr.write(`sawbuck: ${kind} recorded on ${evidenceFile}\n`);

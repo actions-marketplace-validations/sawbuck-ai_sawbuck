@@ -25,7 +25,7 @@ The per-turn signal a loop consumes. The check (`run`) exits:
 | `0` | `pass` | The win is real: it survived a source-only re-proof and no guard regressed. | Keep the change. |
 | `1` | `fail` | A guarded metric regressed beyond the measured noise band. | Revert. |
 | `2` | `gamed` | A metric improved only by editing the goalposts (test, grader, golden, config), not the source. | Revert and flag. |
-| `3` | `inconclusive` | Nothing could be certified: a guard measured nothing, or the delta sat inside noise. | Do not trust the green; do not keep on this signal alone. |
+| `3` | `inconclusive` | Nothing could be certified: a guard never ran (inert) and no metric was measured to improve, or a win's source-only re-run could not be applied, so the win could not be re-proved either way. | Do not trust the green; do not keep on this signal alone. |
 
 The agent consumes this as a per-turn reward it cannot inflate. The harness consumes the same exit as a merge gate the agent cannot self-clear.
 
@@ -67,7 +67,7 @@ Fixed vocabularies (a conforming implementation uses exactly these):
 - `metric.status` ∈ `improved | regressed | unchanged | inconclusive | unmeasurable`
 - `direction` ∈ `up | down | pass` (the direction that counts as better; `pass` means a 0/1 gate)
 
-`retained` is the fraction of a metric's gain that survived the source-only re-run (§3). `noise` is the measured jitter band as a single number, across the top-level `repeat` runs; a delta inside it is `inconclusive`, never a regression. `confidence` (`unverified | low | medium | high`) and `sourceOnly` (the metric's value when only source edits are replayed, §3) are informational fields the reference implementation adds; a minimal conforming report may omit them. A consumer validates a report with `conformsToContract()` from the `promptwheel` package (see INTEGRATE.md) or `promptwheel conformance`.
+`retained` is the fraction of a metric's gain that survived the source-only re-run (§3). `noise` is the measured jitter band as a single number, across the top-level `repeat` runs; a delta inside it leaves that metric `inconclusive` (neither a win nor a regression; the verdict is not failed by it). `confidence` (`none | unverified | low | medium | high`, `none` for an unmeasurable metric) and `sourceOnly` (the metric's value when only source edits are replayed, §3) are informational fields the reference implementation adds; a minimal conforming report may omit them. A consumer validates a report with `conformsToContract()` from the `promptwheel` package (see INTEGRATE.md) or `promptwheel conformance`.
 
 `gate` (optional) is the gate-integrity record. `gate.fingerprint` is a truncated SHA-256 of the normalized gate definition at `base` and `head`, so a changed gate is visible in the audit record. `gate.weakened`, present only when it happened, lists guards the change dropped (removed, or set to `guard:false`) that would have failed at `head`. A non-empty `gate.weakened` forces `verdict: gamed`: an agent cannot earn a pass by disabling the guard it is being judged by.
 

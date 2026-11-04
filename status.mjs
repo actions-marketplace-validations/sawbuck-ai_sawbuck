@@ -35,6 +35,10 @@ const seen = feed.length;
 const catchesAllTime = (results.regressions || 0) + (results.gamed || 0);
 const latest = results.latest || (feed.length ? feed[feed.length - 1] : null);
 const since = feed.length ? (feed[0].at || '').slice(0, 10) : null;
+// the steer rate, if the reins judge has been scoring turns here (an OFFLINE read of its file; the
+// recent-window average over roughly the last twenty scored turns, as the band and statusline show it)
+const steerRec = readJSON(join(repo, '.sawbuck', 'steer.json'));
+const steer = steerRec && steerRec.scored ? { rate: Math.round(((steerRec.ema != null ? steerRec.ema : steerRec.steeringRate) || 0) * 100), scored: steerRec.scored } : null;
 
 // --- 2) the armed state: what it can measure here (mirror of statusline) ---
 const isGit = !!existsSync(join(repo, '.git'));
@@ -65,6 +69,7 @@ if (asJson) {
     git: isGit,
     config: hasConfig,
     outcomes: { seen, caughtAllTime: catchesAllTime, gamedAllTime: results.gamed || 0, regressionsAllTime: results.regressions || 0, recent: tally, latest, since },
+    steer,
     debt: debt ? { total: debt.total, testSkips: debt.testSkips, undocumented: debt.undocumented, filesOnFragileCode: debt.filesOnFragileCode, top: (debt.files || []).slice(0, 5) } : null,
     debtError: debtErr,
   }, null, 2));
@@ -103,6 +108,12 @@ if (seen || catchesAllTime) {
 } else {
   out.push('');
   out.push(`   Caught for you  ·  nothing recorded yet (the check logs here on each commit/turn)`);
+}
+
+// Steering (only when the judge has scored turns here)
+if (steer) {
+  out.push('');
+  out.push(`   Steer rate  ·  ${steer.rate}% of your recent turns redirected the agent (${steer.scored} scored, recent-window average)`);
 }
 
 // Debt
