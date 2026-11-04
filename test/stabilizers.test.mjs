@@ -153,6 +153,10 @@ test('stabilizer: doctor reports a healthy attachment, and flags a stale one', (
   try {
     sawbuck(['attach', '.'], d);
     assert.match(sawbuck(['doctor', '.'], d), /OK/, 'a live attachment is OK');
+    assert.match(sawbuck(['doctor', '.'], d, { SAWBUCK_NO_PATH_CHECK: '1' }), /OK/, 'and with no sawbuck on PATH: the npx case');
+    sawbuck(['attach', '--claude', '.'], d);
+    assert.doesNotMatch(sawbuck(['doctor', '.'], d, { SAWBUCK_NO_PATH_CHECK: '1' }), /STALE/, 'the Claude hooks read too, where the quotes are escaped');
+    sawbuck(['detach', '.'], d); sawbuck(['attach', '.'], d);
     // now simulate sawbuck having moved: a baked path that no longer exists, and not on PATH
     const pc = join(d, '.git', 'hooks', 'post-commit');
     writeFileSync(pc, `#!/bin/sh\n# >>> sawbuck >>>\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${JSON.stringify(d)}; else node "/no/such/sawbuck.mjs" __hook --repo ${JSON.stringify(d)}; fi || true\n# <<< sawbuck <<<\n`);

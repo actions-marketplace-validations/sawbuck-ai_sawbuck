@@ -634,7 +634,8 @@ function onPath() {
   if (process.env.SAWBUCK_NO_PATH_CHECK) return false;
   try { execFileSync('sh', ['-c', 'command -v sawbuck'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
-function extractBaked(text) { const m = text.match(/node "([^"]+)"/); return m ? m[1] : null; }
+// the path a hook bakes in: the quoted one ending in sawbuck.mjs, in a shell hook or in JSON, where the quotes are escaped
+function extractBaked(text) { const m = text.match(/"([^"]*sawbuck\.mjs)\\?"/); return m ? m[1] : null; }
 function doctorRepo(repo) {
   const checks = [];
   const pc = gitPath(repo, 'hooks/post-commit');
