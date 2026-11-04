@@ -10,7 +10,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-import { mandateHits, hashOf, protectedDirty, protectedAmong } from './contract.mjs';
+import { mandateHits, hashOf, protectedDirty, protectedAmong, lockState } from './contract.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
 const stop = process.argv.includes('--stop');   // wired as the Claude Code Stop hook: enforce the contract on a gamed turn
@@ -154,6 +154,25 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   saveState();   // budget spent: let the turn end, but warn loudly so it never loops forever
   process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck stopped blocking after ${MAX_BLOCKS} tries: the win on ${where} is still gamed and needs a real source fix.` }));
   process.exit(0);
+}
+
+// 3b) THE LOCK AT TURN LEVEL: tell the person the moment a turn changes the repo's structure or its resolved
+// dependencies. A notice, not a block: a person who asked for a new dependency should not fight the wall, and
+// the gate in CI is the hard stop, which needs their reason. Said once per change.
+if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaseline.lock) {
+  const was = st.turnBaseline.lock, now = lockState(repo);
+  if (now) {
+    const known = new Set(was.drift || []);
+    const fresh = (now.drift || []).filter((i) => !known.has(i));
+    const pinsMoved = !!now.pins && now.pins !== was.pins;
+    const key = JSON.stringify([fresh, pinsMoved ? now.pins : '']);
+    if ((fresh.length || pinsMoved) && st.lockNotice !== key) {
+      st.lockNotice = key; saveState();
+      const what = [...fresh.slice(0, 8), ...(pinsMoved ? ['the resolved dependency tree'] : [])].join(', ');
+      process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: this turn changed what the lock holds: ${what}${fresh.length > 8 ? `, and ${fresh.length - 8} more` : ''}. If you did not ask for that, look before you commit. The gate needs your reason to pass it: promptwheel run --allow "<reason>".` }));
+      process.exit(0);
+    }
+  }
 }
 
 // 4) otherwise, surface a catch on a fresh catch or on cadence (a flag; never blocks)

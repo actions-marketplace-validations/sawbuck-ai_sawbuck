@@ -1089,3 +1089,48 @@ test('the block names how to restore a person\'s edit the agent overwrote, and t
     assert.ok(!/"decision":"block"/.test(hook({ prompt_id: 'p2' })), 'the restored file is the person\'s again: the turn ends');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+test('supply chain: the Action runs this exact release and the engines are pinned exactly', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const action = readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
+  assert.match(action, new RegExp('npx -y sawbuck@' + pkg.version.replace(/\./g, '\\.') + ' '), 'action.yml pins the package version');
+  for (const [name, range] of Object.entries(pkg.dependencies)) assert.match(range, /^\d+\.\d+\.\d+$/, name + ' is an exact version');
+});
+
+test('the lock at turn level: a change of structure is told to the person once, and never blocks', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sb-lock-'));
+  const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
+  g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  mkdirSync(join(d, '.promptwheel/packs/supply-chain'), { recursive: true });
+  // a stand-in for the pack: reads the drift list and pins from plain files, so this test holds the wiring
+  writeFileSync(join(d, '.promptwheel/packs/supply-chain/lock.mjs'), "import { readFileSync } from 'node:fs';\nconst a = process.argv[2];\nprocess.stdout.write(readFileSync(a === 'pins' ? 'pins.txt' : 'drift.json', 'utf8'));\n");
+  writeFileSync(join(d, 'promptwheel.lock.json'), '{}\n'); writeFileSync(join(d, 'drift.json'), '[]'); writeFileSync(join(d, 'pins.txt'), '1');
+  writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ mandates: [{ name: 'm', paths: ['frozen/**'] }], metrics: [{ name: 'x', cmd: 'true', extract: 'exit', direction: 'pass' }] }));
+  g('add', '-A'); g('commit', '-qm', 'base');
+  const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
+  const HK = fileURLToPath(new URL('../sawbuck-hook.mjs', import.meta.url));
+  execFileSync(process.execPath, [SB, 'turn', '--hook', d], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit' }), encoding: 'utf8' });
+  const stop = () => execFileSync(process.execPath, [HK, '--repo', d, '--stop'], { input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
+  assert.equal(stop().includes('changed what the lock holds'), false, 'nothing changed, nothing said');
+  writeFileSync(join(d, 'drift.json'), '["dep:evil","host:exfil.dev"]');
+  const out = stop();
+  assert.match(out, /dep:evil, host:exfil\.dev/);
+  assert.doesNotMatch(out, /"decision"/, 'a notice, never a block');
+  assert.equal(stop().includes('changed what the lock holds'), false, 'said once');
+  writeFileSync(join(d, 'pins.txt'), '2');
+  assert.match(stop(), /resolved dependency tree/);
+});
+
+test('the wall survives a shell with no node on PATH (hooks run under sh, which does not load nvm)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sb-nonode-'));
+  const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
+  g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
+  writeFileSync(join(d, 'a.txt'), 'a\n'); g('add', '-A'); g('commit', '-qm', 'base');
+  const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
+  execFileSync(process.execPath, [SB, 'attach', '--claude', d], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: d });
+  const cfg = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8'));
+  const cmd = cfg.hooks.Stop[0].hooks[0].command;
+  const r = spawnSync('/bin/sh', ['-c', cmd], { env: { PATH: '/usr/bin:/bin' }, input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
+  if (!/\/usr\/bin\/node|\/bin\/node/.test(execFileSync('sh', ['-c', 'PATH=/usr/bin:/bin command -v node || true'], { encoding: 'utf8' }))) assert.doesNotMatch(r.stderr, /not found/);
+  assert.equal(r.status, 0, r.stderr);
+});

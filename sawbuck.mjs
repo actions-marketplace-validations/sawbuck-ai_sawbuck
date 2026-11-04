@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
 import { PW } from './bins.mjs';
-import { frameBlock, mandatesInForce, protectedDirty, blobAt } from './contract.mjs';
+import { frameBlock, mandatesInForce, protectedDirty, blobAt, lockState } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
@@ -256,7 +256,7 @@ switch (cmd) {
             const stillInHead = moved && Object.entries(flagged).some(([f, h]) => { const b = blobAt(repo, sha, f); return h === 'deleted' ? b === '' : (!!h && b === h); });
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
-            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files };
+            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo) };
           }
         }
         st.lastPromptAt = now;   // every prompt, mandates or not: the walls key their block budgets on it when the harness sends no prompt_id
@@ -444,7 +444,7 @@ function hookBlock(repo) {
   // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check
   // shells out to git (worktrees, diffs) and would inherit them, operate on the wrong
   // repo, and silently catch nothing. Clear them so the reflex runs against `repo` clean.
-  return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; else node ${JSON.stringify(SELF)} __hook --repo ${r}; fi || true\n${S_END}\n`;
+  return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; else ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; fi || true\n${S_END}\n`;
 }
 function wireGit(repo) {
   if (!gitTop(repo)) usage(`${repo} is not a git repository`);
@@ -498,6 +498,13 @@ function claudeFile(repo, { user, shared }) {
   const name = user || shared ? 'settings.json' : 'settings.local.json';
   return { dir, f: join(dir, name) };
 }
+// hooks run under /bin/sh, which does not load nvm, so a bare `node` is missing on many machines and the
+// hook fails quietly, leaving the wall off. Use node from PATH when there is one (it follows an upgrade),
+// else the node that ran this attach. Windows keeps plain node: its hooks do not run under sh.
+export function nodeCmd(execPath = process.execPath, platform = process.platform) {
+  if (platform === 'win32') return 'node';
+  return `"$(command -v node || echo ${JSON.stringify(execPath).replace(/^"|"$/g, "'")})"`;
+}
 function wireClaude(repo, opts) {
   const { user, shared } = opts;
   const { dir, f } = claudeFile(repo, opts);
@@ -505,8 +512,8 @@ function wireClaude(repo, opts) {
   const fileExisted = existsSync(f);
   let cfg = {};
   if (fileExisted) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it. Add the hooks by hand.`); } }
-  const ctx = user ? `node ${JSON.stringify(SELF)} turn --hook` : `node ${JSON.stringify(SELF)} turn --hook ${JSON.stringify(repo)}`;
-  const chk = user ? `node ${JSON.stringify(SELF)} __hook --by claude --stop` : `node ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
+  const ctx = user ? `${nodeCmd()} ${JSON.stringify(SELF)} turn --hook` : `${nodeCmd()} ${JSON.stringify(SELF)} turn --hook ${JSON.stringify(repo)}`;
+  const chk = user ? `${nodeCmd()} ${JSON.stringify(SELF)} __hook --by claude --stop` : `${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
   // attached already? "already attached" only when every hook of THIS version is present; an older
   // attachment (say, without the SessionStart[compact] hook) is upgraded in place, never left stale.
   let upgrading = false;
@@ -627,7 +634,8 @@ function onPath() {
   if (process.env.SAWBUCK_NO_PATH_CHECK) return false;
   try { execFileSync('sh', ['-c', 'command -v sawbuck'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
-function extractBaked(text) { const m = text.match(/node "([^"]+)"/); return m ? m[1] : null; }
+// the path a hook bakes in: the quoted one ending in sawbuck.mjs, in a shell hook or in JSON, where the quotes are escaped
+function extractBaked(text) { const m = text.match(/"([^"]*sawbuck\.mjs)\\?"/); return m ? m[1] : null; }
 function doctorRepo(repo) {
   const checks = [];
   const pc = gitPath(repo, 'hooks/post-commit');
