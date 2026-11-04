@@ -1201,3 +1201,21 @@ test('sawbuck contract works in a repo already attached, and one that gitignores
   const r = spawnSync(process.execPath, [SB, 'check', '--base', 'HEAD~1', '--head', 'HEAD', '--no-auto', '--json'], { cwd: d, encoding: 'utf8', env: process.env });
   assert.ok(!/null/.test(JSON.stringify(JSON.parse(r.stdout.slice(r.stdout.indexOf('{'))).metrics.filter((m) => m.name === 'lock_drift').map((m) => m.after))), 'the guard measures at head');
 });
+
+test('a signed repo with a clean tree does not block its own turn: the hook keeps settings.local.json excluded', () => {
+  const home = mkdtempSync(join(tmpdir(), 'sawbuck-clean-home-'));
+  const d = mkdtempSync(join(tmpdir(), 'sawbuck-clean-'));
+  const env = { HOME: home, XDG_CONFIG_HOME: join(home, 'cfg'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c' };
+  const g = (...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', env: { ...process.env, ...env } });
+  g('init', '-q'); writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'a', scripts: { test: 'node -e 0' } })); g('add', '-A'); g('commit', '-qm', 'base');
+  sawbuck(['contract'], d, env); g('add', '-A'); g('commit', '-qm', 'sign');
+  sawbuck(['attach', '--claude'], d, env);
+  const hook = (args, ev) => execFileSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 's', prompt: 'x' }), env: { ...process.env, ...env } });
+  for (let i = 0; i < 2; i++) {
+    hook(['turn', '--hook'], 'UserPromptSubmit');
+    assert.ok(!hook(['__hook', '--by', 'claude', '--stop'], 'Stop').includes('"block"'), 'a clean turn is not blocked');
+  }
+  assert.equal(g('status', '--porcelain').trim(), '');
+  assert.ok(readFileSync(join(d, '.git/info/exclude'), 'utf8').includes('.claude/settings.local.json'));
+});
+

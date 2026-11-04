@@ -81,10 +81,10 @@ const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFile
 // edit COMMITTED since the baseline's commit counts too: a commit mid-turn does not walk through.
 if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const now = new Date().toISOString();
-  const dirty = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
+  const dirty = [...new Set([...git('diff', '--name-only', '--no-renames', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
   const base = (st.turnBaseline && typeof st.turnBaseline === 'object') ? st.turnBaseline : null;
   const baseline = (base && base.files && typeof base.files === 'object') ? base.files : {};
-  const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
+  const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', '--no-renames', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
   const hashNow = {}; for (const f of dirty) if (Object.prototype.hasOwnProperty.call(baseline, f)) hashNow[f] = hashOf(repo, f);
   const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
   const changed = [...new Set([...dirty.filter((f) => !untouched(f)), ...committedSince])];
@@ -199,7 +199,7 @@ function ensureExcluded(r) {
     const f = resolve(r, rel);
     // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
     // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n# <<< sawbuck <<<\n';
+    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n.claude/settings.local.json\n# <<< sawbuck <<<\n';
     const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
     const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
     const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;
