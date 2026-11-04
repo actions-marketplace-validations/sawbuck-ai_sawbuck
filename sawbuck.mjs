@@ -13,6 +13,7 @@
 // proves the repo came back clean; `doctor` checks the attachment still resolves.
 
 import { execFileSync } from 'node:child_process';
+import { erasedBlock } from './rewrites.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -170,11 +171,14 @@ switch (cmd) {
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     for (const md of rep.mandates || []) out(`🐴 ⛔ mandate "${md.name}" violated${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; a mandate stays in force for the change that removes it]' : ''}`);
-    if (rep.verdict === 'pass') out(`🐴 ✓ verified: your ${where} change earned it. ${m ? '"' + m.name + '"' : 'The metric'} held, and the source carried the win (it survives a source-only re-run).`);
+    const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
+    if (rep.verdict === 'pass' && win) out(`🐴 ✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
+    else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a hard rule in the contract was broken, however green the rest is.');
     else if (rep.verdict === 'fail') out(`🐴 ✗ regression: a guarded metric got worse (${(rep.metrics || []).filter((x) => x.guard && !x.ok).map((x) => x.name).join(', ') || 'a guard'}).`);
     else out('🐴 ≈ inconclusive: the check ran but could not measure your metric (it did not run in isolation). Point it at your real test command: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json.');
+    if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
     if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
@@ -383,14 +387,17 @@ switch (cmd) {
 // "nothing notable" every turn would be noise). `speak` forces a reply for the explicit command.
 function contextBlock(repo, speak) {
   const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
-  let changed = g('diff', '--name-only', 'HEAD').split('\n').filter(Boolean);
+  // new files count: re-creating what was reverted is the case the history is for
+  let changed = [...new Set([...g('diff', '--name-only', 'HEAD').split('\n'), ...g('ls-files', '--others', '--exclude-standard').split('\n')])].filter(Boolean);
   if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
   if (!changed.length) return speak ? '🐴 sawbuck: nothing changed to look up (no working edits, and no previous commit to read).' : '';
   const fileArgs = changed.flatMap((f) => ['--file', f]);
   let o = '';
   try { o = execFileSync(process.execPath, [join(HERE, 'rank.mjs'), '--repo', repo, ...fileArgs, '--top', '3'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
   catch (e) { o = (e.stdout || '').toString(); }
-  if (/relevant history/.test(o)) return o.trimEnd();
+  const erased = erasedBlock(repo, changed);
+  if (/relevant history/.test(o)) return [o.trimEnd(), erased].filter(Boolean).join('\n');
+  if (erased) return erased;
   return speak ? '🐴 sawbuck: no notable history for the files you are touching (a clean trail).' : '';
 }
 
@@ -635,6 +642,8 @@ function purgeRecord(repo) {
     const p = join(repo, d);
     try { if (existsSync(p)) { rmSync(p, { recursive: true, force: true }); n++; out(`sawbuck: purged ${p}`); } } catch {}
   }
+  const outcomes = join(repo, '.promptwheel', 'outcomes.jsonl');   // the rest of .promptwheel/ is the signed contract: yours to keep or delete
+  try { if (existsSync(outcomes)) { rmSync(outcomes, { force: true }); n++; out(`sawbuck: purged ${outcomes}`); } } catch {}
   if (!n) out('sawbuck: no record to purge');
 }
 // is `sawbuck` resolvable on PATH? (SAWBUCK_NO_PATH_CHECK forces the strict/offline answer)

@@ -72,7 +72,7 @@ export function hashOf(repo, file, { store = false } = {}) {
 // `store` keeps each file's content in the object database (see hashOf), which the baseline does.
 export function protectedDirty(repo, { store = false } = {}) {
   let changed = [];
-  try { changed = [...new Set([...gitOut(repo, ['diff', '--name-only', 'HEAD']).split('\n'), ...gitOut(repo, ['ls-files', '--others', '--exclude-standard']).split('\n')].filter(Boolean))]; }
+  try { changed = [...new Set([...gitOut(repo, ['diff', '--name-only', '--no-renames', 'HEAD']).split('\n'), ...gitOut(repo, ['ls-files', '--others', '--exclude-standard']).split('\n')].filter(Boolean))]; }
   catch { return {}; }
   const res = mandatesInForce(repo).flatMap((m) => pathsOf(m).map(globToRe));
   const out = {};

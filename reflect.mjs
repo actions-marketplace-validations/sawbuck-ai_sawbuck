@@ -131,7 +131,7 @@ function appendActivity(v, rep, standing = false) {
   const why = k === 'gamed' ? (gm?.gamingReason || 'the win came from editing the goalposts')
     : k === 'regression' ? 'a guarded metric regressed beyond noise'
     : k === 'allowed' ? ('declared intentional: ' + (rep.allowed?.reason || ''))
-    : k === 'verified' ? 'the source earned the green'
+    : k === 'verified' ? 'the check passed'
     : 'could not certify a pass';
   // `standing`: this check re-proved the span of a gamed verdict that is still up, not a new catch
   const ev = { at: new Date().toISOString(), kind: k, sha, file, reason: String(why).slice(0, 160), by: by || null, ...(standing ? { standing: true } : {}) };

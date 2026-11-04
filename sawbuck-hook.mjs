@@ -50,7 +50,9 @@ const writeRec = (r) => { try { mkdirSync(stDir, { recursive: true }); writeFile
 const logActivity = (ev) => { try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...ev }) + '\n'); } catch {} };
 const hasCommit = (ref) => { try { execFileSync('git', ['-C', repo, 'cat-file', '-e', `${ref}^{commit}`], { stdio: 'ignore' }); return true; } catch { return false; } };
 let rec = readRec();
-if (head && st.lastSha && head !== st.lastSha) {
+// the first turn after attach has no lastSha yet: its baseline is what that turn started from
+const from = st.lastSha || (st.turnBaseline && st.turnBaseline.sha) || '';
+if (head && from && head !== from) {
   let standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
   if (standing && !hasCommit(rec.latest.base)) {
     // the span can no longer be re-proved (a rebase, a squash, a pruned branch took its base away):
@@ -61,7 +63,7 @@ if (head && st.lastSha && head !== st.lastSha) {
     writeRec(rec);
     standing = false;
   }
-  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : st.lastSha, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
+  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : from, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
   rec = readRec();
 }
 st.lastSha = head || st.lastSha;
@@ -81,10 +83,10 @@ const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFile
 // edit COMMITTED since the baseline's commit counts too: a commit mid-turn does not walk through.
 if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const now = new Date().toISOString();
-  const dirty = [...new Set([...git('diff', '--name-only', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
+  const dirty = [...new Set([...git('diff', '--name-only', '--no-renames', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
   const base = (st.turnBaseline && typeof st.turnBaseline === 'object') ? st.turnBaseline : null;
   const baseline = (base && base.files && typeof base.files === 'object') ? base.files : {};
-  const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
+  const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', '--no-renames', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
   const hashNow = {}; for (const f of dirty) if (Object.prototype.hasOwnProperty.call(baseline, f)) hashNow[f] = hashOf(repo, f);
   const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
   const changed = [...new Set([...dirty.filter((f) => !untouched(f)), ...committedSince])];
@@ -199,7 +201,7 @@ function ensureExcluded(r) {
     const f = resolve(r, rel);
     // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
     // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n# <<< sawbuck <<<\n';
+    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n.claude/settings.local.json\n# <<< sawbuck <<<\n';
     const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
     const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
     const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;

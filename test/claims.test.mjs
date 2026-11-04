@@ -1,0 +1,119 @@
+// Every public claim as a test, the stated limits included. A sentence on the site or in a README that has no
+// test here is a sentence nobody has checked. CLAIMS_SAWBUCK points this at an installed package, so the same
+// file proves what is on npm: CLAIMS_SAWBUCK=/path/to/node_modules/sawbuck/sawbuck.mjs node --test test/claims.test.mjs
+// Runs on a clean account on purpose: a developer's global gitignore hid a bug that blocked every turn.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CLI = process.env.CLAIMS_SAWBUCK || join(HERE, '..', 'sawbuck.mjs');
+const HOME = mkdtempSync(join(tmpdir(), 'claims-home-'));
+const ENV = { ...process.env, HOME, XDG_CONFIG_HOME: join(HOME, 'cfg'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c', PROMPTWHEEL_NO_ALLOW_TRAILER: '' };
+delete ENV.CLAUDECODE;
+
+const git = (d, ...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', env: ENV, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+const save = (d, msg) => { git(d, 'add', '-A'); git(d, 'commit', '-qm', msg); };
+const put = (d, f, c) => { mkdirSync(dirname(join(d, f)), { recursive: true }); writeFileSync(join(d, f), c); };
+const edit = (d, f, fn) => put(d, f, fn(readFileSync(join(d, f), 'utf8')));
+const json = (d, f, fn) => { const o = JSON.parse(readFileSync(join(d, f), 'utf8')); fn(o); put(d, f, JSON.stringify(o, null, 2) + '\n'); };
+const sb = (d, ...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env: ENV }); return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }; };
+const check = (d, ...a) => { const r = sb(d, 'check', '--json', ...a); try { return { code: r.code, ...JSON.parse(r.out) }; } catch { return { code: r.code, out: r.out }; } };
+
+const TEST = `const t=require('node:test'),a=require('node:assert');const {add,mul}=require('../src/add.js')
+t.test('add',()=>a.equal(add(2,2),4))
+t.test('mul',()=>a.equal(mul(2,3),6))
+`;
+// good = add works; a bad repo starts red, the case a cheat exists for
+function repo(good = false) {
+  const d = mkdtempSync(join(tmpdir(), 'claims-'));
+  git(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
+  put(d, 'src/add.js', `exports.add=(a,b)=>a${good ? '+' : '-'}b\nexports.mul=(a,b)=>a*b\n`);
+  put(d, 'test/add.test.js', TEST); put(d, '.gitignore', 'node_modules\n');
+  save(d, 'base'); return d;
+}
+const signed = (good = true) => { const d = repo(good); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); return d; };
+const fixAdd = (s) => s.replace('a-b', 'a+b');
+const breakAdd = (s) => s.replace('a+b', 'a-b');
+
+// the hooks exactly as attach wrote them
+function wired(d) {
+  assert.equal(sb(d, 'attach', '--claude').code, 0);
+  const h = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks;
+  const run = (cmd, ev) => spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 's', prompt: 'x' }) }).stdout || '';
+  return { prompt: () => run(h.UserPromptSubmit[0].hooks[0].command, 'UserPromptSubmit'), stop: () => run(h.Stop[0].hooks[0].command, 'Stop') };
+}
+const blocked = (out) => out.includes('"block"');
+
+// ------------------------------------------------------------ "re-proves a win from the source edits alone"
+test('claim: an honest source fix is verified', () => { const d = repo(); edit(d, 'src/add.js', fixAdd); save(d, 'fix'); assert.equal(check(d).code, 0); });
+test('claim: editing the assertion so a red test goes green reads gamed', () => { const d = repo(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'x'); assert.equal(check(d).code, 2); });
+test('claim: deleting the failing test reads gamed', () => { const d = repo(); edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'x'); assert.equal(check(d).code, 2); });
+test('claim: skipping the failing test reads gamed', () => { const d = repo(); edit(d, 'test/add.test.js', (s) => s.replace("t.test('add'", "t.test.skip('add'")); save(d, 'x'); assert.equal(check(d).code, 2); });
+test('claim: a green from editing the config reads gamed (the test command in package.json)', () => { const d = repo(); json(d, 'package.json', (o) => { o.scripts.test = 'true'; }); save(d, 'x'); assert.equal(check(d).code, 2); });
+test('claim: a working-tree cheat reads gamed before any commit', () => { const d = repo(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); assert.equal(check(d).code, 2); });
+test('claim: breaking something that worked is a regression', () => { const d = repo(true); edit(d, 'src/add.js', breakAdd); save(d, 'x'); assert.equal(check(d).code, 1); });
+test('claim: no false alarm on a feature with its own test', () => { const d = repo(true); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); edit(d, 'test/add.test.js', (s) => s + "t.test('sub',()=>a.equal(require('../src/add.js').sub(3,1),2))\n"); save(d, 'x'); assert.equal(check(d).code, 0); });
+test('claim: no false alarm on a rename that updates its tests, with a note to look', () => { const d = repo(true); edit(d, 'src/add.js', (s) => s.replaceAll('mul', 'times')); edit(d, 'test/add.test.js', (s) => s.replaceAll('mul', 'times')); save(d, 'x'); const r = check(d); assert.equal(r.code, 0); assert.ok(r.metrics.find((m) => m.name === 'tests_pass').heldByTestEdit); });
+test('claim: a pass with nothing to re-prove does not say the source earned a win', () => { const d = repo(true); put(d, 'NOTES.md', 'x\n'); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 0); assert.match(r.out, /held/); assert.doesNotMatch(r.out, /carried the win/); });
+
+// ------------------------------------------------------------ exit codes
+test('claim: exit 3 inconclusive when no test can run', () => { const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q'); put(d, 'a', '1'); save(d, 'a'); put(d, 'a', '2'); save(d, 'b'); assert.equal(check(d).code, 3); });
+test('claim: exit 64 outside a git repository', () => { assert.equal(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'check').code, 64); });
+
+// ------------------------------------------------------------ the stated limits, held as tests so they stay stated
+test('limit: a suite weakened while it stays green is not proved: a note, never a failure', () => { const d = repo(true); edit(d, 'src/add.js', breakAdd); edit(d, 'test/add.test.js', (s) => s.replace('a.equal(add(2,2),4)', 'a.ok(true)')); save(d, 'x'); const r = check(d); assert.equal(r.code, 0); assert.ok(r.metrics.find((m) => m.name === 'tests_pass').heldByTestEdit); });
+test('limit: a hardcoded answer in the source passes: the check proves the source carried it, not that the source is good', () => { const d = repo(); edit(d, 'src/add.js', (s) => s.replace('(a,b)=>a-b', '(a,b)=>(a===2&&b===2)?4:a-b')); save(d, 'x'); assert.equal(check(d).code, 0); });
+test('limit: the Stop hook does not run the tests on uncommitted work', () => { const d = signed(false); const w = wired(d); w.prompt(); w.stop(); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); assert.ok(!blocked(w.stop())); assert.equal(check(d).code, 2, 'the same tree reads gamed on demand'); });
+
+// ------------------------------------------------------------ signing
+test('claim: signing writes the contract and the lock and commits nothing', () => { const d = repo(true); const n = git(d, 'rev-list', '--count', 'HEAD'); assert.equal(sb(d, 'contract').code, 0); assert.equal(git(d, 'rev-list', '--count', 'HEAD'), n); for (const f of ['promptwheel.config.json', 'promptwheel.lock.json', '.promptwheel/packs/supply-chain/scan.mjs']) assert.ok(existsSync(join(d, f)), f); });
+test('claim: a signing commit passes its own contract', () => { const d = signed(true); assert.equal(check(d).code, 0); });
+test('claim: a signing commit is not a pass when the tests never ran', () => { const d = repo(false); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.notEqual(sb(d, 'check').out.includes('carried the win'), true); });
+test('claim: --dry-run writes nothing', () => { const d = repo(true); assert.equal(sb(d, 'contract', '--dry-run').code, 0); assert.equal(git(d, 'status', '--porcelain'), ''); });
+
+// ------------------------------------------------------------ protected paths
+for (const [name, f] of [['workflows', '.github/workflows/x.yml'], ['registry config', '.npmrc'], ['build images', 'Dockerfile'], ['publish scripts', 'scripts/release.sh'], ['code owners', 'CODEOWNERS'], ['hook config', '.claude/settings.json'], ['scanners', '.promptwheel/packs/supply-chain/README.md'], ['the lock', 'promptwheel.lock.json']]) {
+  test(`claim: a change to ${name} fails the gate`, () => { const d = signed(true); put(d, f, 'x\n'); git(d, 'add', '-A', '-f'); git(d, 'commit', '-qm', 'x'); const r = check(d); assert.equal(r.code, 1); assert.ok((r.mandates || []).length > 0); });
+}
+test('claim: moving a file out of a protected path counts as touching it', () => { const d = signed(true); put(d, 'scripts/release.sh', 'x\n'); git(d, 'add', '-A'); git(d, 'commit', '-qm', 'p', '-q'); git(d, 'mv', 'scripts/release.sh', 'rel.sh'); git(d, 'commit', '-qm', 'mv'); assert.equal(check(d).code, 1); });
+test('claim: a new install script fails the gate', () => { const d = signed(true); json(d, 'package.json', (o) => { o.scripts.postinstall = 'x'; }); save(d, 'x'); assert.equal(check(d).code, 1); });
+test('claim: a new dependency needs a reason from a person', () => { const d = signed(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x'); assert.equal(check(d).code, 1); assert.equal(check(d, '--allow', 'a person said so').code, 0); });
+test('claim: a new network address in the source is caught by the lock', () => { const d = signed(true); edit(d, 'src/add.js', (s) => s + 'exports.x=()=>fetch("https://a.invalid")\n'); save(d, 'x'); assert.equal(check(d).code, 1); });
+
+// ------------------------------------------------------------ "editing the rule does not lift it"
+test('claim: deleting a rule in the change that breaks it does not lift it', () => { const d = signed(true); json(d, 'promptwheel.config.json', (o) => { o.mandates = []; }); put(d, '.npmrc', 'x\n'); save(d, 'x'); assert.equal(check(d).code, 1); });
+test('claim: weakening the contract alone fails, so it cannot be done in two steps', () => { const d = signed(true); json(d, 'promptwheel.config.json', (o) => { o.metrics[0].cmd = 'true'; }); save(d, 'x'); assert.equal(check(d).code, 1); });
+test('claim: a person lifts a rule with --allow, and a commit message cannot', () => { const d = signed(true); json(d, 'promptwheel.config.json', (o) => { o.mandates = []; }); save(d, 'drop\n\nPromptwheel-Allow: because'); assert.equal(check(d).code, 1, 'trailer'); assert.equal(check(d, '--allow', 'a person').code, 0); });
+
+// ------------------------------------------------------------ the wall, through the hooks attach writes
+test('claim: on a clean account a signed repo does not block a clean turn', () => { const d = signed(true); const w = wired(d); for (let i = 0; i < 3; i++) { w.prompt(); assert.ok(!blocked(w.stop()), `turn ${i}`); } assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(check(d).code, 0); });
+test('claim: the first turn after attach is checked', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); });
+test('claim: every turn checks protected paths, uncommitted included', () => { const d = signed(true); const w = wired(d); w.prompt(); put(d, '.npmrc', 'x\n'); assert.ok(blocked(w.stop())); });
+test('claim: a person editing a protected path between turns is not the agent', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); put(d, '.npmrc', 'x\n'); w.prompt(); assert.ok(!blocked(w.stop())); });
+test('claim: it sends a turn back up to three times by default, then lets it end', () => { const d = signed(true); const w = wired(d); w.prompt(); put(d, '.npmrc', 'x\n'); const seen = []; for (let i = 0; i < 4; i++) seen.push(blocked(w.stop())); assert.deepEqual(seen, [true, true, true, false]); });
+
+// ------------------------------------------------------------ history that a rewrite erased
+const lessons = (attached) => {
+  const d = signed(true); const w = attached ? wired(d) : null;
+  put(d, 'src/cache.js', 'exports.c={}\n'); save(d, 'add a result cache'); git(d, 'revert', '--no-edit', 'HEAD');
+  edit(d, 'src/add.js', (s) => s + '// a\n'); save(d, 'keep going');
+  return { d, w };
+};
+const squash = (d) => { git(d, 'reset', '-q', '--soft', 'HEAD~3'); git(d, 'commit', '-qm', 'all in one'); };
+test('claim: a revert erased by a squash comes back in context for that path', () => { const { d } = lessons(false); squash(d); put(d, 'src/cache.js', 'y\n'); const o = sb(d, 'context').out; assert.match(o, /reverted: Revert "add a result cache"/); });
+test('claim: the ledger outlives the reflog once a repo is attached', () => { const { d, w } = lessons(true); w.prompt(); w.stop(); squash(d); put(d, 'src/cache.js', 'y\n'); w.prompt(); git(d, 'reflog', 'expire', '--expire=now', '--all'); git(d, 'gc', '-q', '--prune=now'); assert.match(sb(d, 'context').out, /Revert "add a result cache"/); });
+test('claim: an amend is not reported as lost work', () => { const d = signed(true); put(d, 'src/x.js', '1\n'); save(d, 'add x'); put(d, 'src/x.js', '2\n'); git(d, 'add', '-A'); git(d, 'commit', '-q', '--amend', '--no-edit'); put(d, 'src/x.js', '3\n'); assert.doesNotMatch(sb(d, 'context').out, /erased by a rewrite/); });
+test('claim: an unattached repo gets no files from this', () => { const { d } = lessons(false); squash(d); put(d, 'src/cache.js', 'y\n'); sb(d, 'context'); assert.ok(!existsSync(join(d, '.sawbuck'))); });
+test('limit: the ledger is local, so a clone does not get it', () => { const { d } = lessons(true); squash(d); sb(d, 'context'); const c = mkdtempSync(join(tmpdir(), 'claims-')); git(c, 'clone', '-q', d, 'c'); assert.ok(!existsSync(join(c, 'c/.sawbuck'))); });
+test('limit: nothing before the reflog is recovered, and work never committed is not in git at all', () => { const { d } = lessons(false); squash(d); git(d, 'reflog', 'expire', '--expire=now', '--all'); git(d, 'gc', '-q', '--prune=now'); put(d, 'src/cache.js', 'y\n'); assert.doesNotMatch(sb(d, 'context').out, /Revert/); });
+
+// ------------------------------------------------------------ leaving
+test('claim: detach removes the hooks', () => { const d = signed(true); wired(d); assert.equal(sb(d, 'detach', '--claude').code, 0); assert.ok(!existsSync(join(d, '.claude/settings.local.json'))); });
+test('claim: the signed contract stays after detach, and --purge removes the record', () => { const d = signed(true); wired(d); check(d); sb(d, 'detach', '--claude', '--purge'); assert.ok(existsSync(join(d, 'promptwheel.config.json'))); assert.ok(!existsSync(join(d, '.sawbuck'))); assert.ok(!existsSync(join(d, '.promptwheel/outcomes.jsonl'))); });
