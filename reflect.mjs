@@ -52,7 +52,6 @@ function check() {
 const report = check();
 if (!report || !report.verdict) process.exit(0);          // couldn't measure → nothing to learn
 const verdict = report.verdict;                            // engine contract: 'gamed' | 'fail' | ...
-appendActivity(verdict, report);   // the event feed logs EVERY measurable check, so you can watch it work (verified too, not only catches)
 // the results record, and the base this run measured from (a full sha), so a gamed verdict can be
 // held against the SAME span until it re-proves: the hook re-runs base..HEAD, not last-commit..HEAD
 const recDir = join(repo, '.sawbuck');
@@ -62,10 +61,23 @@ try { if (existsSync(recPath)) rec = JSON.parse(readFileSync(recPath, 'utf8')); 
 let baseSha = ''; try { baseSha = git('rev-parse', `${base}^{commit}`); } catch {}
 const standing = !!(rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.base === baseSha);
 const writeRec = () => { try { mkdirSync(recDir, { recursive: true }); writeFileSync(recPath, JSON.stringify(rec, null, 2) + '\n'); } catch {} };
-if (verdict === 'pass' && standing) {
-  // the span the gamed verdict was measured over now passes from the source: the wall comes down
-  rec.latest = { sha: git('rev-parse', head).slice(0, 8), kind: 'verified', base: baseSha, file: rec.latest.file, reason: 'the source earned the green over the span the gamed verdict was measured on', at: new Date().toISOString(), by: by || null };
+appendActivity(verdict, report, standing);   // the event feed logs EVERY measurable check, so you can watch it work (verified too, not only catches)
+if (standing) {
+  let headSha = ''; try { headSha = git('rev-parse', head); } catch {}
+  if (verdict === 'pass') {
+    // the span the gamed verdict was measured over now passes from the source: the wall comes down
+    rec.latest = { sha: headSha.slice(0, 8), kind: 'verified', base: baseSha, file: rec.latest.file, reason: 'the source earned the green over the span the gamed verdict was measured on', at: new Date().toISOString(), by: by || null };
+    writeRec();
+    process.exit(0);
+  }
+  // gamed again, a regression on top, or a span that cannot be certified: the source has still not
+  // earned the green over the span the verdict was measured on, so the gamed record holds, advanced
+  // to this head (the Stop hook keeps the wall up), its file and attribution untouched (a commit
+  // the person made in between is not the catch), and nothing is counted or noted a second time
+  rec.latest = { ...rec.latest, sha: headSha.slice(0, 8), at: new Date().toISOString(), standingVerdict: verdict };
   writeRec();
+  process.stderr.write(`sawbuck: the gamed verdict on ${rec.latest.file} still stands (${verdict} over the same span)\n`);
+  process.exit(0);
 }
 if (verdict !== 'gamed' && verdict !== 'fail') process.exit(0);   // only breakage is worth recording
 
@@ -104,7 +116,7 @@ process.stderr.write(`sawbuck: ${kind} recorded on ${evidenceFile}\n`);
 // --- the activity feed: one line per check so you can watch it work, verified
 // included, not only catches. Capped, lives in the git-excluded .sawbuck/, opt
 // out with SAWBUCK_NO_LOG=1. `sawbuck log` reads it.
-function appendActivity(v, rep) {
+function appendActivity(v, rep, standing = false) {
   if (process.env.SAWBUCK_NO_LOG) return;
   const map = { pass: 'verified', gamed: 'gamed', fail: 'regression', inconclusive: 'inconclusive' };
   const k = (v === 'pass' && rep.allowed) ? 'allowed' : map[v];   // a declared override is logged distinctly, for the audit trail
@@ -118,7 +130,8 @@ function appendActivity(v, rep) {
     : k === 'allowed' ? ('declared intentional: ' + (rep.allowed?.reason || ''))
     : k === 'verified' ? 'the source earned the green'
     : 'could not certify a pass';
-  const ev = { at: new Date().toISOString(), kind: k, sha, file, reason: String(why).slice(0, 160), by: by || null };
+  // `standing`: this check re-proved the span of a gamed verdict that is still up, not a new catch
+  const ev = { at: new Date().toISOString(), kind: k, sha, file, reason: String(why).slice(0, 160), by: by || null, ...(standing ? { standing: true } : {}) };
   const dir = join(repo, '.sawbuck');
   const p = join(dir, 'activity.jsonl');
   try {

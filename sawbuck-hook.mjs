@@ -46,9 +46,21 @@ try { if (existsSync(stPath)) st = JSON.parse(readFileSync(stPath, 'utf8')); } c
 // a contract exists (--no-auto): nobody's whole test suite runs three times in a repo they never set up.
 const head = git('rev-parse', 'HEAD');
 const readRec = () => { try { return JSON.parse(readFileSync(join(stDir, 'results.json'), 'utf8')); } catch { return null; } };
+const writeRec = (r) => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(join(stDir, 'results.json'), JSON.stringify(r, null, 2) + '\n'); } catch {} };
+const logActivity = (ev) => { try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...ev }) + '\n'); } catch {} };
+const hasCommit = (ref) => { try { execFileSync('git', ['-C', repo, 'cat-file', '-e', `${ref}^{commit}`], { stdio: 'ignore' }); return true; } catch { return false; } };
 let rec = readRec();
 if (head && st.lastSha && head !== st.lastSha) {
-  const standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
+  let standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
+  if (standing && !hasCommit(rec.latest.base)) {
+    // the span can no longer be re-proved (a rebase, a squash, a pruned branch took its base away):
+    // say so in the feed, drop the record to unverified (never blocked on), and keep checking new
+    // commits from the last one seen, so the wall's loss is visible instead of a silent stop
+    logActivity({ kind: 'note', sha: head.slice(0, 8), file: rec.latest.file || '', reason: 'the base of the standing gamed verdict is gone from this clone (rebased or pruned); the record is cleared and new commits are checked from the last one seen', by: by || 'hook' });
+    rec.latest = { ...rec.latest, kind: 'unverified', at: new Date().toISOString(), reason: 'the base of the gamed verdict left the clone before the span re-proved from the source' };
+    writeRec(rec);
+    standing = false;
+  }
   node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : st.lastSha, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
   rec = readRec();
 }
@@ -87,7 +99,12 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     // spared, or the next clean turn would be blocked over work that was never the agent's.
     const files = {};
     for (const f of protectedAmong(repo, changed)) files[f] = hashOf(repo, f);
-    st.lastViolation = { at: now, sha: (base && base.sha) || null, files };
+    // a flagged file the person had dirty before the prompt: keep the hash of THEIR content (the
+    // baseline stored it in the object database), so the block can name the exact restore and the
+    // next baseline can recognise the restored file as theirs
+    const before = {};
+    for (const f of Object.keys(files)) if (Object.prototype.hasOwnProperty.call(baseline, f) && baseline[f] && baseline[f] !== 'deleted') before[f] = baseline[f];
+    st.lastViolation = { at: now, sha: (base && base.sha) || null, files, ...(Object.keys(before).length ? { before } : {}) };
   } else if (st.lastViolation) { delete st.lastViolation; }
   saveState();
   if (hits.length) {
@@ -98,12 +115,16 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     if (st.mandatePromptId !== promptId) { st.mandatePromptId = promptId; st.mandateBlocks = 0; }
     const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}${h.committed ? ' [this rule is in the committed contract; editing promptwheel.config.json in the working tree does not lift it]' : ''}`).join('; ');
     const spared = leftAlone.length ? ` Edits that were already there before this prompt were left out of this check and must stay as they are: ${leftAlone.join(', ')}.` : '';
+    const before = (st.lastViolation && st.lastViolation.before) || {};
+    const restore = Object.keys(before).length ? ' To put back what you overwrote: ' + Object.entries(before).map(([f, h]) => `restore ${f} to the content it had when the prompt began: git cat-file -p ${h} > ${f}`).join('; ') + '.' : '';
+    const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
+    const accept = committedHit ? ' To accept this change on purpose, change the mandate in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
-    try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' }) + '\n'); } catch {}
+    logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
     if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
       st.mandateBlocks = (st.mandateBlocks || 0) + 1;
       saveState();
-      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${upgrade}` }));
+      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${accept}${upgrade}` }));
       process.exit(0);
     }
     saveState();
