@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,6 +121,14 @@ test('claim: an amend is not reported as lost work', () => { const d = signed(tr
 test('claim: an unattached repo gets no files from this', () => { const { d } = lessons(false); squash(d); put(d, 'src/cache.js', 'y\n'); sb(d, 'context'); assert.ok(!existsSync(join(d, '.sawbuck'))); });
 test('limit: the ledger is local, so a clone does not get it', () => { const { d } = lessons(true); squash(d); sb(d, 'context'); const c = mkdtempSync(join(tmpdir(), 'claims-')); git(c, 'clone', '-q', d, 'c'); assert.ok(!existsSync(join(c, 'c/.sawbuck'))); });
 test('limit: nothing before the reflog is recovered, and work never committed is not in git at all', () => { const { d } = lessons(false); squash(d); git(d, 'reflog', 'expire', '--expire=now', '--all'); git(d, 'gc', '-q', '--prune=now'); put(d, 'src/cache.js', 'y\n'); assert.doesNotMatch(sb(d, 'context').out, /Revert/); });
+
+// ------------------------------------------------------------ the steer scratchpad
+const steerHome = (steers, stats = { scored: steers.length, lost: 0 }) => { const h = mkdtempSync(join(tmpdir(), 'claims-home-')); put(h, '.claude/plugins/store/sawbuck-reins_x.json', JSON.stringify({ steers, steerStats: stats })); return h; };
+const steersOut = (h, ...a) => spawnSync(process.execPath, [CLI, 'steers', ...a], { cwd: h, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout;
+test('claim: a steer repeated 3 times across 2 sessions is shown, with a pointer to write it down', () => { const e = (session, repo) => ({ session, repo, nudge: 'verify before trusting' }); const o = steersOut(steerHome([e('1', 'a'), e('1', 'b'), e('2', '')])); assert.match(o, /3x {2}verify before trusting {2}\(a, b, no repo\)/); assert.match(o, /write it down/); });
+test('claim: a steer from one session is not called a pattern', () => { const e = { session: '1', repo: 'a', nudge: 'verify first' }; assert.match(steersOut(steerHome([e, e, e])), /Nothing repeats yet/); });
+test('claim: replies that could not be scored are shown as an undercount', () => { assert.match(steersOut(steerHome([{ session: '1', repo: 'a', nudge: 'x y' }], { scored: 1, lost: 4 })), /4 could not be scored, so this undercounts/); });
+test('claim: the scratchpad report reads only: it writes no file', () => { const h = steerHome([]); steersOut(h); assert.deepEqual(readdirSync(join(h, '.claude/plugins/store')), ['sawbuck-reins_x.json']); assert.ok(!existsSync(join(h, '.sawbuck'))); });
 
 // ------------------------------------------------------------ leaving
 test('claim: detach removes the hooks', () => { const d = signed(true); wired(d); assert.equal(sb(d, 'detach', '--claude').code, 0); assert.ok(!existsSync(join(d, '.claude/settings.local.json'))); });

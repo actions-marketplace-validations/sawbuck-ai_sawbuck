@@ -14,6 +14,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { erasedBlock } from './rewrites.mjs';
+import { steersReport } from './steers.mjs';
 import { ensureExcluded } from './exclude.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
@@ -93,6 +94,7 @@ Usage:
   sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
   sawbuck where             List every repo Sawbuck is attached to
   sawbuck contract          Sign this repo: tests, tripwires, protected paths, and the architecture lock (--dry-run to preview)
+  sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
   sawbuck statusline        One-line segment for your status line (🐴 watching | N caught | steer %)
 
   sawbuck recall [repo]     Related notes for your changes from extra memory providers
@@ -343,6 +345,7 @@ switch (cmd) {
   case 'trace': { traceRepo(repoRoot()); break; }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'where': { whereAttached(); break; }
+  case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.
     try {
