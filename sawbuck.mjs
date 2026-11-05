@@ -284,7 +284,9 @@ switch (cmd) {
         {   // a baseline even with no rules yet: a turn that signs a contract is judged by the contract it began with
           const prev = st.turnBaseline && typeof st.turnBaseline === 'object' ? st.turnBaseline : null;
           const stoppedSince = st.lastStopAt && st.lastPromptAt && Date.parse(st.lastStopAt) >= Date.parse(st.lastPromptAt);
-          const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince;
+          // a baseline attach wrote is not a prompt: it covers the turn that ran attach, if there was one. Set up from
+          // a terminal, nothing is in flight, and the commits made before this prompt are the person's.
+          const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince && prev.by !== 'attach';
           if (!unfinished) {
             const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
             const before = (st.lastViolation && st.lastViolation.before && typeof st.lastViolation.before === 'object') ? st.lastViolation.before : {};
@@ -612,7 +614,7 @@ function wireClaude(repo, opts) {
       let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
       if (!st.turnBaseline) {
         let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-        st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }) };
+        st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach' };
         st.lastPromptAt = new Date().toISOString();
         mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
       }
