@@ -1,12 +1,15 @@
 // What was not said. The shape records what you pushed on; this records what the agent did, from your transcripts, so a
 // spoke can be read against its opportunity: an agent that often changes code and runs nothing, in history where you
 // rarely ask for proof, is a blind spot. Plain counting of tool calls. No model, nothing leaves this machine.
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readHistory, typedText } from './history.mjs';
 
-const VERIFY = /\b(test|tests|pytest|vitest|jest|mocha|ava|playwright|cargo (test|check)|go (test|vet)|tsc|eslint|lint|typecheck|npm run (build|check)|curl|sawbuck check|promptwheel run|make (test|check))\b/i;
+// A real check: a test runner, a build, a type or syntax check, a validator. The bare word "test" is not one: `test -f` and `cat test/a.js` matched it.
+const VERIFY = /(npm (run )?test|yarn test|pnpm test|npx (vitest|jest|mocha|playwright|tsc|eslint)|node --(test|check)|bash -n|sh -n|pytest|vitest|\bjest\b|\bmocha\b|\bplaywright\b|cargo (test|check)|go (test|vet)|\btsc\b|\beslint\b|npm run (build|check|lint|typecheck)|astro build|sawbuck check|promptwheel run|make (test|check)|plugin (validate|test)|py_compile|unittest)/i;
+// running the file you just edited is a check too; git add naming it is not
+const RUNS = /(^|[\s;&|(])(node|python3?|bash|sh|tsx|\.\/)/;
 const RISKY_PATH = /(^|\/)(\.env[^/]*|\.npmrc|\.yarnrc(\.yml)?|\.github\/workflows\/[^/]+|Dockerfile[^/]*|docker-compose[^/]*|CODEOWNERS|\.claude\/settings(\.local)?\.json|[^/]*(secret|credential)[^/]*)$/i;
 const RISKY_CMD = /(git push[^|;&]*(--force|-f\b)|git reset --hard|curl[^|]*\|\s*(sh|bash)|sudo |drop table|chmod 777)/i;
 // deleting a temp or build folder is housekeeping, not risk: on real history two thirds of rm -rf were that
@@ -33,8 +36,6 @@ const WRITTEN = {
 };
 export function writtenRules({ home = homedir(), repo = process.cwd() } = {}) {
   const files = [join(home, '.claude', 'CLAUDE.md'), join(home, '.sawbuck', 'rules.md'), join(repo, 'CLAUDE.md'), join(repo, 'AGENTS.md')];
-  const root = join(home, '.claude', 'projects');
-  try { for (const d of readdirSync(root)) { const m = join(root, d, 'memory'); if (existsSync(m)) for (const f of readdirSync(m)) if (/^feedback.*\.md$/.test(f)) files.push(join(m, f)); } } catch {}
   let text = '';
   for (const f of files) { try { text += '\n' + readFileSync(f, 'utf8'); } catch {} }
   return Object.fromEntries(Object.entries(WRITTEN).map(([s, re]) => [s, re.test(text)]));
@@ -60,7 +61,7 @@ export function exposure({ root = join(homedir(), '.claude', 'projects'), days =
   };
   const endSession = () => {
     close();
-    T.forEach((t, i) => { if (t.code && !T.slice(i, i + 1 + WINDOW).some((x) => x.verified)) c.unverified++; });
+    T.forEach((t, i) => { if (t.code && !T.slice(i, i + 1 + WINDOW).some((x) => x.verified || t.edited.some((f) => x.runs.includes(f)))) c.unverified++; });
     T = [];
   };
   const onTool = (b) => {
@@ -69,13 +70,14 @@ export function exposure({ root = join(homedir(), '.claude', 'projects'), days =
     if (b.name === 'Bash') {
       const cmd = String(i.command || '');
       if (VERIFY.test(cmd)) turn.verified = true;
+      if (RUNS.test(cmd) && !/^\s*git\b/.test(cmd)) turn.runs += '\n' + cmd.slice(0, 2000);
       const rm = cmd.match(RM);
       if (RISKY_CMD.test(cmd) || (rm && !RM_SAFE.test(rm[1]))) turn.risky = true;
       if (SHIP.test(cmd)) turn.ship = true;
       if (/\bgit mv\b/.test(cmd)) turn.rename = true;
     } else if (b.name === 'Edit' || b.name === 'Write' || b.name === 'MultiEdit') {
       const p = String(i.file_path || '');
-      if (CODE.test(p) && !SCRATCH.test(p)) turn.code++;
+      if (CODE.test(p) && !SCRATCH.test(p)) { turn.code++; turn.edited.push(p.split('/').pop()); }
       if (UI.test(p)) turn.ui = true;
       if (COPY.test(p)) turn.copy = true;
       if (RISKY_PATH.test(p)) turn.risky = true;
@@ -90,7 +92,7 @@ export function exposure({ root = join(homedir(), '.claude', 'projects'), days =
       if (e.type === 'user') {
         if (typedText(e.message) === null) return;
         close();
-        turn = { tools: 0, code: 0, verified: false, risky: false, added: 0, ship: false, ui: false, copy: false, rename: false, last: '' };
+        turn = { tools: 0, code: 0, edited: [], runs: '', verified: false, risky: false, added: 0, ship: false, ui: false, copy: false, rename: false, last: '' };
       } else if (turn && Array.isArray(e.message && e.message.content)) {
         for (const b of e.message.content) {
           if (b.type === 'text') turn.last = b.text || turn.last;

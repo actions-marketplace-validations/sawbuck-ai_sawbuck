@@ -44,7 +44,7 @@ export function tally(labels) {
 const MIN_TURNS = 30;   // a pattern needs enough turns behind it: 1 of 3 is not one
 const HIGH_PUSH = 8, HIGH_DOING = 10, HIGH_FAULT = 5, CLEAR_LOW = 5, CLEAR_HIGH = 10;   // a fault counts sooner than plain activity
 const SEEN = {
-  proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code and ran no check within 3 turns', rule: 'Run the tests before saying a change works.' },
+  proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code with no test, build, syntax check or run of that file within 3 turns', rule: 'Run the tests before saying a change works.' },
   safety: { fault: true, of: 'working', n: 'risky', says: 'touched something risky', rule: 'Ask before force pushing, deleting outside temp folders, or touching secrets, workflows or deploy files.' },
   process: { of: 'working', n: 'shipped', says: 'committed, pushed or published', rule: 'Do not commit or push unless I ask.' },
   voice: { of: 'working', n: 'copy', says: 'wrote docs or copy', rule: 'Write docs in plain, short sentences.' },
@@ -132,7 +132,7 @@ export function shapeCli(args, { home = homedir() } = {}) {
   const close = found.filter((f) => f.kind === 'too close');
   if (close.length) out.push('', `  Too close to call, so not named: ${close.map((f) => title(f.spoke)).join(', ')}.`);
   if (found.some((f) => f.kind === 'too few')) out.push('', `  Not enough recent turns to name every pattern yet: each needs ${MIN_TURNS}.`);
-  if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
+  if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work or edits made by a script, so it is a lead to check. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
   out.push('', `  Card: ${p.svg}`);
   if (args.includes('--png')) { const png = pngCard(p.svg); out.push(png ? `  Image to share: ${png}` : '  No image tool here (rsvg-convert or Chrome): open the card in a browser to save an image.'); }
   return out.join('\n');
