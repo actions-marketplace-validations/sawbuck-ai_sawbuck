@@ -5,6 +5,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 const sh = (r, ...a) => { try { return execFileSync('git', ['-C', r, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
+export const RECORD_DIRS = ['.sawbuck/', '.promptwheel/*', '!.promptwheel/packs/', 'events.jsonl', 'annotations.jsonl', 'annotation-reviews.jsonl', 'decision-cards.jsonl', 'LOGBOOK.md', 'JOURNEY.md'];
+
 export function ensureExcluded(r) {
   try {
     // the repository's own exclude file, wherever its git dir is (a worktree or submodule keeps it elsewhere)
@@ -13,7 +15,7 @@ export function ensureExcluded(r) {
     const f = resolve(r, rel);
     // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
     // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n.claude/settings.local.json\n# <<< sawbuck <<<\n';
+    const WANT = `# >>> sawbuck >>>\n${[...RECORD_DIRS, '.claude/settings.local.json'].join('\n')}\n# <<< sawbuck <<<\n`;
     const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
     const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
     const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;

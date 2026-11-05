@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock } from './rewrites.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
-import { ensureExcluded } from './exclude.mjs';
+import { ensureExcluded, RECORD_DIRS } from './exclude.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,7 +47,6 @@ const BLOCK_RE = new RegExp(`\\n?${S_START}[\\s\\S]*?${S_END}\\n?`, 'g');
 // plus the logbook's root working-set (ledger cache, digests, annotation planes). It is
 // memory, not the user's source, a user who wants LOGBOOK.md committed still can explicitly
 // (exclude only affects UNtracked files).
-const RECORD_DIRS = ['.sawbuck/', '.promptwheel/*', '!.promptwheel/packs/', 'events.jsonl', 'annotations.jsonl', 'annotation-reviews.jsonl', 'decision-cards.jsonl', 'LOGBOOK.md', 'JOURNEY.md'];
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -70,7 +69,7 @@ Usage:
                             fastest way to see it work. Every promptwheel run flag passes through.
                             Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
   sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block]
-                            Write the contract (promptwheel.config.json), tuned and explained by what your
+                            Customize the contract (promptwheel.config.json), with notes from what your
                             git history shows actually breaks, plus a short contract guide in AGENTS.md
                             (--no-agent-block to skip). Wizard in a terminal, non-interactive in a pipe/CI (or --yes).
   sawbuck attach [repo]     Enforce the contract on every commit (a git post-commit hook)
@@ -87,7 +86,7 @@ Usage:
                             The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
                             shows only what a branch adds; --fail-on exits nonzero (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
-  sawbuck frame [repo]      The contract's hard rules (mandates, inherited ones included) as one compact block;
+  sawbuck frame [repo]      The contract's protected paths, inherited ones included, as one compact block;
                             silent without a contract (--speak explains)
   sawbuck turn [repo]       frame + context in one block: what attach --claude runs on every prompt
 
@@ -185,7 +184,7 @@ switch (cmd) {
     if (!rep || !rep.verdict) { out('🐴 sawbuck: could not run the check here. Make sure this is a git repo with a commit, and a test command (or run `sawbuck init`).'); process.exit(64); }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
-    for (const md of rep.mandates || []) out(`🐴 ⛔ mandate "${md.name}" violated${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; a mandate stays in force for the change that removes it]' : ''}`);
+    for (const md of rep.mandates || []) out(`🐴 ⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
     const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
     if (rep.verdict === 'pass' && win) out(`🐴 ✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
@@ -235,7 +234,7 @@ switch (cmd) {
     // cannot forget them. Silent without a contract; --speak explains instead.
     const o = frameBlock(repoRoot());
     if (o) out(o);
-    else if (flags.has('--speak')) out('🐴 sawbuck frame: no mandates in promptwheel.config.json yet. Add one (a protected path) and this re-asserts it every turn and after every compaction, so a deep context cannot forget it.');
+    else if (flags.has('--speak')) out('🐴 sawbuck frame: no protected paths in promptwheel.config.json yet. Add one (a protected path) and this re-asserts it every turn and after every compaction, so a deep context cannot forget it.');
     break;
   }
   case 'turn': {
@@ -611,6 +610,7 @@ function wireClaude(repo, opts) {
   regAdd(repo, mode);
   out(upgrading ? `sawbuck: updated the ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f} to this version`
                 : `sawbuck: wired ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f}`);
+  if (!user && !existsSync(join(repo, 'AGENTS.md')) && !existsSync(join(repo, 'CLAUDE.md'))) out('  no written rule here yet, and that is what changes the agent: run sawbuck contract.');
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
   else if (!shared) out('  (settings.local.json is gitignored; use --shared to commit the hooks for your team)');
 }
@@ -684,6 +684,8 @@ function purgeRecord(repo) {
   let n = 0;
   for (const d of RECORD_DIRS) {
     const p = join(repo, d);
+    // a committed LOGBOOK.md or JOURNEY.md is the person's file, not our record
+    try { if (execFileSync('git', ['-C', repo, 'ls-files', '--', d], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) continue; } catch {}
     try { if (existsSync(p)) { rmSync(p, { recursive: true, force: true }); n++; out(`sawbuck: purged ${p}`); } } catch {}
   }
   const outcomes = join(repo, '.promptwheel', 'outcomes.jsonl');   // the rest of .promptwheel/ is the signed contract: yours to keep or delete
@@ -725,7 +727,7 @@ function doctorAll() {
 
 // --- registry: know and remove every attachment -----------------------------
 function regPath() { return join(homedir(), '.sawbuck', 'registry.json'); }
-function regRead() { try { return JSON.parse(readFileSync(regPath(), 'utf8')); } catch { return { repos: [] }; } }
+function regRead() { try { const r = JSON.parse(readFileSync(regPath(), 'utf8')); r.repos = (r.repos || []).filter((x) => existsSync(x.repo)); return r; } catch { return { repos: [] }; } }   // a repo that is gone is not attached
 function regWrite(r) {
   const f = regPath();
   if (!r.repos.length) { delFile(f); rmIfEmptyDir(dirname(f)); return; }

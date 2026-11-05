@@ -513,7 +513,7 @@ test('frame resolves mandates through extends and turn joins frame + history in 
     // no mandates -> frame is silent, turn is silent on a clean trail
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [] }));
     assert.equal(sawbuck(['frame', '.'], d).trim(), '');
-    assert.match(sawbuck(['frame', '--speak', '.'], d), /no mandates/);
+    assert.match(sawbuck(['frame', '--speak', '.'], d), /no protected paths/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -802,7 +802,7 @@ test('a commit the person makes between turns is theirs, but unrelated work does
     assert.equal(state().turnBaseline.sha, base, 'the baseline does not advance past the flagged commit while HEAD carries its content');
     const r = JSON.parse(hook({ prompt_id: 'p2' }));
     assert.equal(r.decision, 'block');
-    assert.match(r.reason, /To accept this change on purpose, change the mandate in the contract or revert the path/);
+    assert.match(r.reason, /To accept this change on purpose, change the rule in the contract or revert the path/);
     // the person reverts the protected path and commits: that commit is theirs and the wall comes down
     g('checkout', base, '--', 'src/auth/login.js'); g('commit', '-q', '-am', 'person: revert the auth change');
     const head = execFileSync('git', ['-C', d, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -1030,7 +1030,7 @@ test('a commit landed between turns does not walk the agent\'s committed protect
     assert.equal(state().turnBaseline.sha, base, 'the pin holds: HEAD still carries the flagged content');
     const r = JSON.parse(hook({ prompt_id: 'p2' }));
     assert.equal(r.decision, 'block', 'the committed protected change is still charged to the agent');
-    assert.match(r.reason, /To accept this change on purpose, change the mandate in the contract or revert the path/);
+    assert.match(r.reason, /To accept this change on purpose, change the rule in the contract or revert the path/);
     // the person reverts the path and commits: the pin is released and a clean turn ends
     g('checkout', base, '--', 'src/auth/login.js'); g('commit', '-q', '-am', 'person: revert the auth change');
     const head = execFileSync('git', ['-C', d, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();

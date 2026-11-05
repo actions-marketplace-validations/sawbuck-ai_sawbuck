@@ -1,6 +1,6 @@
 {
   "name": "sawbuck",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "description": "Sign your agent to a contract: a deterministic, zero-LLM check re-proves each win from the agent's source edits alone, so a test that went green by editing the test, grader, or config is sent back. For Claude Code, with Codex support in beta.",
   "type": "module",
   "license": "Apache-2.0",
@@ -34,13 +34,14 @@
   },
   "dependencies": {
     "@promptwheel/logbook": "0.9.10",
-    "promptwheel": "0.7.15"
+    "promptwheel": "0.7.16"
   },
   "files": [
     "sawbuck.mjs",
     "rewrites.mjs",
     "steers.mjs",
     "rules.mjs",
+    "agent-block.mjs",
     "exclude.mjs",
     "contract-cmd.mjs",
     "bins.mjs",

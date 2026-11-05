@@ -13,7 +13,7 @@ const force = process.argv.includes('--force');
 let rec = null;
 try { rec = JSON.parse(readFileSync(join(repo, '.sawbuck', 'results.json'), 'utf8')); } catch {}
 
-const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
+const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) + (rec.mandates || 0) : 0;
 if (!rec || (!total && !force)) process.exit(0);          // nothing recorded → stay quiet
 if (process.argv.includes('--json')) { console.log(JSON.stringify(rec)); process.exit(0); }
 

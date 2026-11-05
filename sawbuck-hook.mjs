@@ -32,8 +32,7 @@ const node = (f, a) => { try { return execFileSync(process.execPath, [f, ...a], 
 
 let cfg = {};
 try { cfg = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')); } catch {}
-const everyTurns = cfg.dispatch?.everyTurns ?? 5;
-const onlyOnCatch = cfg.dispatch?.onlyOnCatch ?? false;
+const EVERY_TURNS = 5;
 
 const stDir = join(repo, '.sawbuck');
 const stPath = join(stDir, 'state.json');
@@ -71,7 +70,7 @@ st.lastSha = head || st.lastSha;
 st.turns += 1;
 
 // 2) the record of what the check has charted (read above, after any re-run)
-const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
+const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) + (rec.mandates || 0) : 0;
 const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
 
 // 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
@@ -123,7 +122,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     const before = (st.lastViolation && st.lastViolation.before) || {};
     const restore = Object.keys(before).length ? ' To put back what you overwrote: ' + Object.entries(before).map(([f, h]) => `restore ${f} to the content it had when the prompt began: git cat-file -p ${h} > ${f}`).join('; ') + '.' : '';
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
-    const accept = committedHit ? ' To accept this change on purpose, change the mandate in the contract or revert the path.' : '';
+    const accept = committedHit ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
     // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
     // a block must not replace a gamed verdict that is still standing.
@@ -138,7 +137,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
       st.mandateBlocks = (st.mandateBlocks || 0) + 1;
       saveState();
-      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${accept}${upgrade}` }));
+      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a protected path in the contract was touched, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${accept}${upgrade}` }));
       process.exit(0);
     }
     saveState();
@@ -191,8 +190,8 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
 
 // 4) otherwise, surface a catch on a fresh catch or on cadence (a flag; never blocks)
 const freshCatch = total > (st.shownTotal || 0);
-const cadenceHit = everyTurns > 0 && st.turns % everyTurns === 0;
-if (freshCatch || (cadenceHit && !onlyOnCatch)) {
+const cadenceHit = st.turns % EVERY_TURNS === 0;
+if (freshCatch || cadenceHit) {
   const out = node(join(HERE, 'dispatch.mjs'), ['--repo', repo]);
   if (out.trim()) process.stdout.write(out.endsWith('\n') ? out : out + '\n');
   st.shownTotal = total;

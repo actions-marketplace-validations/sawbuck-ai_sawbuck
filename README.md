@@ -21,10 +21,10 @@ Or from the command line:
 # 1 · try it (no install, no commitment): verify your latest change right now
 npx sawbuck check
 
-# 2 · enforce it: attach once to this repo
+# 2 · sign this repo: the written rule, your tests, protected paths, CI
 npm i -g sawbuck
-sawbuck attach            # every commit (a git post-commit hook)
-sawbuck attach --claude   # or protected paths every Claude Code turn, plus every commit (a project-scoped Stop hook)
+sawbuck contract
+sawbuck attach --claude   # then watch every Claude Code turn
 ```
 
 **Zero-config:** it auto-detects your test command, so there is nothing to write to start.
@@ -60,19 +60,15 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 
 | command | what |
 |---|---|
+| `sawbuck contract` | one command to sign a repo: keeps your contract, adds tests and tripwires if there are none, protected paths, the supply-chain guards, and the architecture lock. `--dry-run` previews it. |
 | `sawbuck check [--base R --head R] [--repeat N] [--allow "reason"] [--json]` | verify your latest change (working tree if dirty, else the last commit, or a range); zero-config, no attach, no record. Every `promptwheel run` flag passes through: this is the engine with a plain-spoken verdict |
-| `sawbuck init` | write the contract (`promptwheel.config.json`), tuned by what your git history shows actually breaks |
 | `sawbuck attach [--claude \| --user]` | enforce it (git post-commit / project Claude hooks / user-level for every project) |
 | `sawbuck detach [--claude \| --user]` | remove it; no flag reverses whatever is attached here |
 | `sawbuck status` · `sawbuck log` | the inventory (caught over time + debt now + armed state), in one view; and the recent per-check feed |
 | `sawbuck debt` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
-| `sawbuck frame` | the contract's hard rules (mandates, inherited ones included) as one compact block; silent without a contract |
-| `sawbuck turn` | frame + context in one block: what `attach --claude` runs on every prompt and again right after a compaction |
-| `sawbuck recall` | related notes for your current change from extra memory providers you compose in (bring your own) |
 | `sawbuck trace` · `sawbuck doctor` · `detach --verify` | show the footprint; check the attachment resolves; prove a clean removal |
-| `sawbuck contract` | one command to sign a repo: keeps your contract, adds tests and tripwires if there are none, protected paths, the supply-chain guards, and the architecture lock. `--dry-run` previews it. |
-| `sawbuck where` · `sawbuck statusline` | list every repo it is attached to; a one-line status-line segment (🐴 watching / N caught / steer %) |
+| `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught / steer %) |
 
 ## Give your agent the contract
 

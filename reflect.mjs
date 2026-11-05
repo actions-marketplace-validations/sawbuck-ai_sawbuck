@@ -12,7 +12,7 @@
 //   node reflect.mjs [--repo <path>] [--base <ref>] [--head <ref>]
 //   defaults: repo=cwd, base=HEAD~1, head=HEAD   (evaluates the latest commit)
 //
-// Engines resolve to the monorepo siblings by default; PW_BIN / LB_BIN override.
+// PW_BIN / LB_BIN override the engines.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

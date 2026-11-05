@@ -4,6 +4,7 @@
 // lock. Zero-LLM. Re-running changes nothing. Protected product code (auth, billing) is suggested, never added:
 // freezing those is a person's decision.
 import { ensureExcluded } from './exclude.mjs';
+import { writeAgentBlock } from './agent-block.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, cpSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
@@ -63,7 +64,7 @@ try {
     writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
     const pack = join(repo, '.promptwheel', 'packs', 'supply-chain');
     mkdirSync(pack, { recursive: true });
-    cpSync(join(scratch, '.promptwheel', 'packs', 'supply-chain'), pack, { recursive: true });
+    cpSync(join(scratch, '.promptwheel', 'packs', 'supply-chain'), pack, { recursive: true, filter: (f) => !f.endsWith('README.md') });
     // the gate measures in clean worktrees, so the scanners must reach git. A repo attached earlier, or one that
     // ignores .promptwheel/ for the outcome record, would hide them and every guard would read unmeasurable.
     for (const f of [join(repo, '.gitignore'), resolve(repo, execFileSync('git', ['-C', repo, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim())]) {
@@ -73,6 +74,8 @@ try {
       if (next !== text) writeFileSync(f, next);
     }
     ensureExcluded(repo);
+    // the written rule is what changes the agent (the pressure bench: 11 of 20 to 0 of 20), so every signing writes it
+    writeAgentBlock(repo);
     // CI goes in here, before the rules take hold: afterwards the contract itself would refuse an agent the file.
     // Only for a GitHub repo with a real test command: a placeholder would fail every pull request.
     const wf = join(repo, '.github', 'workflows', 'sawbuck.yml');
@@ -92,5 +95,5 @@ let files = [];
 try { files = execFileSync('git', ['-C', repo, 'ls-files'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n'); } catch { /* not a repo: attach says so */ }
 const seen = new Set();
 for (const f of files) { const m = f.match(/^(.*?(?:^|\/)(?:auth|authentication|billing|payments?|migrations))\//); if (m && !/(^|\/)(node_modules|test|tests|docs?)\//.test(m[1])) seen.add(m[1]); }
-if (seen.size) process.stdout.write(`\n  To protect product code too, add these to "mandates" in promptwheel.config.json:\n${[...seen].slice(0, 5).map((d) => `    { "name": "${d.replace(/\W+/g, '-')}", "paths": ["${d}/**"], "reason": "changed by a person" }`).join('\n')}\n`);
-if (!dry) process.stdout.write('\n  Commit promptwheel.config.json, promptwheel.lock.json and .promptwheel/packs/. Then /sawbuck-reins:watch or sawbuck attach --claude arms it.\n');
+if (seen.size) process.stdout.write(`\n  To protect product code too, add these protected paths under "mandates" in promptwheel.config.json:\n${[...seen].slice(0, 5).map((d) => `    { "name": "${d.replace(/\W+/g, '-')}", "paths": ["${d}/**"], "reason": "changed by a person" }`).join('\n')}\n`);
+if (!dry) process.stdout.write('\n  Commit promptwheel.config.json, promptwheel.lock.json, AGENTS.md and .promptwheel/packs/. Then sawbuck attach --claude arms it.\n');
