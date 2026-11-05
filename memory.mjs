@@ -37,7 +37,7 @@ const classify = (r, source) => ({
 
 // events(): the raw git event record, the ranking input. [] on failure, exactly as "no history".
 export function events(repo) {
-  const out = run(LB, repo, ['query', '--json'], 256 * 1024 * 1024);
+  const out = run(LB, repo, ['query', '--json', '--limit', '100000'], 256 * 1024 * 1024);
   if (out === null) return [];
   return out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 }
