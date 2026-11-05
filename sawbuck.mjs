@@ -54,7 +54,7 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const rest = argv.slice(1);
 const flags = new Set(rest.filter((a) => a.startsWith('--')));
-// `-n N` (sawbuck log) is a flag with a value, not a repo path.
+// `-n N` (status --log) is a flag with a value, not a repo path.
 const positional = rest.filter((a, i) => !a.startsWith('--') && a !== '-n' && rest[i - 1] !== '-n');
 const repoArg = () => resolve(positional[0] || '.');
 const dry = flags.has('--dry-run');
@@ -81,18 +81,13 @@ Usage:
                             Remove it and restore the repo (no flag: whatever is attached here); --verify
                             proves it came back clean; --purge also deletes the record (.sawbuck/)
   sawbuck status [repo]     The inventory: caught over time + debt accruing now + whether it is armed. --json
-  sawbuck log [repo] [-n N] Recent checks, newest first (verified / gamed / regression)
+                            --log [-n N] for the recent checks, newest first
   sawbuck debt [repo] [--since REF] [--fail-on undocumented|test|any|N]
                             The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
                             shows only what a branch adds; --fail-on exits nonzero (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
-  sawbuck frame [repo]      The contract's protected paths, inherited ones included, as one compact block;
-                            silent without a contract (--speak explains)
-  sawbuck turn [repo]       What attach --claude runs on a prompt: the frame, once a session and after a compaction
-
   sawbuck trace [repo]      Show every file Sawbuck has placed in this repo (the footprint)
-  sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
-  sawbuck where             List every repo Sawbuck is attached to
+  sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all lists and checks every repo
   sawbuck contract          Sign this repo: tests, tripwires, protected paths, and the architecture lock (--dry-run to preview)
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
@@ -144,7 +139,8 @@ switch (cmd) {
   }
   case 'status': {
     // the inventory: one view unioning what the check has caught over time, what debt is accruing
-    // now, and whether it is armed here. The "show me everything" face.
+    // now, and whether it is armed here. The "show me everything" face. --log is the recent feed.
+    if (flags.has('--log')) { logReport(repoArg(), rest); break; }
     try { execFileSync(process.execPath, [join(HERE, 'status.mjs'), '--repo', repoArg(), ...rest.filter((a) => a.startsWith('--'))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
@@ -194,25 +190,6 @@ switch (cmd) {
     for (const x of rep.explained || []) out(`🐴 ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
     if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
-  }
-  case 'log': {
-    // the event feed: a running log of what the check did, so you can watch it work.
-    const repo = repoArg();
-    let lines = [];
-    try { lines = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').split('\n').filter(Boolean); } catch {}
-    if (!lines.length) { out('sawbuck: no activity recorded yet (the check logs here on each commit/turn).'); break; }
-    const ni = rest.indexOf('-n');
-    const n = ni > -1 ? (parseInt(rest[ni + 1], 10) || 20) : 20;
-    const icon = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎', mandate: '⛔' };
-    const recent = lines.slice(-n).reverse();
-    out(`sawbuck activity (last ${recent.length}):`);
-    for (const l of recent) {
-      try {
-        const e = JSON.parse(l);
-        out(`  ${(e.at || '').slice(0, 16).replace('T', ' ')}  ${icon[e.kind] || '·'} ${String(e.kind).padEnd(11)} ${e.file || ''}${e.reason ? '   ' + e.reason : ''}`);
-      } catch {}
-    }
-    break;
   }
   case 'rank': {
     try { execFileSync(process.execPath, [join(HERE, 'rank.mjs'), ...rest], { stdio: 'inherit' }); }
@@ -360,7 +337,6 @@ switch (cmd) {
   }
   case 'trace': { traceRepo(repoRoot()); break; }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
-  case 'where': { whereAttached(); break; }
   case 'rules': { out(rulesCli(rest)); break; }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
@@ -400,6 +376,23 @@ switch (cmd) {
     break;
   }
   default: die(`unknown command '${cmd}'\n\n${help}`);
+}
+
+function logReport(repo, rest) {
+  let lines = [];
+  try { lines = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').split('\n').filter(Boolean); } catch {}
+  if (!lines.length) { out('sawbuck: no activity recorded yet (the check logs here on each commit/turn).'); return; }
+  const ni = rest.indexOf('-n');
+  const n = ni > -1 ? (parseInt(rest[ni + 1], 10) || 20) : 20;
+  const icon = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎', mandate: '⛔' };
+  const recent = lines.slice(-n).reverse();
+  out(`sawbuck activity (last ${recent.length}):`);
+  for (const l of recent) {
+    try {
+      const e = JSON.parse(l);
+      out(`  ${(e.at || '').slice(0, 16).replace('T', ' ')}  ${icon[e.kind] || '·'} ${String(e.kind).padEnd(11)} ${e.file || ''}${e.reason ? '   ' + e.reason : ''}`);
+    } catch {}
+  }
 }
 
 // --- context: the ranked history for the files in hand, on demand ---------------------------
@@ -710,8 +703,9 @@ function doctorRepo(repo) {
 function doctorAll() {
   const r = regRead();
   if (!r.repos.length) { out('sawbuck: nothing to check (registry empty).'); return; }
-  const repos = [...new Set(r.repos.map((x) => x.repo))];
-  for (const repo of repos) doctorRepo(repo);
+  out('sawbuck is attached to:');
+  for (const x of r.repos) out(`  ${x.mode.padEnd(14)} ${x.repo}`);
+  for (const repo of new Set(r.repos.map((x) => x.repo))) doctorRepo(repo);
 }
 
 // --- registry: know and remove every attachment -----------------------------
@@ -725,12 +719,6 @@ function regWrite(r) {
 }
 function regAdd(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); r.repos.push({ repo, mode, at: new Date().toISOString() }); regWrite(r); }
 function regRemove(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); regWrite(r); }
-function whereAttached() {
-  const r = regRead();
-  if (!r.repos.length) { out('sawbuck: not attached anywhere (registry empty).'); return; }
-  out('sawbuck is attached to:');
-  for (const x of r.repos) out(`  ${x.mode.padEnd(14)} ${x.repo}`);
-}
 function detachAll(purge) {
   const r = regRead();
   if (!r.repos.length) { out('sawbuck: nothing to detach (registry empty).'); return; }

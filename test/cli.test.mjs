@@ -96,12 +96,12 @@ test('event feed: the check logs every result (gamed + verified) and sawbuck log
     const feed = readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8');
     assert.match(feed, /"kind":"gamed"/, 'the gamed check was logged');
     assert.match(feed, /"kind":"verified"/, 'the verified check was logged too (not only catches)');
-    const log = sawbuck(['log'], d);
+    const log = sawbuck(['status', '--log'], d);
     assert.match(log, /sawbuck activity/);
     assert.match(log, /verified/);
     assert.match(log, /gamed/);
     // `-n N` is a flag with a value, not the repo path (it used to resolve to a directory named -n)
-    const one = sawbuck(['log', '-n', '1'], d);
+    const one = sawbuck(['status', '--log', '-n', '1'], d);
     assert.match(one, /sawbuck activity \(last 1\)/, '-n limits the feed instead of being read as the repo path');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
@@ -475,9 +475,9 @@ test('where lists an attached repo and drops it after detach', () => {
   const { d } = tmpRepo();
   try {
     sawbuck(['attach', '.'], d);
-    assert.ok(sawbuck(['where'], d).includes(d), 'where lists the attached repo');
+    assert.ok(sawbuck(['doctor', '--all'], d).includes(d), 'where lists the attached repo');
     sawbuck(['detach', '.'], d);
-    assert.ok(!sawbuck(['where'], d).includes(d), 'where no longer lists it after detach');
+    assert.ok(!sawbuck(['doctor', '--all'], d).includes(d), 'where no longer lists it after detach');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 

@@ -1,4 +1,4 @@
-// Your steering shape: what you push on, as 12 spokes in 4 groups. The model labels a sample of your messages; only the
+// Your steering shape: what you push on, as 11 spokes in 4 groups. The model labels a sample of your messages; only the
 // totals are kept. Two models agree on single messages about half the time and on the shape at 0.93, so a single label is
 // never shown. It says what you pushed on, not how good you are. Each run is saved with its date to compare later.
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { prepareRules } from './rules.mjs';
 import { exposure, writtenRules } from './exposure.mjs';
 
-export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['direction', 'scope', 'autonomy'], Craft: ['voice', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
+export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['scope', 'autonomy'], Craft: ['voice', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
 const SPOKES = Object.values(GROUPS).flat();
 const MIN_SPOKES = 200;   // below this, spokes are noise: show the 4 groups
 const SAMPLE = 600;
@@ -29,7 +29,8 @@ export function prepareShape({ home = homedir() } = {}) {
 export function tally(labels) {
   const counts = Object.fromEntries(SPOKES.map((s) => [s, 0]));
   let none = 0;
-  for (const v of Object.values(labels)) { if (v === 'none') none++; else if (v in counts) counts[v]++; }
+  // two models split scope and direction at random (shape r 0.55 with both, 0.97 merged), so they count as one
+  for (const raw of Object.values(labels)) { const v = raw === 'direction' ? 'scope' : raw; if (v === 'none') none++; else if (v in counts) counts[v]++; }
   const total = SPOKES.reduce((a, s) => a + counts[s], 0);
   const groups = Object.fromEntries(Object.entries(GROUPS).map(([g, ss]) => [g, total ? Math.round(100 * ss.reduce((a, s) => a + counts[s], 0) / total) : 0]));
   const top = Math.max(1, ...SPOKES.map((s) => counts[s]));
@@ -41,7 +42,7 @@ export function tally(labels) {
 
 // What was not said: each spoke we can measure from what the agent did, read against how often you push on it.
 const MIN_TURNS = 30;   // a pattern needs enough turns behind it: 1 of 3 is not one
-const HIGH_PUSH = 8, HIGH_DOING = 10, HIGH_FAULT = 5;   // a fault counts sooner than plain activity
+const HIGH_PUSH = 8, HIGH_DOING = 10, HIGH_FAULT = 5, CLEAR_LOW = 5, CLEAR_HIGH = 10;   // a fault counts sooner than plain activity
 const SEEN = {
   proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code and ran no check within 3 turns', rule: 'Run the tests before saying a change works.' },
   safety: { fault: true, of: 'working', n: 'risky', says: 'touched something risky', rule: 'Ask before force pushing, deleting outside temp folders, or touching secrets, workflows or deploy files.' },
@@ -60,7 +61,9 @@ export function patterns(t, c) {
     // a fault you keep raising is a fight; activity you raise is just attention, since committing is not a failure
     const has = !!(c.written && c.written[s]);
     const enough = c[m.of] >= MIN_TURNS;
-    const kind = !enough ? 'too few' : often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
+    // between CLEAR_LOW and CLEAR_HIGH a relabel flips the pattern (Autonomy did), so it is not named
+    const close = often && push > CLEAR_LOW && push < CLEAR_HIGH;
+    const kind = !enough ? 'too few' : close ? 'too close' : often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
     return { spoke: s, kind, pct, count: c[m.n] || 0, of: c[m.of], push, says: m.says, rule: m.rule, has };
   });
 }
@@ -118,7 +121,7 @@ export function shapeCli(args, { home = homedir() } = {}) {
     out.push(`  ${g.padEnd(8)} ${String(t.groups[g]).padStart(3)}%${was}`);
     if (t.spokes) out.push(`    ${ss.map((s) => `${title(s)} ${t.ratings[s]}`).join('  ')}`);
   }
-  if (!t.spokes) out.push('', `  Too few messages for the 12 spokes (${t.n} of ${MIN_SPOKES}), so this shows the 4 groups.`);
+  if (!t.spokes) out.push('', `  Too few messages for the 11 spokes (${t.n} of ${MIN_SPOKES}), so this shows the 4 groups.`);
   appendFileSync(p.hist, JSON.stringify({ at: new Date().toISOString(), n: t.n, groups: t.groups, shares: t.shares, ...(c ? { exposure: c } : {}) }) + '\n');
   const fight = found.filter((f) => f.kind === 'fighting it'), blind = found.filter((f) => f.kind === 'blind spot');
   if (fight.length || blind.length) out.push('', '  Patterns to work on:');
@@ -126,6 +129,8 @@ export function shapeCli(args, { home = homedir() } = {}) {
   for (const f of blind) out.push(`    Not said: ${title(f.spoke)}. The agent ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}), and only ${f.push}% of your pushes touch it. Is that what you want?`, `      Try: ${f.rule}`);
   const covered = found.filter((f) => f.kind === 'covered');
   if (covered.length) out.push('', `  Written down already, so left out: ${covered.map((f) => title(f.spoke)).join(', ')}. Matched by keyword, so check they say what you mean.`);
+  const close = found.filter((f) => f.kind === 'too close');
+  if (close.length) out.push('', `  Too close to call, so not named: ${close.map((f) => title(f.spoke)).join(', ')}.`);
   if (found.some((f) => f.kind === 'too few')) out.push('', `  Not enough recent turns to name every pattern yet: each needs ${MIN_TURNS}.`);
   if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
   out.push('', `  Card: ${p.svg}`);

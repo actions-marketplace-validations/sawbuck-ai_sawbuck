@@ -64,9 +64,10 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 | `sawbuck check [--base R --head R] [--repeat N] [--allow "reason"] [--json]` | verify your latest change (working tree if dirty, else the last commit, or a range); zero-config, no attach, no record. Every `promptwheel run` flag passes through: this is the engine with a plain-spoken verdict |
 | `sawbuck attach [--claude \| --user]` | enforce it (git post-commit / project Claude hooks / user-level for every project) |
 | `sawbuck detach [--claude \| --user]` | remove it; no flag reverses whatever is attached here |
+| `/sawbuck-reins:audit` | finds rules in your agent files that can pull against each other, and proposes which wins. No history needed |
 | `/sawbuck-reins:rules` | proposes the rules you keep enforcing, from your own messages, each with quotes; you pick what to keep. Tested on one person so far |
 | `/sawbuck-reins:shape` | what you push on, what the agent did, and the gap between them, as a card |
-| `sawbuck status` · `sawbuck log` | the inventory (caught over time + debt now + armed state), in one view; and the recent per-check feed |
+| `sawbuck status` | the inventory (caught over time + debt now + armed state), in one view; `--log` for the recent per-check feed |
 | `sawbuck debt` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
 | `sawbuck trace` · `sawbuck doctor` · `detach --verify` | show the footprint; check the attachment resolves; prove a clean removal |

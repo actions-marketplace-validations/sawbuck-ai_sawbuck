@@ -4,7 +4,7 @@
 // Run the check (the promptwheel engine) on the latest commit; on a gamed or
 // regression result, deterministic ground truth, record a finding in the
 // memory (the logbook engine) on the touched source paths, and tick the results
-// record. Quiet by default; the dispatch surfaces catches on a cadence.
+// record. Quiet by default; the Stop hook says a fresh catch once.
 //
 // Zero-dep, Node ESM. Orchestrates the engine CLIs behind a clean layer
 // boundary, never reaching into their source.
@@ -113,7 +113,7 @@ if (!repeatOfStanding) { if (kind === 'gamed') rec.gamed += 1; else rec.regressi
 rec.latest = { sha: sha.slice(0, 8), kind, base: baseSha || null, file: evidenceFile, reason: reason.replace(/^sawbuck: /, '').slice(0, 140), at: new Date().toISOString(), by: by || null };
 writeRec();
 
-// --- 5) quiet by default (dispatch surfaces on cadence); one line to stderr -
+// --- 5) quiet by default; one line to stderr -
 process.stderr.write(`sawbuck: ${kind} recorded on ${evidenceFile}\n`);
 
 // --- the activity feed: one line per check so you can watch it work, verified

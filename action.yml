@@ -21,4 +21,4 @@ runs:
   steps:
     - name: sawbuck debt gate
       shell: bash
-      run: npx -y sawbuck@0.1.44 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}"
+      run: npx -y sawbuck@0.1.45 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}"
