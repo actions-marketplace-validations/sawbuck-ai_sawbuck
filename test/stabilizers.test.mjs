@@ -138,6 +138,16 @@ test('stabilizer: detach --purge removes the record too', () => {
 });
 
 // ---- 7) doctor + runtime-resolved hook ------------------------------------
+test('stabilizer: the git hook resolves sawbuck at runtime (survives a reinstall)', () => {
+  const { d } = tmpGit();
+  try {
+    sawbuck(['attach', '--git', '.'], d);
+    const hook = readFileSync(join(d, '.git', 'hooks', 'post-commit'), 'utf8');
+    assert.match(hook, /command -v sawbuck/, 'prefers a sawbuck on PATH');
+    assert.match(hook, /command -v node \|\| echo '[^']+'\)" "/, 'falls back to the absolute path, and finds node without PATH');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
 test('stabilizer: doctor reports a healthy attachment, and flags a stale one', () => {
   const { d } = tmpGit();
   try {
@@ -149,6 +159,8 @@ test('stabilizer: doctor reports a healthy attachment, and flags a stale one', (
     // now simulate sawbuck having moved: a baked path that no longer exists
     const pc = join(d, '.git', 'hooks', 'post-commit');
     writeFileSync(pc, `#!/bin/sh\n# >>> sawbuck >>>\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${JSON.stringify(d)}; else node "/no/such/sawbuck.mjs" __hook --repo ${JSON.stringify(d)}; fi || true\n# <<< sawbuck <<<\n`);
-    assert.throws(() => sawbuck(['doctor', '.'], d), 'a stale attachment makes doctor exit nonzero');
+    // the git hook tries a sawbuck on PATH first, so it is stale only where there is none
+    const bare = { encoding: 'utf8', cwd: d, env: { ...process.env, PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'pipe'] };
+    assert.throws(() => execFileSync(process.execPath, [CLI, 'doctor', '.'], bare), 'a stale attachment makes doctor exit nonzero');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

@@ -133,13 +133,36 @@ test('git attach leaves the worktree clean and detach --verify proves full remov
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
+test('attach --git wires an idempotent post-commit hook; detach is a true inverse', () => {
+  const { d } = tmpRepo();
+  try {
+    sawbuck(['attach', '--git', '.'], d);
+    const pc = join(d, '.git', 'hooks', 'post-commit');
+    assert.ok(existsSync(pc), 'post-commit created');
+    assert.match(readFileSync(pc, 'utf8'), /# >>> sawbuck >>>/);
+    assert.ok(!existsSync(join(d, '.claude')), '--git writes no Claude settings');
+    assert.match(sawbuck(['attach', '--git', '.'], d), /already attached/);       // idempotent
+    sawbuck(['detach', '.'], d);
+    assert.ok(!existsSync(pc), 'post-commit we created is removed, not left as a stub');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('attach takes one mode at a time', () => {
+  const { d } = tmpRepo();
+  try {
+    assert.throws(() => sawbuck(['attach', '--git', '--shared', '.'], d));
+    assert.ok(!existsSync(join(d, '.git', 'hooks', 'post-commit')) && !existsSync(join(d, '.claude')), 'nothing written');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
 test('attach preserves a pre-existing post-commit hook and detach restores it', () => {
   const { d } = tmpRepo();
   const pc = join(d, '.git', 'hooks', 'post-commit');
   try {
     writeFileSync(pc, '#!/bin/sh\necho mine\n');
-    sawbuck(['attach', '.'], d);
-    assert.match(readFileSync(pc, 'utf8'), /echo mine/, 'our block is appended, theirs kept');
+    sawbuck(['attach', '--git', '.'], d);
+    assert.match(readFileSync(pc, 'utf8'), /echo mine/, 'theirs kept');
+    assert.match(readFileSync(pc, 'utf8'), /# >>> sawbuck >>>/, 'our block is appended');
     sawbuck(['detach', '.'], d);
     assert.ok(existsSync(pc), 'their hook is NOT deleted (we did not create it)');
     assert.equal(readFileSync(pc, 'utf8').replace(/\n+$/, '\n'), '#!/bin/sh\necho mine\n', 'restored to theirs');
