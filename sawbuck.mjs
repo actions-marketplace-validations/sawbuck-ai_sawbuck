@@ -118,13 +118,22 @@ function gitDir(repo) { try { return resolve(repo, execFileSync('git', ['-C', re
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
-if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { out(help); process.exit(0); }
+if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  out(flags.has('--all') ? help : `sawbuck ${version}: sign your agent to a contract
+
+  sawbuck contract   sign this repo: protected paths, your tests, CI
+  sawbuck check      verify your latest change right now
+  sawbuck status     what it has caught here
+
+  sawbuck help --all   everything else`);
+  process.exit(0);
+}
 
 switch (cmd) {
   case 'contract': {
     const top = gitTop(repoArg());
     if (!top) usage(`${repoArg()} is not a git repository (a contract signs one; run it inside your project)`);
-    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => a === '--dry-run')], { stdio: 'inherit' }); }
+    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => ['--dry-run', '--strict', '--no-ci'].includes(a))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
   }
@@ -179,9 +188,10 @@ switch (cmd) {
     else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a hard rule in the contract was broken, however green the rest is.');
-    else if (rep.verdict === 'fail') out(`🐴 ✗ regression: a guarded metric got worse (${(rep.metrics || []).filter((x) => x.guard && !x.ok).map((x) => x.name).join(', ') || 'a guard'}).`);
+    else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
     else out('🐴 ≈ inconclusive: the check ran but could not measure your metric (it did not run in isolation). Point it at your real test command: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json.');
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
+    for (const x of rep.explained || []) out(`🐴 ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
     if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
