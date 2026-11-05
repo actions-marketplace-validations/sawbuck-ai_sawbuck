@@ -22,7 +22,7 @@ const require = createRequire(import.meta.url);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
 const PW = require.resolve('promptwheel/bin/promptwheel.mjs');   // the check engine (sibling)
-const GLUE_FILES = ['sawbuck.mjs', 'reflect.mjs', 'dispatch.mjs', 'sawbuck-hook.mjs', 'rank.mjs', 'debt.mjs', 'memory.mjs', 'status.mjs', 'bins.mjs', 'contract.mjs', 'providers/obsidian.mjs', 'providers/local.mjs', 'providers/claude.mjs'].map((f) => join(HERE, '..', f));
+const GLUE_FILES = ['sawbuck.mjs', 'reflect.mjs', 'sawbuck-hook.mjs', 'rank.mjs', 'debt.mjs', 'memory.mjs', 'status.mjs', 'bins.mjs', 'contract.mjs'].map((f) => join(HERE, '..', f));
 
 const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-shome-'));
 after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
@@ -141,10 +141,11 @@ test('stabilizer: detach --purge removes the record too', () => {
 test('stabilizer: the git hook resolves sawbuck at runtime (survives a reinstall)', () => {
   const { d } = tmpGit();
   try {
-    sawbuck(['attach', '.'], d);
+    sawbuck(['attach', '--git', '.'], d);
     const hook = readFileSync(join(d, '.git', 'hooks', 'post-commit'), 'utf8');
     assert.match(hook, /command -v sawbuck/, 'prefers a sawbuck on PATH');
     assert.match(hook, /command -v node \|\| echo '[^']+'\)" "/, 'falls back to the absolute path, and finds node without PATH');
+    assert.match(hook, /elif \[ -f "[^"]+sawbuck\.mjs" \]; then .* else npx -y sawbuck@\d+\.\d+\.\d+ __hook/, 'and to the same version through npx when that path is gone (an npx cache gets cleared)');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -153,13 +154,14 @@ test('stabilizer: doctor reports a healthy attachment, and flags a stale one', (
   try {
     sawbuck(['attach', '.'], d);
     assert.match(sawbuck(['doctor', '.'], d), /OK/, 'a live attachment is OK');
-    assert.match(sawbuck(['doctor', '.'], d, { SAWBUCK_NO_PATH_CHECK: '1' }), /OK/, 'and with no sawbuck on PATH: the npx case');
     sawbuck(['attach', '--claude', '.'], d);
-    assert.doesNotMatch(sawbuck(['doctor', '.'], d, { SAWBUCK_NO_PATH_CHECK: '1' }), /STALE/, 'the Claude hooks read too, where the quotes are escaped');
+    assert.doesNotMatch(sawbuck(['doctor', '.'], d), /STALE/, 'the Claude hooks read too, where the quotes are escaped');
     sawbuck(['detach', '.'], d); sawbuck(['attach', '.'], d);
-    // now simulate sawbuck having moved: a baked path that no longer exists, and not on PATH
+    // now simulate sawbuck having moved: a baked path that no longer exists
     const pc = join(d, '.git', 'hooks', 'post-commit');
     writeFileSync(pc, `#!/bin/sh\n# >>> sawbuck >>>\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${JSON.stringify(d)}; else node "/no/such/sawbuck.mjs" __hook --repo ${JSON.stringify(d)}; fi || true\n# <<< sawbuck <<<\n`);
-    assert.throws(() => sawbuck(['doctor', '.'], d, { SAWBUCK_NO_PATH_CHECK: '1' }), 'a stale attachment makes doctor exit nonzero');
+    // the git hook tries a sawbuck on PATH first, so it is stale only where there is none
+    const bare = { encoding: 'utf8', cwd: d, env: { ...process.env, PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'pipe'] };
+    assert.throws(() => execFileSync(process.execPath, [CLI, 'doctor', '.'], bare), 'a stale attachment makes doctor exit nonzero');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });

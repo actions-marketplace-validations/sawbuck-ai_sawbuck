@@ -1,13 +1,13 @@
 // Find the rules you keep enforcing and never wrote down. `prepare` gathers what you typed to Claude Code, on this
 // machine, with copies and likely secrets removed. The agent proposes rules from it, each with quotes. `check` proves
 // every quote is really yours: a rule with fewer than two real quotes is dropped. Nothing is added to any file here.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readHistory, typedText } from './history.mjs';
 
 const MAX_LINES = 3000;
-const SECRET = /(sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{10,}|eyJ[\w-]{20,}\.[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|\b[a-f0-9]{40,}\b|(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)/i;
+export const SECRET = /(sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{10,}|eyJ[\w-]{20,}\.[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|\b[a-f0-9]{40,}\b|(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)/i;
 const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 const paths = (home) => ({ dir: join(home, '.sawbuck'), input: join(home, '.sawbuck', 'rule-input.txt') });
 
@@ -32,6 +32,7 @@ export function prepareRules({ home = homedir() } = {}) {
   const { dir, input } = paths(home);
   mkdirSync(dir, { recursive: true });
   writeFileSync(input, lines.join('\n') + '\n', { mode: 0o600 });
+  chmodSync(input, 0o600);   // the mode above only applies to a new file
   return { input, lines: lines.length, secrets };
 }
 

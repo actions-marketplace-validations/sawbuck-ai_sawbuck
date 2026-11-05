@@ -2,7 +2,7 @@
 //
 // The whole M0 loop in one scenario, with the engines stubbed via PW_BIN / LB_BIN:
 //   trip a bad commit -> the check says gamed -> reflect records it as a gamed
-//   change in the results -> dispatch surfaces the freshly-learned finding.
+//   change in the results.
 // Stubbing the check keeps this deterministic (no real metric run needed).
 
 import { test } from 'node:test';
@@ -15,7 +15,6 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REFLECT = join(HERE, '..', 'reflect.mjs');
-const DISPATCH = join(HERE, '..', 'dispatch.mjs');
 
 // A repo with two commits; the second changes a source file (the finding target).
 function setupRepo() {
@@ -50,19 +49,6 @@ test('reflect records a gamed result as a gamed change in the results', () => {
     assert.equal(rec.latest.kind, 'gamed');
     assert.equal(rec.latest.file, 'app.js');
     assert.match(rec.latest.reason, /gamed/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('dispatch surfaces the recently-learned finding (not just the file)', () => {
-  const { dir, env } = setupRepo();
-  try {
-    runReflect(dir, env);
-    const out = execFileSync(process.execPath, [DISPATCH, '--repo', dir], { encoding: 'utf8' });
-    assert.match(out, /caught/);
-    assert.match(out, /gamed/);
-    assert.match(out, /app\.js/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

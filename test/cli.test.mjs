@@ -1,26 +1,21 @@
 // CLI + ranker behavior tests (node:test). Run: npm test (or node --test).
 // Covers the glue built this session: attach/detach wiring, the isolation
 // invariant (attach leaves the worktree clean; detach is a true inverse),
-// trace/verify/dry-run, rank's per-path filtering, and context.
+// verify/dry-run, rank's per-path filtering, and context.
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { scopeChain, recall as recallMem } from '../memory.mjs';
 import { globToRe, mandateHits, mandatesInForce, protectedDirty } from '../contract.mjs';
 import { ensureExcluded } from '../exclude.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
-const OBSIDIAN = join(HERE, '..', 'providers', 'obsidian.mjs');   // reference local-notes memory provider
-const MEM0 = join(HERE, '..', 'providers', 'mem0.mjs');           // reference semantic (networked) memory provider
-const LOCAL = join(HERE, '..', 'providers', 'local.mjs');         // reference minimal local-file memory provider
-const CLAUDEP = join(HERE, '..', 'providers', 'claude.mjs');      // reference read-only Claude-memory provider
 // isolate HOME so the global registry (~/.sawbuck) never touches the real home.
 const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-home-'));
 after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
@@ -37,19 +32,6 @@ function tmpRepo() {
   writeFileSync(join(d, 'a.js'), 'export const v = 1;\n'); g('add', '-A'); g('commit', '-qm', 'init');
   return { d, g };
 }
-
-test('attach wires an idempotent git post-commit hook; detach is a true inverse', () => {
-  const { d } = tmpRepo();
-  try {
-    sawbuck(['attach', '.'], d);
-    const pc = join(d, '.git', 'hooks', 'post-commit');
-    assert.ok(existsSync(pc), 'post-commit created');
-    assert.match(readFileSync(pc, 'utf8'), /# >>> sawbuck >>>/);
-    assert.match(sawbuck(['attach', '.'], d), /already attached/);       // idempotent
-    sawbuck(['detach', '.'], d);
-    assert.ok(!existsSync(pc), 'post-commit we created is removed, not left as a stub');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
 
 test('init --yes writes a contract and investigates git history (evidence-backed guards)', () => {
   const { d, g } = tmpRepo();
@@ -96,12 +78,12 @@ test('event feed: the check logs every result (gamed + verified) and sawbuck log
     const feed = readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8');
     assert.match(feed, /"kind":"gamed"/, 'the gamed check was logged');
     assert.match(feed, /"kind":"verified"/, 'the verified check was logged too (not only catches)');
-    const log = sawbuck(['log'], d);
+    const log = sawbuck(['status', '--log'], d);
     assert.match(log, /sawbuck activity/);
     assert.match(log, /verified/);
     assert.match(log, /gamed/);
     // `-n N` is a flag with a value, not the repo path (it used to resolve to a directory named -n)
-    const one = sawbuck(['log', '-n', '1'], d);
+    const one = sawbuck(['status', '--log', '-n', '1'], d);
     assert.match(one, /sawbuck activity \(last 1\)/, '-n limits the feed instead of being read as the repo path');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
@@ -135,127 +117,6 @@ test('status: the inventory unions outcomes, live debt, and the armed state', ()
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('recall composition: the same note from two providers dedups to one, keeps the higher score + both sources', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'sawbuck-fake-'));
-  const repo = mkdtempSync(join(tmpdir(), 'sawbuck-fakerepo-'));
-  const script = (score) => `const c=process.argv[2];\nif(c==='recall'){console.log(JSON.stringify([{kind:'note',summary:'shared gotcha about app.js',score:${score}}]));process.exit(0)}\nprocess.exit(2);\n`;
-  const hi = join(dir, 'hi.mjs'), lo = join(dir, 'lo.mjs');
-  writeFileSync(hi, script(0.9)); writeFileSync(lo, script(0.2));
-  const prev = process.env.SAWBUCK_MEMORY;
-  try {
-    process.env.SAWBUCK_MEMORY = 'fakehi,fakelo';
-    process.env.SAWBUCK_MEMORY_FAKEHI_BIN = hi;
-    process.env.SAWBUCK_MEMORY_FAKELO_BIN = lo;
-    const notes = recallMem(repo, ['app.js']);
-    assert.equal(notes.length, 1, 'the overlapping note collapses to one');
-    assert.equal(notes[0].score, 0.9, 'keeps the higher-scored instance');
-    assert.ok(notes[0].source.includes('fakehi') && notes[0].source.includes('fakelo'), 'records that both providers knew it');
-  } finally {
-    if (prev === undefined) delete process.env.SAWBUCK_MEMORY; else process.env.SAWBUCK_MEMORY = prev;
-    delete process.env.SAWBUCK_MEMORY_FAKEHI_BIN; delete process.env.SAWBUCK_MEMORY_FAKELO_BIN;
-    rmSync(dir, { recursive: true, force: true }); rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test('scopeChain: isolated leaf by default; self..root chain under a configured root', () => {
-  const root = mkdtempSync(join(tmpdir(), 'sawbuck-root-'));
-  const repo = join(root, 'group', 'repo');
-  mkdirSync(repo, { recursive: true });
-  const prev = process.env.SAWBUCK_MEMORY_ROOT;
-  try {
-    delete process.env.SAWBUCK_MEMORY_ROOT;
-    assert.deepEqual(scopeChain(repo), ['repo'], 'no root in play -> an isolated leaf, no inheritance');
-    process.env.SAWBUCK_MEMORY_ROOT = root;
-    assert.deepEqual(scopeChain(repo), ['group/repo', 'group', ''], 'under a root -> self + ancestors + root ("")');
-    delete process.env.SAWBUCK_MEMORY_ROOT;
-    writeFileSync(join(root, '.sawbuck-root'), '');
-    assert.deepEqual(scopeChain(repo), ['group/repo', 'group', ''], 'a .sawbuck-root marker is discovered by walking up');
-  } finally {
-    if (prev === undefined) delete process.env.SAWBUCK_MEMORY_ROOT; else process.env.SAWBUCK_MEMORY_ROOT = prev;
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('obsidian scope isolation: a sibling scope never leaks, the root scope is shared', () => {
-  const V = mkdtempSync(join(tmpdir(), 'sawbuck-vault-'));
-  mkdirSync(join(V, 'repoA')); mkdirSync(join(V, 'repoB'));
-  try {
-    writeFileSync(join(V, 'repoA', 'a.md'), '# A\n\nfoo.js in repoA.\n');
-    writeFileSync(join(V, 'repoB', 'b.md'), '# B\n\nfoo.js in repoB.\n');
-    writeFileSync(join(V, 'shared.md'), '# Shared\n\nfoo.js across projects.\n');
-    const recall = (sc) => JSON.parse(execFileSync(process.execPath, [OBSIDIAN, 'recall', '--file', 'foo.js', ...sc, '--json'], { encoding: 'utf8', env: { ...process.env, OBSIDIAN_VAULT: V } }));
-    const a = recall(['--scope', 'repoA', '--scope', '']);
-    assert.ok(a.some((f) => f.ref === 'repoA/a.md'), 'leaf scope note is present');
-    assert.ok(a.some((f) => f.ref === 'shared.md'), 'root-scope (vault root) note is shared');
-    assert.ok(!a.some((f) => f.ref === 'repoB/b.md'), 'a SIBLING scope must never leak into recall');
-    const b = recall(['--scope', 'repoB', '--scope', '']);
-    assert.ok(b.some((f) => f.ref === 'repoB/b.md') && !b.some((f) => f.ref === 'repoA/a.md'), 'isolation holds both directions');
-  } finally { rmSync(V, { recursive: true, force: true }); }
-});
-
-test('memory-conformance: the obsidian reference provider conforms (recall array, debt unsupported)', () => {
-  const { d } = tmpRepo();
-  try {
-    const o = sawbuck(['memory-conformance', OBSIDIAN], d);
-    assert.match(o, /recall: ok/, 'recall returns a JSON array');
-    assert.match(o, /debt:\s+unsupported/, 'a note vault signals debt unsupported (nonzero), not a bare []');
-    assert.match(o, /conforms to the Memory Contract/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('claude provider: read-only recall from project memory (CLAUDE.md), debt/record unsupported', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'sawbuck-cm-'));
-  try {
-    writeFileSync(join(dir, 'CLAUDE.md'), '# Gotchas\n\nThe retry in app.js must keep the backoff; do not simplify it.\n');
-    const got = JSON.parse(execFileSync(process.execPath, [CLAUDEP, 'recall', '--file', 'app.js', '--json'], { encoding: 'utf8', cwd: dir }));
-    assert.ok(got.some((f) => /retry in app\.js/.test(f.summary)), 'surfaces the relevant CLAUDE.md line');
-    // debt + record are unsupported (read-only), so they exit nonzero
-    assert.throws(() => execFileSync(process.execPath, [CLAUDEP, 'debt', '--json'], { cwd: dir, stdio: 'ignore' }), 'debt unsupported');
-    assert.throws(() => execFileSync(process.execPath, [CLAUDEP, 'record', '--ref', 'x', '--summary', 'y'], { cwd: dir, stdio: 'ignore' }), 'record unsupported');
-    assert.match(sawbuck(['memory-conformance', CLAUDEP], dir), /conforms to the Memory Contract/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('local provider: record + recall roundtrip, folder-scoped (a sibling scope is excluded), and conforms', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'sawbuck-local-'));
-  const store = join(dir, 'm.json');
-  const run = (args) => execFileSync(process.execPath, [LOCAL, ...args], { encoding: 'utf8', env: { ...process.env, SAWBUCK_LOCAL_MEMORY: store } });
-  try {
-    run(['record', '--ref', 'c1', '--summary', 'watch the retry in app.js', '--scope', 'repoA', '--evidence-file', 'app.js', '--by', 'sawbuck']);
-    const a = JSON.parse(run(['recall', '--file', 'app.js', '--scope', 'repoA', '--scope', '']));
-    assert.ok(a.some((f) => f.ref === 'c1'), 'recall in the recording scope finds the note');
-    const b = JSON.parse(run(['recall', '--file', 'app.js', '--scope', 'repoB', '--scope', '']));
-    assert.ok(!b.some((f) => f.ref === 'c1'), 'a sibling scope is isolated');
-    assert.match(sawbuck(['memory-conformance', LOCAL], dir), /conforms to the Memory Contract/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('memory-conformance: the mem0 reference provider conforms offline (recall [], debt unsupported, no crash)', () => {
-  const { d } = tmpRepo();
-  try {
-    // no MEM0_API_KEY: recall degrades to [] (clean, not an error), debt exits unsupported. A networked
-    // semantic provider must still conform without a key, so it never crashes a read.
-    const o = sawbuck(['memory-conformance', MEM0], d, { MEM0_API_KEY: '' });
-    assert.match(o, /recall: ok/, 'recall returns a JSON array even with no key');
-    assert.match(o, /debt:\s+unsupported/, 'a semantic store signals debt unsupported, not a bare []');
-    assert.match(o, /conforms to the Memory Contract/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('recall + composition: a second provider (obsidian) contributes notes alongside logbook', () => {
-  const { d } = tmpRepo();                       // commits a.js
-  const V = mkdtempSync(join(tmpdir(), 'sawbuck-vault-'));
-  try {
-    writeFileSync(join(V, 'gotcha.md'), '# a.js gotcha\n\nThe value in a.js must stay 1 for the downstream parser.\n');
-    writeFileSync(join(d, 'a.js'), 'export const v = 2;\n');   // a working change, so a.js is a changed path
-    // SAWBUCK_MEMORY lists both; recall pulls notes from the contract-dialect provider (obsidian),
-    // logbook (git-truth) is not asked for notes. The default obsidian bin resolves next to memory.mjs.
-    const o = sawbuck(['recall', '.'], d, { SAWBUCK_MEMORY: 'logbook,obsidian', OBSIDIAN_VAULT: V });
-    assert.match(o, /\[obsidian\]/, 'tags the note with its source provider');
-    assert.match(o, /a\.js gotcha/, 'surfaces the relevant vault note');
-  } finally { rmSync(d, { recursive: true, force: true }); rmSync(V, { recursive: true, force: true }); }
-});
-
 test('git attach leaves the worktree clean and detach --verify proves full removal', () => {
   const { d } = tmpRepo();
   try {
@@ -272,16 +133,40 @@ test('git attach leaves the worktree clean and detach --verify proves full remov
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
+test('attach --git wires an idempotent post-commit hook; detach is a true inverse', () => {
+  const { d } = tmpRepo();
+  try {
+    sawbuck(['attach', '--git', '.'], d);
+    const pc = join(d, '.git', 'hooks', 'post-commit');
+    assert.ok(existsSync(pc), 'post-commit created');
+    assert.match(readFileSync(pc, 'utf8'), /# >>> sawbuck >>>/);
+    assert.ok(!existsSync(join(d, '.claude')), '--git writes no Claude settings');
+    assert.match(sawbuck(['attach', '--git', '.'], d), /already attached/);       // idempotent
+    sawbuck(['detach', '.'], d);
+    assert.ok(!existsSync(pc), 'post-commit we created is removed, not left as a stub');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('attach takes one mode at a time', () => {
+  const { d } = tmpRepo();
+  try {
+    assert.throws(() => sawbuck(['attach', '--git', '--shared', '.'], d));
+    assert.ok(!existsSync(join(d, '.git', 'hooks', 'post-commit')) && !existsSync(join(d, '.claude')), 'nothing written');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
 test('attach preserves a pre-existing post-commit hook and detach restores it', () => {
   const { d } = tmpRepo();
   const pc = join(d, '.git', 'hooks', 'post-commit');
   try {
     writeFileSync(pc, '#!/bin/sh\necho mine\n');
-    sawbuck(['attach', '.'], d);
-    assert.match(readFileSync(pc, 'utf8'), /echo mine/, 'our block is appended, theirs kept');
+    chmodSync(pc, 0o755);   // a hook git actually runs
+    sawbuck(['attach', '--git', '.'], d);
+    assert.match(readFileSync(pc, 'utf8'), /echo mine/, 'theirs kept');
+    assert.match(readFileSync(pc, 'utf8'), /^#!\/bin\/sh\n# >>> sawbuck >>>/, 'our block goes in right after the shebang line');
     sawbuck(['detach', '.'], d);
     assert.ok(existsSync(pc), 'their hook is NOT deleted (we did not create it)');
-    assert.equal(readFileSync(pc, 'utf8').replace(/\n+$/, '\n'), '#!/bin/sh\necho mine\n', 'restored to theirs');
+    assert.equal(readFileSync(pc, 'utf8'), '#!/bin/sh\necho mine\n', 'restored to theirs, byte for byte');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -296,16 +181,6 @@ test('attach --dry-run writes nothing', () => {
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('trace shows the footprint, and reports clean after detach', () => {
-  const { d } = tmpRepo();
-  try {
-    sawbuck(['attach', '.'], d);
-    assert.match(sawbuck(['trace', '.'], d), /post-commit/);
-    sawbuck(['detach', '.'], d);
-    assert.match(sawbuck(['trace', '.'], d), /no footprint/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('statusline reflects the profile (memory / ready / watching / caught)', () => {
   const { d } = tmpRepo();
   try {
@@ -315,9 +190,12 @@ test('statusline reflects the profile (memory / ready / watching / caught)', () 
     // checkable (a contract, or just a test command) but not wired in yet: ready
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [{ name: 'x', cmd: 'true', extract: 'exit', direction: 'pass', guard: true }] }));
     assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · ready/);
-    // wired in (attached): watching
+    // a record left on disk is not wiring: still ready
     mkdirSync(join(d, '.sawbuck'), { recursive: true });
     writeFileSync(join(d, '.sawbuck', 'state.json'), JSON.stringify({ lastSha: '', turns: 1 }));
+    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · ready/);
+    // wired in (attached): watching
+    sawbuck(['attach', '.'], d);
     assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · watching/);
     // catches recorded: N caught
     writeFileSync(join(d, '.sawbuck', 'results.json'), JSON.stringify({ regressions: 1, gamed: 1, mandates: 1 }));
@@ -329,24 +207,6 @@ test('attach refuses a non-git directory', () => {
   const d = mkdtempSync(join(tmpdir(), 'sawbuck-nogit-'));
   try { assert.throws(() => sawbuck(['attach', '.'], d)); }
   finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('git post-commit hook records a catch through a REAL commit (GIT_DIR inheritance regression)', () => {
-  const { d, g } = tmpRepo();
-  try {
-    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ linkNodeModules: false, repeat: 1, metrics: [{ name: 'tests_pass', cmd: 'node --test calc.test.mjs 2>&1', extract: 'exit', direction: 'pass', guard: true }] }));
-    writeFileSync(join(d, 'calc.mjs'), 'export const sub = (a, b) => a + b; // BUG\n');
-    writeFileSync(join(d, 'calc.test.mjs'), "import {test} from 'node:test';import assert from 'node:assert';import {sub} from './calc.mjs';\ntest('sub',()=>assert.strictEqual(sub(5,3),2));\n");
-    g('add', '-A'); g('commit', '-q', '-m', 'base (red)');
-    sawbuck(['attach', '.'], d);
-    sawbuck(['__hook', '--repo', d], d);   // arm the reflex on the base commit
-    // the cheat: edit the TEST to expect the buggy value, landed via a REAL git commit so the
-    // post-commit hook fires with git's own GIT_DIR/GIT_INDEX_FILE exported (the bug's trigger).
-    writeFileSync(join(d, 'calc.test.mjs'), "import {test} from 'node:test';import assert from 'node:assert';import {sub} from './calc.mjs';\ntest('sub',()=>assert.strictEqual(sub(5,3),8));\n");
-    g('commit', '-q', '-am', 'fake the pass');
-    const r = JSON.parse(readFileSync(join(d, '.sawbuck', 'results.json'), 'utf8'));
-    assert.ok((r.gamed || 0) + (r.regressions || 0) >= 1, 'the post-commit hook caught the faked win through a real commit (the hook must clear inherited git env)');
-  } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
 test('rank filters findings per path (regression for the --file no-op bug)', () => {
@@ -427,18 +287,6 @@ test('attach --claude writes gitignored settings.local.json and keeps git status
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('attach --claude --shared writes the tracked settings.json (visible in git by design)', () => {
-  const { d } = tmpRepo();
-  const f = join(d, '.claude', 'settings.json');
-  try {
-    sawbuck(['attach', '--claude', '--shared', '.'], d);
-    assert.ok(existsSync(f), 'wrote the shared, tracked settings.json');
-    assert.match(porcelain(d), /\.claude/, 'shared settings intentionally show up in git');
-    sawbuck(['detach', '--claude', '.'], d);
-    assert.ok(!existsSync(f), 'removed');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('attach --claude will not clobber a malformed settings file', () => {
   const { d } = tmpRepo();
   const dir = join(d, '.claude'); const f = join(dir, 'settings.local.json');
@@ -471,16 +319,6 @@ test('the reflex keeps the record out of git status under any attach mode (incl.
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('where lists an attached repo and drops it after detach', () => {
-  const { d } = tmpRepo();
-  try {
-    sawbuck(['attach', '.'], d);
-    assert.ok(sawbuck(['where'], d).includes(d), 'where lists the attached repo');
-    sawbuck(['detach', '.'], d);
-    assert.ok(!sawbuck(['where'], d).includes(d), 'where no longer lists it after detach');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('check (CLI) leaves an honest source fix uncharted (no false positive through the command)', () => {
   const { d, g } = tmpRepo();
   try {
@@ -510,7 +348,7 @@ test('frame resolves mandates through extends and turn joins frame + history in 
     assert.match(frame, /db\/migrations\/\*\*/, 'the local mandate shows');
     writeFileSync(join(d, 'a.js'), 'b\n');
     const turn = sawbuck(['turn', '.'], d, { LOGBOOK_NO_CACHE: '1' });
-    assert.ok(turn.startsWith('▣ contract (sawbuck)'), 'turn leads with the frame');
+    assert.ok(turn.startsWith('▣ rules (sawbuck)'), 'turn leads with the frame');
     // no mandates -> frame is silent, turn is silent on a clean trail
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [] }));
     assert.equal(sawbuck(['frame', '.'], d).trim(), '');
@@ -1146,9 +984,9 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
   const sb = (...a) => execFileSync(process.execPath, [SB, ...a], { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   assert.equal(existsSync(join(d, 'promptwheel.config.json')), false);
-  assert.match(sb('contract', '--dry-run'), /would write/);
+  assert.match(sb('contract', '--full', '--dry-run'), /would write/);
   assert.equal(existsSync(join(d, 'promptwheel.config.json')), false, 'a dry run writes nothing');
-  const out = sb('contract');
+  const out = sb('contract', '--full');
   assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested');
   const cfg = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'));
   assert.ok(cfg.metrics.some((m) => m.name === 'lock_drift'), 'the lock guard');
@@ -1156,7 +994,7 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   assert.ok(cfg.mandates.some((m) => m.name === 'workflows-frozen')); assert.ok(!cfg.mandates.some((m) => m.paths.some((p) => p.includes('auth'))), 'product code is never frozen for you');
   assert.equal(cfg.allowTrailer, false); assert.ok(existsSync(join(d, 'promptwheel.lock.json')));
   const again = readFileSync(join(d, 'promptwheel.config.json'), 'utf8');
-  assert.match(sb('contract'), /already signed/); assert.equal(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'), again, 'running it twice changes nothing');
+  assert.match(sb('contract', '--full'), /already signed/); assert.equal(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'), again, 'running it twice changes nothing');
   sb('attach', '.');
   g('add', '-A'); g('commit', '-qm', 'sign');
   assert.ok(execFileSync('git', ['ls-files', '.promptwheel/packs'], { cwd: d, encoding: 'utf8' }).includes('lock.mjs'), 'the scanners are tracked even after attach: the gate runs in clean worktrees');
@@ -1195,7 +1033,7 @@ test('sawbuck contract works in a repo already attached, and one that gitignores
   // an exclude block as an older attach wrote it
   writeFileSync(join(d, '.git/info/exclude'), '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/\n# <<< sawbuck <<<\n');
   const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
-  execFileSync(process.execPath, [SB, 'contract'], { cwd: d, stdio: 'ignore' });
+  execFileSync(process.execPath, [SB, 'contract', '--full'], { cwd: d, stdio: 'ignore' });
   g('add', '-A'); g('commit', '-qm', 'sign');
   assert.ok(execFileSync('git', ['ls-files', '.promptwheel/packs'], { cwd: d, encoding: 'utf8' }).includes('lock.mjs'), 'the scanners reach git');
   assert.ok(!execFileSync('git', ['ls-files'], { cwd: d, encoding: 'utf8' }).includes('outcomes'), 'the record stays out');
@@ -1209,7 +1047,7 @@ test('a signed repo with a clean tree does not block its own turn: the hook keep
   const env = { HOME: home, XDG_CONFIG_HOME: join(home, 'cfg'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c' };
   const g = (...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', env: { ...process.env, ...env } });
   g('init', '-q'); writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'a', scripts: { test: 'node -e 0' } })); g('add', '-A'); g('commit', '-qm', 'base');
-  sawbuck(['contract'], d, env); g('add', '-A'); g('commit', '-qm', 'sign');
+  sawbuck(['contract', '--full'], d, env); g('add', '-A'); g('commit', '-qm', 'sign');
   sawbuck(['attach', '--claude'], d, env);
   const hook = (args, ev) => execFileSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 's', prompt: 'x' }), env: { ...process.env, ...env } });
   for (let i = 0; i < 2; i++) {

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { ensureExcluded } from './exclude.mjs';
 // sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry.
-// Each turn: if a new commit landed, run reflect on it; then render the dispatch
-// on a fresh catch OR every N turns (config). State in .sawbuck/state.json.
+// Each turn: if a new commit landed, run reflect on it; then say so once on a fresh catch. State in .sawbuck/state.json.
 // Zero-dep. Usage (wired as a Stop hook): node sawbuck-hook.mjs --repo <path>
 
 import { execFileSync } from 'node:child_process';
@@ -32,7 +31,6 @@ const node = (f, a) => { try { return execFileSync(process.execPath, [f, ...a], 
 
 let cfg = {};
 try { cfg = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')); } catch {}
-const EVERY_TURNS = 5;
 
 const stDir = join(repo, '.sawbuck');
 const stPath = join(stDir, 'state.json');
@@ -132,7 +130,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     const restore = Object.keys(before).length ? ' To put back what you overwrote: ' + Object.entries(before).map(([f, h]) => `restore ${f} to the content it had when the prompt began: git cat-file -p ${h} > ${f}`).join('; ') + '.' : '';
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
     const accept = committedHit ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
-    const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
+    const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach again, which upgrades the hooks.)';
     // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
     // a block must not replace a gamed verdict that is still standing.
     if (st.mandateCountedPrompt !== promptId) {
@@ -177,12 +175,10 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
   }
 }
 
-// 4) otherwise, surface a catch on a fresh catch or on cadence (a flag; never blocks)
-const freshCatch = total > (st.shownTotal || 0);
-const cadenceHit = st.turns % EVERY_TURNS === 0;
-if (freshCatch || cadenceHit) {
-  const out = node(join(HERE, 'dispatch.mjs'), ['--repo', repo]);
-  if (out.trim()) process.stdout.write(out.endsWith('\n') ? out : out + '\n');
+// 4) otherwise, say a fresh catch once (a flag; never blocks). The band and statusline carry the rest.
+if (total > (st.shownTotal || 0)) {
+  const L = rec && rec.latest;
+  process.stdout.write(`🐴 Sawbuck caught a ${L && L.kind === 'gamed' ? 'gamed change' : 'problem'}${L && L.file ? ` in ${L.file}` : ''}${L && L.reason ? `: ${L.reason}` : ''}\n`);
   st.shownTotal = total;
 }
 saveState();

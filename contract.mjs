@@ -122,7 +122,7 @@ export function frameBlock(repo) {
   const mandates = resolvedMandates(repo);
   if (!mandates.length) return '';
   const lines = mandates.map((m) => `  ${m.paths.filter((s) => typeof s === 'string' && s.trim()).join(' · ')}${m.reason ? `  (${String(m.reason).slice(0, 160)})` : ''}`);
-  return '▣ contract (sawbuck) · hard rules in force this session, enforced by the gate on every turn:\n  protected, do not touch:\n' + lines.join('\n');
+  return '▣ rules (sawbuck) · checked on every turn:\n  protected, do not touch:\n' + lines.join('\n');
 }
 
 // the repo's architecture lock, if the supply-chain preset is installed: structure the lock has not seen, and a
