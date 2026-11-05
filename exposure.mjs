@@ -11,9 +11,9 @@ const VERIFY = /(npm (run )?test|yarn test|pnpm test|npx (vitest|jest|mocha|play
 // running the file you just edited is a check too; git add naming it is not
 const RUNS = /(^|[\s;&|(])(node|python3?|bash|sh|tsx|\.\/)/;
 const RISKY_PATH = /(^|\/)(\.env[^/]*|\.npmrc|\.yarnrc(\.yml)?|\.github\/workflows\/[^/]+|Dockerfile[^/]*|docker-compose[^/]*|CODEOWNERS|\.claude\/settings(\.local)?\.json|[^/]*(secret|credential)[^/]*)$/i;
-const RISKY_CMD = /(git push[^|;&]*(--force|-f\b)|git reset --hard|curl[^|]*\|\s*(sh|bash)|sudo |drop table|chmod 777)/i;
+const RISKY_CMD = /(git push(?![^|;&]*\b(v\d|refs\/tags))[^|;&]*(--force|-f\b)|git reset --hard|curl[^|]*\|\s*(sh|bash)|sudo |drop table|chmod 777)/i;
 // deleting a temp or build folder is housekeeping, not risk: on real history two thirds of rm -rf were that
-const RM = /rm -rf\s+(\S+)/i, RM_SAFE = /tmp|scratch|\$|dist|build|node_modules|cache|\.next|coverage/i;
+const RM = /rm -rf\s+([~\/.]\S*)/i, RM_SAFE = /tmp|scratch|\$|dist|build|node_modules|cache|\.next|coverage/i;   // a bare relative name is local cleanup
 const SHIP = /\b(git commit|git push|npm publish|gh pr (create|merge)|gh release|vercel|deploy)\b/i;
 const UI = /\.(css|scss|sass|less|tsx|jsx|vue|svelte|astro|html|svg)$/i;
 const COPY = /\.(md|mdx|txt|rst)$/i;
