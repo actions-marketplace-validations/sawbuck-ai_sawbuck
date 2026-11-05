@@ -12,7 +12,7 @@ export function typedText(message) {
 }
 
 // calls onSession() before each transcript and onEvent(e) for each line, and returns nothing
-const SCRATCH_DIR = /^-(private-)?(tmp|var-folders)-|AppData-Local-Temp/;   // a project folder is named after the path the session started in
+const SCRATCH_DIR = /^-(private-)?(tmp|var-folders)(-|$)|AppData-Local-Temp/;   // a project folder is named after the path the session started in
 export function readHistory(root, { onSession = () => {}, onEvent }) {
   const seen = new Set();
   let dirs = []; try { dirs = readdirSync(root); } catch { return; }

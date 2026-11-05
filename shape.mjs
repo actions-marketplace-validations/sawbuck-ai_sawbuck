@@ -7,7 +7,7 @@
 // Each habit must quote the agent from 3 turns, a plain check confirms the quotes, and the excerpts are deleted after.
 // Tested on one person: on 120 turns two models named the same two habits and differed on the third, so the output
 // calls them leads.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync, chmodSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -28,10 +28,11 @@ export function prepareShape({ home = homedir() } = {}) {
   const lines = readFileSync(p.rules, 'utf8').split('\n').filter(Boolean);
   for (let i = lines.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [lines[i], lines[j]] = [lines[j], lines[i]]; }
   const pick = lines.slice(0, SAMPLE);
-  writeFileSync(p.input, pick.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n', { mode: 0o600 });
+  const priv = (f, text) => { writeFileSync(f, text, { mode: 0o600 }); chmodSync(f, 0o600); };   // the mode alone only applies to a new file
+  priv(p.input, pick.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n');
   const turns = sampleTurns({ home });
   rmSync(p.notsaid, { force: true });
-  if (turns.length >= MIN_TURNS) writeFileSync(p.turns, turns.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n', { mode: 0o600 }); else rmSync(p.turns, { force: true });
+  if (turns.length >= MIN_TURNS) priv(p.turns, turns.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n'); else rmSync(p.turns, { force: true });
   return { input: p.input, lines: pick.length, secrets: r.secrets, turns: turns.length >= MIN_TURNS ? turns.length : 0, turnsFile: p.turns };
 }
 
@@ -64,7 +65,9 @@ export function sampleTurns({ home = homedir(), n = TURNS, days = 90 } = {}) {
     },
   });
   for (let i = T.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [T[i], T[j]] = [T[j], T[i]]; }
-  return T.map((t) => `you: ${cut(t.you, 160)}${AGENT}(${t.tools} tool calls): ${t.did.join('; ')} | it ended: ${cut(t.said.slice(-220), 220)}${NEXT}${cut(t.next, 120) || '(session ended)'}`).filter((l) => !SECRET.test(l)).slice(0, n);
+  // the person's words are kept free of the line's separators, so nothing they typed can sit where the agent's side is read
+  const mine = (x, k) => cut(x, k).replace(/\|/g, '/');
+  return T.map((t) => `you: ${mine(t.you, 160)}${AGENT}(${t.tools} tool calls): ${t.did.join('; ')} | it ended: ${cut(t.said.slice(-220), 220)}${NEXT}${mine(t.next, 120) || '(session ended)'}`).filter((l) => !SECRET.test(l)).slice(0, n);
 }
 const AGENT = ' | it did ', NEXT = ' | you next: ';
 
@@ -72,25 +75,31 @@ const AGENT = ' | it did ', NEXT = ' | you next: ';
 // as evidence and are never printed. Returns the lines to show, and removes the excerpts either way.
 function notSaid(p) {
   let turns = null, named = null;
-  try { turns = Object.fromEntries(readFileSync(p.turns, 'utf8').split('\n').filter(Boolean).map((l) => { const i = l.indexOf('\t'); return [l.slice(0, i), l.slice(i + 1)]; })); } catch {}
+  try { turns = new Map(readFileSync(p.turns, 'utf8').split('\n').filter(Boolean).map((l) => { const i = l.indexOf('\t'); return [l.slice(0, i), l.slice(i + 1)]; })); } catch {}
   try { const m = readFileSync(p.notsaid, 'utf8').match(/\[[\s\S]*\]/); named = m ? JSON.parse(m[0]) : null; } catch {}
   rmSync(p.turns, { force: true }); rmSync(p.notsaid, { force: true });
   if (!turns || !Array.isArray(named)) return [];
   const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const one = (x, k) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, k);
+  const one = (x, k) => (typeof x === 'string' ? x : '').replace(/\s+/g, ' ').trim().slice(0, k);
   const agentSide = (l) => { const a = l.indexOf(AGENT), b = l.lastIndexOf(NEXT); return a > -1 && b > a ? norm(l.slice(a, b)) : ''; };
   const out = [];
-  for (const c of named.slice(0, 3)) {
+  let kept = 0;
+  // the first 3 that hold up, wherever they sit in the answer; the answer is the model's, so nothing in it is trusted
+  for (const c of named.slice(0, 50)) {
+    if (kept === 3) break;
+    if (!c || typeof c !== 'object' || !one(c.what, 200)) continue;
     const seen = new Set(), quotes = [];
-    for (const t of Array.isArray(c && c.turns) ? c.turns : []) {
-      const q = norm(t && t.quote), l = turns[String(t && t.n)];
-      if (!l || q.length < 12 || seen.has(String(t.n)) || !agentSide(l).includes(q)) continue;
-      seen.add(String(t.n)); quotes.push(one(t.quote, 80));
+    for (const t of Array.isArray(c.turns) ? c.turns : []) {
+      if (!t || typeof t !== 'object' || typeof t.quote !== 'string') continue;
+      const q = norm(t.quote), id = String(t.n), l = turns.get(id);
+      if (typeof l !== 'string' || q.length < 12 || seen.has(id) || !agentSide(l).includes(q)) continue;
+      seen.add(id); quotes.push(one(t.quote, 80));
     }
-    if (quotes.length < MIN_CITES || !one(c.what, 200)) continue;
+    if (quotes.length < MIN_CITES) continue;
+    kept++;
     out.push(`    ${one(c.what, 200)} (${quotes.length} turns)`, ...[...new Set(quotes)].slice(0, 3).map((q) => `      "${q}"`), ...(one(c.rule, 200) ? [`      Try: ${one(c.rule, 200)}`] : []));
   }
-  const n = Object.keys(turns).length;
+  const n = turns.size;
   return out.length ? ['', `  Not said, from one read of ${n} past turns. Leads to check, with the agent's own words:`, ...out] : ['', `  Not said: nothing stood out in the ${n} past turns read.`];
 }
 
@@ -142,14 +151,18 @@ export function shapeCli(args, { home = homedir() } = {}) {
   const i = args.indexOf('--check');
   if (i === -1) return 'sawbuck shape --prepare | --check <labels.json>';
   const file = args[i + 1];
-  if (!file || !existsSync(file)) return '🐴 sawbuck: --check needs the labels file.';
-  const m = readFileSync(file, 'utf8').match(/\{[\s\S]*\}/);
-  const t = tally(m ? JSON.parse(m[0]) : {});
-  if (!t.n) return '🐴 sawbuck: no usable labels in that file.';
   const p = paths(home);
+  // a check that cannot run still clears the excerpts: they are only for this one read
+  const stop = (msg) => { rmSync(p.turns, { force: true }); rmSync(p.notsaid, { force: true }); return msg; };
+  if (!file || !existsSync(file)) return stop('🐴 sawbuck: --check needs the labels file.');
+  let labels = {};
+  try { const m = readFileSync(file, 'utf8').match(/\{[\s\S]*\}/); labels = m ? JSON.parse(m[0]) : {}; } catch {}
+  const t = tally(labels && typeof labels === 'object' ? labels : {});
+  if (!t.n) return stop('🐴 sawbuck: no usable labels in that file.');
   mkdirSync(p.dir, { recursive: true });
   let prev = null;
-  if (existsSync(p.hist)) { const l = readFileSync(p.hist, 'utf8').trim().split('\n').filter(Boolean); if (l.length) prev = JSON.parse(l[l.length - 1]); }
+  try { const l = readFileSync(p.hist, 'utf8').trim().split('\n').filter(Boolean); if (l.length) prev = JSON.parse(l[l.length - 1]); } catch {}
+  if (!prev || typeof prev !== 'object' || !prev.groups) prev = null;
   writeFileSync(p.svg, shapeSvg(t));
   const out = [`🐴 your steering shape, from ${t.n} messages that pushed on something (${t.none} did not). What you push on, not a score.`, ''];
   for (const [g, ss] of Object.entries(GROUPS)) {
