@@ -1,7 +1,7 @@
 // CLI + ranker behavior tests (node:test). Run: npm test (or node --test).
 // Covers the glue built this session: attach/detach wiring, the isolation
 // invariant (attach leaves the worktree clean; detach is a true inverse),
-// trace/verify/dry-run, rank's per-path filtering, and context.
+// verify/dry-run, rank's per-path filtering, and context.
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';

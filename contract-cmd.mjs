@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// sawbuck contract: give a repo its first rules with one command. Keeps whatever is already here, adds your tests if
-// there is none, the protected paths, and the written rule, which is what changes the agent (the pressure bench: 11 of
-// 20 to 0 of 20). --full adds the supply-chain guards, the repo lock and a CI check. Zero-LLM. Re-running changes
+// sawbuck contract: give a repo its first rules with one command. Keeps whatever config is already here (and adds no
+// tests to it); with no config it writes one with your detected tests. Adds the protected paths and the written rule, which is what changes the agent (the pressure bench: 11 of
+// 20 to 0 of 20). --full adds the supply-chain guards, the repo lock and a CI check (github.com origin, real test command). Zero-LLM. Re-running changes
 // nothing. Protected product code (auth, billing) is suggested, never added: freezing those is a person's decision.
 import { ensureExcluded } from './exclude.mjs';
 import { writeAgentBlock } from './agent-block.mjs';
@@ -18,7 +18,7 @@ const dry = process.argv.includes('--dry-run');
 const strict = process.argv.includes('--strict');
 const full = process.argv.includes('--full') || strict;
 // a new contract starts by watching: everyday change shows as a note. Protected paths, install scripts and sources
-// outside the registry still fail from day one. --strict holds them all, and an existing contract is left as it is.
+// outside the registry still fail from day one. --strict holds them all, and makes the notes of an earlier --full block.
 const REPORT = new Set(['dependency_entries', 'lock_drift', 'pins_changed', 'unpinned_execution', 'install_policy_gaps']);
 // Tests need their dependencies, so an npm lockfile gets an install, with no scripts. Elsewhere tests may not run in
 // CI, so inconclusive does not fail the job: protected paths are checked either way, and a gamed or failed verdict still fails.
@@ -52,7 +52,8 @@ try {
   // without --full, the paths that exist only for the lock and the scanners do not apply
   const mandates = preset.mandates.filter((m) => full || !JSON.stringify(m.paths || []).match(/packs|promptwheel\.lock/));
   if (dry) {
-    process.stdout.write(`sawbuck contract would ${had ? 'add to' : 'write'} ${cfgPath}: ${mandates.length} protected paths${full ? `, ${preset.metrics.length} guards, the scanners under .promptwheel/packs/, and promptwheel.lock.json` : ''}.\n`);
+    let notes = 0; try { if (strict && had) notes = (JSON.parse(readFileSync(cfgPath, 'utf8')).metrics || []).filter((m) => m && m.report && REPORT.has(m.name)).length; } catch {}
+    process.stdout.write(`sawbuck contract would ${had ? 'add to' : 'write'} ${cfgPath}: ${mandates.length} protected paths${full ? `, ${preset.metrics.length} guards, the scanners under .promptwheel/packs/, and promptwheel.lock.json` : ''}${notes ? `, and make ${notes} guards that are notes block` : ''}.\n`);
   } else {
     if (!had) run([join(HERE, 'init.mjs'), '-y', '--no-investigate'], repo);
     const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : { repeat: 1, metrics: [] };
@@ -64,6 +65,9 @@ try {
       cfg.metrics = [...(cfg.metrics || []), ...preset.metrics.filter((m) => !hasG.has(m.name)).map((m) => (!strict && REPORT.has(m.name) ? { ...m, report: true } : m))];
       cfg.evaluatorPaths = [...new Set([...(cfg.evaluatorPaths || []), ...(preset.evaluatorPaths || [])])];
     }
+    // --strict on a repo signed with --full: the guards that were notes now block, as the --full output promised
+    let hardened = 0;
+    if (strict) for (const m of cfg.metrics || []) if (m && m.report && REPORT.has(m.name)) { delete m.report; hardened++; }
     cfg.allowTrailer = false;
     writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
     const pack = join(repo, '.promptwheel', 'packs', 'supply-chain');
@@ -92,10 +96,11 @@ try {
     const locked = existsSync(join(repo, 'promptwheel.lock.json'));
     if (full && !locked) run([join(pack, 'lock.mjs'), 'write', repo], repo);
     const added = (cfg.mandates.length - before.m) + (cfg.metrics.length - before.g);
-    const fresh = added || (full && !locked);
+    const fresh = added || hardened || ci || (full && !locked);
     process.stdout.write(!fresh ? 'sawbuck: already signed, nothing changed.\n' : full
-      ? `sawbuck: signed. ${cfg.mandates.length} protected paths, ${cfg.metrics.length} guards, and the shape of this repo in promptwheel.lock.json.\n${strict ? '' : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the rest.\n' : ''}`
+      ? `sawbuck: signed. ${cfg.mandates.length} protected paths, ${cfg.metrics.length} guards, and the shape of this repo in promptwheel.lock.json.\n${strict ? (hardened ? `  ${hardened} guards that were notes now block. The contract is a protected path, so the commit that carries this needs a person's reason: sawbuck check --allow "<reason>".\n` : '') : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the rest.\n' : ''}`
       : `sawbuck: signed. ${cfg.mandates.length} protected paths, and the rule in AGENTS.md.\n  --full adds supply-chain guards, a repo lock and a CI check.\n`);
+    if (full && !ci && !existsSync(wf)) process.stdout.write(`  No CI check added: ${!/github\.com/.test(remote) ? 'this repo has no github.com origin' : 'there is no real test command yet, and a placeholder would fail every pull request'}. Run sawbuck contract --full again once it has one.\n`);
   }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 

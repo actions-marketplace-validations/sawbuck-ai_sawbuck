@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // sawbuck, the CLI. Zero-dep.
-// `attach` wires the Claude Code hooks into a repo; `detach` removes them and leaves the repo exactly as it was. The
+// `attach` wires the Claude Code hooks into a repo; `detach` removes them, and the record stays until `--purge`. The
 // repo never imports Sawbuck. Rides two engines: promptwheel (the check) + @promptwheel/logbook.
 //
 // attach writes a receipt to .git/sawbuck/attach.json recording every file it created or modified. detach reads it and
-// reverses exactly that; `detach --verify` proves the repo came back clean; `doctor` checks the attachment still resolves.
+// reverses exactly that; `detach --verify` proves the wiring is gone and names what is left; `doctor` runs what each hook runs.
 
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
@@ -24,12 +24,36 @@ const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
+// A commit message is not a person: an agent can write a Sawbuck-Allow trailer, so no sawbuck path honors one
+// (the Stop hook does the same through reflect). `--allow` is the declared override.
 function gateReport(repo, a) {
-  let o = '', code = 0;
-  try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 120000 }); }
-  catch (e) { o = (e.stdout || '').toString(); code = e.status || 0; }
+  let o = '', err = '', code = 0;
+  try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' }, timeout: +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 120000 }); }
+  catch (e) { o = (e.stdout || '').toString(); err = e.signal ? 'the check timed out' : (e.stderr || '').toString(); code = e.status || 0; }
   let rep = null; try { rep = JSON.parse(o.slice(o.indexOf('{'))); } catch {}
-  return { rep, code };
+  // the engine's own reason, without its zero-config notice
+  const why = err.split('\n').filter((l) => l.trim() && !/^no promptwheel\.config\.json, auto-gating/.test(l)).join(' ').trim();
+  return { rep, code, why };
+}
+// why nothing could be measured, in words that match the case: no test command, tests red on both sides, or a
+// win the source-only re-run could not apply. `sawbuck init` only where there is no config to edit yet.
+function inconclusiveWhy(rep, repo) {
+  const ms = (rep && rep.metrics) || [];
+  const m = ms.find((x) => x.inert) || ms[0];
+  if (ms.some((x) => x.unprovable)) return 'a win here could not be re-proved, because the source-only re-run did not apply. Do not trust this green on its own.';
+  const hasCfg = existsSync(join(repo, 'promptwheel.config.json'));
+  let cmd = '';
+  try { cmd = String((JSON.parse(readFileSync(join(repo, 'promptwheel.config.json'), 'utf8')).metrics || []).find((x) => x && x.name === (m && m.name))?.cmd || ''); } catch {}
+  const placeholder = /set your test command/.test(cmd) || (!hasCfg && !detectedTests(repo));
+  const where = hasCfg ? 'in promptwheel.config.json' : 'with `sawbuck init`, then in promptwheel.config.json';
+  if (placeholder) return `there is no test command here, so nothing was measured. It finds npm, pytest, cargo and go tests on its own. Set yours ${where} (the cmd of "${(m && m.name) || 'tests_pass'}").`;
+  return `"${(m && m.name) || 'tests_pass'}" failed before and after this change, so there was no win or loss to measure. If your tests are red, fix them first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.`;
+}
+// the test commands the engine finds with no config (promptwheel's detectTestCmd)
+function detectedTests(repo) {
+  const has = (f) => existsSync(join(repo, f));
+  if (['go.mod', 'Cargo.toml', 'pyproject.toml', 'setup.py', 'pytest.ini'].some(has)) return true;
+  try { return !!JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).scripts?.test; } catch { return false; }
 }
 // is the metric live (actually ran), or inert (never ran in isolation)?
 const metricLive = (m) => !!m && !m.inert && m.status !== 'unmeasurable' && m.before != null;
@@ -63,23 +87,31 @@ Usage:
                             commit, or the range you name). Zero-config, no attach, no hook. The
                             fastest way to see it work. Every promptwheel run flag passes through.
                             Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
-  sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block]
-                            Customize the rules (promptwheel.config.json), with notes from what your
-                            git history shows actually breaks, plus a short guide in AGENTS.md
-                            (--no-agent-block to skip). Wizard in a terminal, non-interactive in a pipe/CI (or --yes).
-  sawbuck attach [repo]     Check every Claude Code turn in this repo. --user for every repo. --dry-run prints the footprint
+  sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block] [--force]
+                            Write promptwheel.config.json: your detected tests and the tripwires, with
+                            notes from what your git history shows actually breaks, plus a short guide in
+                            AGENTS.md (--no-agent-block to skip). Wizard in a terminal, non-interactive in
+                            a pipe/CI (or --yes). An existing config needs --force.
+  sawbuck attach [repo] [--user] [--dry-run]
+                            Check every Claude Code turn in this repo. --user for every repo. --dry-run
+                            prints every file it would write
   sawbuck detach [repo] [--user] [--verify] [--purge]
-                            Remove it and restore the repo (no flag: whatever is attached here); --verify
-                            proves it came back clean; --purge also deletes the record (.sawbuck/)
+                            Remove the hooks (no flag: whatever is attached here). The record stays, kept
+                            out of git status; --purge deletes it. --verify proves the wiring is gone and
+                            names what is left
   sawbuck status [repo]     The inventory: caught over time + debt accruing now + whether it is armed. --json
                             --log [-n N] for the recent checks, newest first
   sawbuck debt [repo] [--since REF] [--fail-on undocumented|test|any|N]
                             The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
-                            shows only what a branch adds; --fail-on exits nonzero (a CI gate)
+                            shows only what a branch adds; --fail-on exits 1 when that debt (or, without
+                            --since, any live debt of that kind) is there (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
-  sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck
-  sawbuck contract          Give this repo its rules: protected paths, your tests (--dry-run to preview)
-                            --full adds supply-chain guards, the repo lock and a CI check; --strict makes them block
+  sawbuck doctor [repo]     Run what each hook runs (project and user level) and say if it still works
+  sawbuck contract [--dry-run] [--full] [--strict]
+                            Give this repo its rules: protected paths, the written rule, and your detected
+                            tests when there is no config yet (--dry-run to preview). --full adds supply-chain
+                            guards, the repo lock, and a CI check on a github.com repo with a real test
+                            command; --strict makes them block
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
@@ -115,6 +147,15 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   process.exit(0);
 }
 
+// `sawbuck <command> --help`: that command's lines from the help, and nothing runs. Internal commands get the whole help.
+if (rest.includes('--help') || rest.includes('-h')) {
+  const own = []; let cur = null;
+  for (const l of help.split('\n')) { const m = l.match(/^  sawbuck (\S+)/); if (m) cur = m[1]; else if (!/^ {20,}\S/.test(l)) cur = null; if (cur === cmd) own.push(l); }
+  if (own.length || ['rank', 'frame', 'turn', '__hook'].includes(cmd)) { out(own.length ? `sawbuck ${version}\n\n${own.join('\n')}` : help); process.exit(0); }
+}
+// a flag contract does not know is an error, never a silent no-op
+if (cmd === 'contract') { const bad = rest.filter((a) => a.startsWith('-') && !['--dry-run', '--full', '--strict'].includes(a)); if (bad.length) usage(`unknown flag ${bad.join(' ')} for contract (it takes --dry-run, --full, --strict)`); }
+
 switch (cmd) {
   case 'contract': {
     const top = gitTop(repoArg());
@@ -138,7 +179,7 @@ switch (cmd) {
   }
   case 'check': {
     // one-shot: gate your latest change right now (working tree if dirty, else the last commit),
-    // zero-config (the engine auto-detects your test command), and say plainly whether the win was
+    // zero-config (the engine finds npm, pytest, cargo and go tests), and say plainly whether the win was
     // earned. No attach, no hook, no record. The try-it-first on-ramp.
     // `sawbuck check` IS `promptwheel run` with a plain-spoken verdict: every engine flag passes
     // through (--base/--head/--repeat/--allow/--json/--no-detect-gaming), so there is one entry
@@ -165,18 +206,24 @@ switch (cmd) {
     if (!dirty && !base && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
     const where = dirty ? 'working' : (base || head) ? `${base || 'HEAD~1'}..${head || 'HEAD'}` : 'last';
     const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
-    const { rep, code } = gateReport(repo, [...args, ...pass]);
-    if (!rep || !rep.verdict) { out('🐴 sawbuck: could not run the check here. Make sure this is a git repo with a commit, and a test command (or run `sawbuck init`).'); process.exit(64); }
+    const { rep, code, why } = gateReport(repo, [...args, ...pass]);
+    if (!rep || !rep.verdict) { out(`🐴 sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     for (const md of rep.mandates || []) out(`🐴 ⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
     const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
-    if (rep.verdict === 'pass' && win) out(`🐴 ✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
+    const noDetect = pass.includes('--no-detect-gaming');
+    if (rep.verdict === 'pass' && rep.allowed) out(`🐴 ✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).join(', ') || 'the change'} was let through without a source-only re-proof.`);
+    else if (rep.verdict === 'pass' && win && noDetect) out(`🐴 ✓ passed: "${win.name}" improved, but gaming detection is off (--no-detect-gaming), so the win was not re-proved from the source.`);
+    else if (rep.verdict === 'pass' && win) out(`🐴 ✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
-    else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
+    else if (rep.verdict === 'gamed') {
+      out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
+      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('🐴 note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
+    }
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a rule in the contract was broken, however green the rest is.');
     else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
-    else out('🐴 ≈ inconclusive: the check ran but could not measure your metric (it did not run in isolation). Point it at your real test command: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json.');
+    else out(`🐴 ≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
     for (const x of rep.explained || []) out(`🐴 ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
     if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
@@ -294,6 +341,9 @@ switch (cmd) {
       if (a.git || !hasClaude) unwireGit(repo);
     }
     if (purge) purgeRecord(repo);
+    syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
+    const left = recordLeft(repo);
+    if (left.length) out(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
     if (flags.has('--verify')) verifyClean(repo);
     break;
   }
@@ -388,7 +438,7 @@ function verifyAttach(repo) {
   const { rep } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
   const m = rep && (rep.metrics || [])[0];
   if (metricLive(m)) out(`   ✓ I can measure "${m.name}" here. On each commit I'll verify a win survived a source-only re-run, and flag it if it did not.`);
-  else out('   ⚠ I could not measure anything here yet (your test command did not run in isolation). Point me at it: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json. I stay quiet until then.');
+  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : 'the check did not run'} I stay quiet until then.`);
 }
 
 // --- the attach receipt (out of the worktree, inside .git) ------------------
@@ -407,7 +457,23 @@ function rmIfEmptyDir(d) { try { if (existsSync(d) && readdirSync(d).length === 
 // --- .git/info/exclude: keep the worktree clean without touching .gitignore --
 // Any attachment keeps the block, the last one out takes it. Returns whether the file changed.
 function excludeFile(repo) { return gitPath(repo, 'info/exclude'); }
-function syncExclude(repo, manifest) { return Object.keys(manifest.attachments || {}).length ? ensureExcluded(repo) : clearExcluded(repo); }
+// The lines stay while the record they hide is still on disk: clearing them would put .sawbuck/ in git status and a
+// signed repo would fail its own hooks-frozen rule over Sawbuck's record. --purge deletes the record, then the lines.
+function syncExclude(repo, manifest) {
+  if (Object.keys(manifest.attachments || {}).length) return ensureExcluded(repo);
+  return hiddenLeft(repo).length ? false : clearExcluded(repo);
+}
+// the record paths still on disk and not tracked (a committed LOGBOOK.md is the person's file)
+function recordLeft(repo) {
+  const tracked = (p) => { try { return !!execFileSync('git', ['-C', repo, 'ls-files', '--', p], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return false; } };
+  return ['.sawbuck/', '.promptwheel/outcomes.jsonl', 'events.jsonl', 'annotations.jsonl', 'LOGBOOK.md', 'JOURNEY.md'].filter((p) => existsSync(join(repo, p)) && !tracked(p));
+}
+// what the block hides that is still there: the record, and a settings.local.json the person keeps
+function hiddenLeft(repo) {
+  const local = join(repo, '.claude', 'settings.local.json');
+  let own = false; try { own = existsSync(local) && !execFileSync('git', ['-C', repo, 'ls-files', '--', '.claude/settings.local.json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+  return [...recordLeft(repo), ...(own ? ['.claude/settings.local.json'] : [])];
+}
 
 // --- git post-commit --------------------------------------------------------
 // Older versions could attach here. Nothing wires it now; detach still takes it out.
@@ -479,6 +545,7 @@ function wireClaude(repo, opts) {
       `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
       user ? null : `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})`,
       `create  ${user ? userManifestPath() : manifestPath(repo)}  (attach receipt)`,
+      !user && existsSync(join(repo, 'promptwheel.config.json')) ? `write   ${join(repo, '.sawbuck', 'state.json')}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
     ].filter(Boolean)));
     return;
   }
@@ -558,7 +625,7 @@ function removeClaudeEntries(cfg) {
 }
 function isTrivialSettings(cfg) { return Object.keys(cfg).length === 0; }
 
-// --- trace / verify / doctor / purge: show, prove, and clean the footprint --
+// --- verify / doctor / purge: prove and clean the footprint ----------------
 function footprint(repo) {
   const items = [];
   const pc = gitPath(repo, 'hooks/post-commit');
@@ -567,16 +634,16 @@ function footprint(repo) {
     try { if (existsSync(f) && readFileSync(f, 'utf8').includes('sawbuck.mjs')) items.push({ what: f, state: 'claude hooks' }); } catch {}
   }
   const xf = excludeFile(repo);
-  try { if (existsSync(xf) && readFileSync(xf, 'utf8').includes(S_START)) items.push({ what: xf, state: 'local exclude' }); } catch {}
-  for (const d of RECORD_DIRS) if (existsSync(join(repo, d))) items.push({ what: join(repo, d), state: 'record dir (ignored)' });
+  // the exclude lines are part of the record while it is on disk (syncExclude), wiring only once it is gone
+  try { if (existsSync(xf) && readFileSync(xf, 'utf8').includes(S_START) && !hiddenLeft(repo).length) items.push({ what: xf, state: 'local exclude' }); } catch {}
   const mp = manifestPath(repo);
   if (existsSync(mp)) { const m = readManifest(mp); items.push({ what: mp, state: `receipt: ${Object.keys(m.attachments || {}).join(', ') || 'empty'}` }); }
   return items;
 }
 function verifyClean(repo) {
-  // the record dirs may stay (your data, unless --purge); the mechanism must be gone.
-  const left = footprint(repo).filter((it) => !/record dir/.test(it.state));
-  if (!left.length) out('sawbuck: verified, the repo is back to how it was (mechanism fully removed).');
+  // the record may stay (your data, unless --purge, and named above); the mechanism must be gone.
+  const left = footprint(repo);
+  if (!left.length) out('sawbuck: verified, the hooks and the receipt are gone.');
   else { out('sawbuck: NOT clean, these remain:'); for (const it of left) out(`  ${it.state.padEnd(22)} ${it.what}`); process.exitCode = 1; }
 }
 function purgeRecord(repo) {
@@ -591,30 +658,34 @@ function purgeRecord(repo) {
   try { if (existsSync(outcomes)) { rmSync(outcomes, { force: true }); n++; out(`sawbuck: purged ${outcomes}`); } } catch {}
   if (!n) out('sawbuck: no record to purge');
 }
-// is `sawbuck` resolvable on PATH? (SAWBUCK_NO_PATH_CHECK forces the strict/offline answer)
-function onPath() {
-  if (process.env.SAWBUCK_NO_PATH_CHECK) return false;
-  try { execFileSync('sh', ['-c', 'command -v sawbuck'], { stdio: 'ignore' }); return true; } catch { return false; }
-}
 // the path a hook bakes in: the quoted one ending in sawbuck.mjs, in a shell hook or in JSON, where the quotes are escaped
 function extractBaked(text) { const m = text.match(/"([^"]*sawbuck\.mjs)\\?"/); return m ? m[1] : null; }
+// Does the hook still work? Run exactly what it runs, with --version in place of the hook's arguments: the same
+// node lookup, the same baked path, the same npx fallback. A hook never looks sawbuck up on PATH, so neither does this.
+function hookRuns(command) {
+  const probe = command.replace(/(sawbuck\.mjs"?|sawbuck@[\w.-]+) [^;]*/g, '$1 --version');
+  if (process.platform === 'win32') { const b = extractBaked(JSON.stringify(command)); return !!b && existsSync(b); }
+  try { return /^\d+\.\d+\.\d+/.test(execFileSync('sh', ['-c', probe], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60000 }).trim()); } catch { return false; }
+}
 function doctorRepo(repo) {
   const checks = [];
   const pc = gitPath(repo, 'hooks/post-commit');
-  try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) checks.push({ mode: 'git', file: pc, baked: extractBaked(b) }); } } catch {}
-  for (const [mode, f] of [['claude', join(repo, '.claude', 'settings.local.json')], ['claude-shared', join(repo, '.claude', 'settings.json')]]) {
-    try { if (existsSync(f)) { const b = readFileSync(f, 'utf8'); if (b.includes('sawbuck.mjs')) checks.push({ mode, file: f, baked: extractBaked(b) }); } } catch {}
+  try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) { const baked = extractBaked(b); checks.push({ mode: 'git', file: pc, ok: !!baked && existsSync(baked) }); } } } catch {}
+  for (const [mode, f] of [['claude', join(repo, '.claude', 'settings.local.json')], ['claude-shared', join(repo, '.claude', 'settings.json')], ['user', join(homedir(), '.claude', 'settings.json')]]) {
+    let cfg = null; try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { continue; }
+    const cmds = Object.values((cfg && cfg.hooks) || {}).flat().flatMap((h) => (h && Array.isArray(h.hooks) ? h.hooks : [])).map((x) => x && x.command).filter((c) => typeof c === 'string' && c.includes('sawbuck.mjs'));
+    if (cmds.length) checks.push({ mode, file: f, ok: [...new Set(cmds)].every(hookRuns) });
   }
-  if (!checks.length) { out(`sawbuck: no attachment in ${repo}, nothing to check.`); return; }
-  const pathOk = onPath();
-  let bad = 0;
+  // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded)
+  const receipt = Object.keys(readManifest(manifestPath(repo)).attachments || {}).filter((m) => m.startsWith('claude') && !checks.some((c) => c.mode === m));
+  if (!checks.length && !receipt.length) { out(`sawbuck: no attachment in ${repo}, nothing to check.`); return; }
+  let bad = receipt.length;
   out(`sawbuck doctor, ${repo}:`);
   for (const c of checks) {
-    const ok = pathOk || (c.baked ? existsSync(c.baked) : false);
-    if (!ok) bad++;
-    out(`  ${ok ? 'OK   ' : 'STALE'} ${c.mode.padEnd(14)} ${c.file}${ok ? '' : `  (baked path gone: ${c.baked || '?'} and sawbuck not on PATH, re-attach or install it)`}`);
+    if (!c.ok) bad++;
+    out(`  ${c.ok ? 'OK   ' : 'STALE'} ${c.mode.padEnd(14)} ${c.file}${c.ok ? '' : '  (the hook does not run: what it calls is gone; run sawbuck attach again)'}`);
   }
-  out(pathOk ? '\n  sawbuck resolves on PATH, attachments survive a reinstall.' : '\n  tip: `npm i -g sawbuck` so hooks resolve by PATH and survive an upgrade.');
+  for (const m of receipt) out(`  GONE  ${m.padEnd(14)} the receipt says hooks were wired here, but the hooks are gone. Run sawbuck attach again, or sawbuck detach to drop the receipt.`);
   if (bad) process.exitCode = 1;
 }
 // --- shared helpers ---------------------------------------------------------

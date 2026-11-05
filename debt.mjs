@@ -5,17 +5,32 @@
 // rule code or reason) or BARE (just the directive, nobody wrote why). The whole-repo view;
 // `sawbuck context` is the task-scoped one. The live state (git grep of HEAD, gated) is the
 // complete lens for CURRENT debt; the historical diff scan under-counts it.
-// Zero-dep. Usage: node debt.mjs [--repo P] [--top N] [--since REF] [--json]
+// Zero-dep. Usage: node debt.mjs [repo] [--repo P] [--top N] [--since REF] [--fail-on undocumented|test|any|N] [--json]
 
 import { basename, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { events as memEvents, debt as memDebt } from './memory.mjs';
 
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
-const repo = resolve(flag('--repo', process.cwd()));
+// the repo is --repo, or the first plain argument (`sawbuck debt <path>`), at its root
+const VALUED = new Set(['--repo', '--top', '--since', '--fail-on']);
+const plain = process.argv.slice(2).filter((a, i, l) => !a.startsWith('-') && !VALUED.has(l[i - 1]));
+const asked = resolve(flag('--repo', plain[0] || process.cwd()));
+let repo = asked;
+try { repo = execFileSync('git', ['-C', asked, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+catch { console.error(`sawbuck debt: ${asked} is not a git repository`); process.exit(64); }
 const top = Math.max(1, parseInt(flag('--top', '12'), 10) || 12);
 const since = flag('--since', null);
 const failRaw = flag('--fail-on', null); // undocumented | test | any | <N>; bare --fail-on = undocumented
-const failMode = failRaw === true ? 'undocumented' : (failRaw ? String(failRaw).toLowerCase() : null);
+const failMode = (failRaw === true || String(failRaw).startsWith('--')) ? 'undocumented' : (failRaw ? String(failRaw).toLowerCase() : null);
+if (failMode && !/^(undocumented|test|tests|disabled|any|\d+)$/.test(failMode)) { console.error(`sawbuck debt: --fail-on takes undocumented|test|any|N, not "${failRaw}"`); process.exit(64); }
+// the gate: fail (exit 1) when the list holds the kind of debt --fail-on names. With --since the list is what the
+// branch adds; without it, everything live in HEAD.
+const gateFails = (list) => !failMode ? false
+  : /^\d+$/.test(failMode) ? list.length >= +failMode
+  : failMode === 'any' ? list.length > 0
+  : (failMode === 'test' || failMode === 'tests' || failMode === 'disabled') ? list.some((it) => it.testSkip)
+  : list.some((it) => !it.documented);
 const asJson = process.argv.includes('--json');
 
 // events give fragility + fall-back dates (Logbook's facts). Best-effort.
@@ -41,11 +56,7 @@ if (since && typeof since === 'string') {
   const added = live.filter((it) => it.content && !base.has(it.file + '\u0000' + norm(it.content)));
   const skips = added.filter((it) => it.testSkip).length, undoc = added.filter((it) => !it.documented).length;
   // the gate: fail (exit 1) when the branch adds the kind of debt --fail-on names.
-  const fail = !failMode ? false
-    : /^\d+$/.test(failMode) ? added.length >= +failMode
-    : failMode === 'any' ? added.length > 0
-    : (failMode === 'test' || failMode === 'tests' || failMode === 'disabled') ? skips > 0
-    : undoc > 0; // default: undocumented
+  const fail = gateFails(added);
   if (asJson) { console.log(JSON.stringify({ since, added: added.length, testSkips: skips, undocumented: undoc, failOn: failMode, fail, items: added.map((it) => ({ file: it.file, line: it.line, kind: String(it.kind).trim(), documented: it.documented })) }, null, 2)); process.exit(fail ? 1 : 0); }
   if (!added.length) { console.log(`🐴 sawbuck: no new suppression debt since ${since} (clean).`); process.exit(0); }
   const o = [`🐴 sawbuck: ${added.length} new suppression${added.length === 1 ? '' : 's'} since ${since}  ·  ${skips} disabled test${skips === 1 ? '' : 's'}  ·  ${undoc} undocumented (no code/reason)`];
@@ -56,6 +67,7 @@ if (since && typeof since === 'string') {
   process.exit(fail ? 1 : 0);
 }
 
+const liveFail = gateFails(live);
 if (!live.length) { console.log(asJson ? '{"total":0,"testSkips":0,"codeSuppressions":0,"undocumented":0,"files":[]}' : '🐴 sawbuck: no live suppression debt in HEAD (nothing silenced in src/test/config). A clean tree.'); process.exit(0); }
 
 // Fragility: debt on code that keeps breaking (reverts, fix-bursts) is the debt that matters; debt
@@ -105,8 +117,8 @@ const files = [...byFile.values()].map((f) => {
 const onFragile = files.filter((f) => f.reverts > 0 || f.hot).length;
 
 if (asJson) {
-  console.log(JSON.stringify({ total: live.length, testSkips, codeSuppressions: codeSup, undocumented: bare, filesOnFragileCode: onFragile, files: files.map((f) => ({ file: f.file, live: f.n, testSkips: f.skips, suppressions: f.sup, undocumented: f.bareSup, reverts: f.reverts, hot: f.hot, risk: f.risk, oldest: f.oldest })) }, null, 2));
-  process.exit(0);
+  console.log(JSON.stringify({ total: live.length, testSkips, codeSuppressions: codeSup, undocumented: bare, filesOnFragileCode: onFragile, ...(failMode ? { failOn: failMode, fail: liveFail } : {}), files: files.map((f) => ({ file: f.file, live: f.n, testSkips: f.skips, suppressions: f.sup, undocumented: f.bareSup, reverts: f.reverts, hot: f.hot, risk: f.risk, oldest: f.oldest })) }, null, 2));
+  process.exit(liveFail ? 1 : 0);
 }
 
 const out = [];
@@ -125,4 +137,6 @@ if (dated.length) {
   for (const it of dated.slice(0, 5)) out.push(`     ${it.file}:${it.line}  ${String(it.kind).trim()}  (since ${it.since})`);
 }
 out.push(`\n   bare = no code/reason, the suspect kind. leads, not verdicts; full dated ledger: logbook audit`);
+if (failMode) out.push(liveFail ? `\n   ❌ debt gate FAILED (--fail-on ${failMode}): HEAD carries this debt. Add --since <base> to gate only what a branch adds.` : `\n   ✓ debt gate passed (--fail-on ${failMode}).`);
 console.log(out.join('\n'));
+process.exit(liveFail ? 1 : 0);

@@ -118,7 +118,7 @@ process.stderr.write(`sawbuck: ${kind} recorded on ${evidenceFile}\n`);
 
 // --- the activity feed: one line per check so you can watch it work, verified
 // included, not only catches. Capped, lives in the git-excluded .sawbuck/, opt
-// out with SAWBUCK_NO_LOG=1. `sawbuck log` reads it.
+// out with SAWBUCK_NO_LOG=1. `sawbuck status --log` reads it.
 function appendActivity(v, rep, standing = false) {
   if (process.env.SAWBUCK_NO_LOG) return;
   const map = { pass: 'verified', gamed: 'gamed', fail: 'regression', inconclusive: 'inconclusive' };
