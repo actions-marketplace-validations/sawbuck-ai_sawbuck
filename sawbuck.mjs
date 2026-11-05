@@ -23,7 +23,6 @@ import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSy
 import { basename, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { recall as memRecall, conform as memConform } from './memory.mjs';
 import { PW } from './bins.mjs';
 import { frameBlock, mandatesInForce, protectedDirty, blobAt, lockState } from './contract.mjs';
 
@@ -275,32 +274,6 @@ switch (cmd) {
     const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false) : ''].filter(Boolean).join('\n');
     if (o) out(o);
     break;
-  }
-  case 'recall': {
-    // the notes face: supplementary relevant notes for your current changes, from any non-git memory
-    // provider (e.g. an Obsidian vault). On-demand. Git history + live debt come from context / debt.
-    const repo = repoRoot();
-    const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
-    let changed = g('diff', '--name-only', 'HEAD').split('\n').filter(Boolean);
-    if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
-    if (!changed.length) { out('🐴 sawbuck: nothing changed to look up.'); break; }
-    const notes = memRecall(repo, changed);
-    if (!notes.length) { out('🐴 sawbuck: no related notes (configure extra memory providers with SAWBUCK_MEMORY, e.g. logbook,obsidian; logbook history is in `sawbuck context`).'); break; }
-    out(`🐴 related notes for ${changed.length} changed path${changed.length === 1 ? '' : 's'} (leads, not conclusions):`);
-    for (const n of notes) out(`  - [${n.source}] ${n.summary}${n.ref ? `  (${n.ref})` : ''}`);
-    break;
-  }
-  case 'memory-conformance': {
-    // check that a provider bin speaks the Memory Contract (recall returns Finding[]; debt returns
-    // Suppression[] or exits nonzero to signal it is not a git-truth provider). Read-only probe.
-    const bin = positional[0];
-    if (!bin) die('usage: sawbuck memory-conformance <provider-bin>   (a bin speaking the contract verbs recall/debt/record)');
-    const r = memConform(bin, process.cwd());
-    out(`🐴 memory-conformance: ${bin}`);
-    out(`   recall: ${r.recall}`);
-    out(`   debt:   ${r.debt}`);
-    out(r.pass ? '   ✓ conforms to the Memory Contract.' : '   ✗ does not conform (see above).');
-    process.exit(r.pass ? 0 : 1);
   }
   case '__hook': {
     try { execFileSync(process.execPath, [HOOK, ...rest], { stdio: 'inherit' }); } catch (e) { process.exit(e.status || 0); }

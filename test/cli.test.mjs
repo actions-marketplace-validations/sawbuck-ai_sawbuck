@@ -11,16 +11,11 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { scopeChain, recall as recallMem } from '../memory.mjs';
 import { globToRe, mandateHits, mandatesInForce, protectedDirty } from '../contract.mjs';
 import { ensureExcluded } from '../exclude.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
-const OBSIDIAN = join(HERE, '..', 'providers', 'obsidian.mjs');   // reference local-notes memory provider
-const MEM0 = join(HERE, '..', 'providers', 'mem0.mjs');           // reference semantic (networked) memory provider
-const LOCAL = join(HERE, '..', 'providers', 'local.mjs');         // reference minimal local-file memory provider
-const CLAUDEP = join(HERE, '..', 'providers', 'claude.mjs');      // reference read-only Claude-memory provider
 // isolate HOME so the global registry (~/.sawbuck) never touches the real home.
 const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-home-'));
 after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
@@ -133,127 +128,6 @@ test('status: the inventory unions outcomes, live debt, and the armed state', ()
     // must have counted the committed bare suppression.
     if (j.debt && j.debt.total > 0) assert.ok(j.debt.undocumented >= 1, 'the bare suppression reads undocumented');
   } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('recall composition: the same note from two providers dedups to one, keeps the higher score + both sources', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'sawbuck-fake-'));
-  const repo = mkdtempSync(join(tmpdir(), 'sawbuck-fakerepo-'));
-  const script = (score) => `const c=process.argv[2];\nif(c==='recall'){console.log(JSON.stringify([{kind:'note',summary:'shared gotcha about app.js',score:${score}}]));process.exit(0)}\nprocess.exit(2);\n`;
-  const hi = join(dir, 'hi.mjs'), lo = join(dir, 'lo.mjs');
-  writeFileSync(hi, script(0.9)); writeFileSync(lo, script(0.2));
-  const prev = process.env.SAWBUCK_MEMORY;
-  try {
-    process.env.SAWBUCK_MEMORY = 'fakehi,fakelo';
-    process.env.SAWBUCK_MEMORY_FAKEHI_BIN = hi;
-    process.env.SAWBUCK_MEMORY_FAKELO_BIN = lo;
-    const notes = recallMem(repo, ['app.js']);
-    assert.equal(notes.length, 1, 'the overlapping note collapses to one');
-    assert.equal(notes[0].score, 0.9, 'keeps the higher-scored instance');
-    assert.ok(notes[0].source.includes('fakehi') && notes[0].source.includes('fakelo'), 'records that both providers knew it');
-  } finally {
-    if (prev === undefined) delete process.env.SAWBUCK_MEMORY; else process.env.SAWBUCK_MEMORY = prev;
-    delete process.env.SAWBUCK_MEMORY_FAKEHI_BIN; delete process.env.SAWBUCK_MEMORY_FAKELO_BIN;
-    rmSync(dir, { recursive: true, force: true }); rmSync(repo, { recursive: true, force: true });
-  }
-});
-
-test('scopeChain: isolated leaf by default; self..root chain under a configured root', () => {
-  const root = mkdtempSync(join(tmpdir(), 'sawbuck-root-'));
-  const repo = join(root, 'group', 'repo');
-  mkdirSync(repo, { recursive: true });
-  const prev = process.env.SAWBUCK_MEMORY_ROOT;
-  try {
-    delete process.env.SAWBUCK_MEMORY_ROOT;
-    assert.deepEqual(scopeChain(repo), ['repo'], 'no root in play -> an isolated leaf, no inheritance');
-    process.env.SAWBUCK_MEMORY_ROOT = root;
-    assert.deepEqual(scopeChain(repo), ['group/repo', 'group', ''], 'under a root -> self + ancestors + root ("")');
-    delete process.env.SAWBUCK_MEMORY_ROOT;
-    writeFileSync(join(root, '.sawbuck-root'), '');
-    assert.deepEqual(scopeChain(repo), ['group/repo', 'group', ''], 'a .sawbuck-root marker is discovered by walking up');
-  } finally {
-    if (prev === undefined) delete process.env.SAWBUCK_MEMORY_ROOT; else process.env.SAWBUCK_MEMORY_ROOT = prev;
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('obsidian scope isolation: a sibling scope never leaks, the root scope is shared', () => {
-  const V = mkdtempSync(join(tmpdir(), 'sawbuck-vault-'));
-  mkdirSync(join(V, 'repoA')); mkdirSync(join(V, 'repoB'));
-  try {
-    writeFileSync(join(V, 'repoA', 'a.md'), '# A\n\nfoo.js in repoA.\n');
-    writeFileSync(join(V, 'repoB', 'b.md'), '# B\n\nfoo.js in repoB.\n');
-    writeFileSync(join(V, 'shared.md'), '# Shared\n\nfoo.js across projects.\n');
-    const recall = (sc) => JSON.parse(execFileSync(process.execPath, [OBSIDIAN, 'recall', '--file', 'foo.js', ...sc, '--json'], { encoding: 'utf8', env: { ...process.env, OBSIDIAN_VAULT: V } }));
-    const a = recall(['--scope', 'repoA', '--scope', '']);
-    assert.ok(a.some((f) => f.ref === 'repoA/a.md'), 'leaf scope note is present');
-    assert.ok(a.some((f) => f.ref === 'shared.md'), 'root-scope (vault root) note is shared');
-    assert.ok(!a.some((f) => f.ref === 'repoB/b.md'), 'a SIBLING scope must never leak into recall');
-    const b = recall(['--scope', 'repoB', '--scope', '']);
-    assert.ok(b.some((f) => f.ref === 'repoB/b.md') && !b.some((f) => f.ref === 'repoA/a.md'), 'isolation holds both directions');
-  } finally { rmSync(V, { recursive: true, force: true }); }
-});
-
-test('memory-conformance: the obsidian reference provider conforms (recall array, debt unsupported)', () => {
-  const { d } = tmpRepo();
-  try {
-    const o = sawbuck(['memory-conformance', OBSIDIAN], d);
-    assert.match(o, /recall: ok/, 'recall returns a JSON array');
-    assert.match(o, /debt:\s+unsupported/, 'a note vault signals debt unsupported (nonzero), not a bare []');
-    assert.match(o, /conforms to the Memory Contract/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('claude provider: read-only recall from project memory (CLAUDE.md), debt/record unsupported', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'sawbuck-cm-'));
-  try {
-    writeFileSync(join(dir, 'CLAUDE.md'), '# Gotchas\n\nThe retry in app.js must keep the backoff; do not simplify it.\n');
-    const got = JSON.parse(execFileSync(process.execPath, [CLAUDEP, 'recall', '--file', 'app.js', '--json'], { encoding: 'utf8', cwd: dir }));
-    assert.ok(got.some((f) => /retry in app\.js/.test(f.summary)), 'surfaces the relevant CLAUDE.md line');
-    // debt + record are unsupported (read-only), so they exit nonzero
-    assert.throws(() => execFileSync(process.execPath, [CLAUDEP, 'debt', '--json'], { cwd: dir, stdio: 'ignore' }), 'debt unsupported');
-    assert.throws(() => execFileSync(process.execPath, [CLAUDEP, 'record', '--ref', 'x', '--summary', 'y'], { cwd: dir, stdio: 'ignore' }), 'record unsupported');
-    assert.match(sawbuck(['memory-conformance', CLAUDEP], dir), /conforms to the Memory Contract/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('local provider: record + recall roundtrip, folder-scoped (a sibling scope is excluded), and conforms', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'sawbuck-local-'));
-  const store = join(dir, 'm.json');
-  const run = (args) => execFileSync(process.execPath, [LOCAL, ...args], { encoding: 'utf8', env: { ...process.env, SAWBUCK_LOCAL_MEMORY: store } });
-  try {
-    run(['record', '--ref', 'c1', '--summary', 'watch the retry in app.js', '--scope', 'repoA', '--evidence-file', 'app.js', '--by', 'sawbuck']);
-    const a = JSON.parse(run(['recall', '--file', 'app.js', '--scope', 'repoA', '--scope', '']));
-    assert.ok(a.some((f) => f.ref === 'c1'), 'recall in the recording scope finds the note');
-    const b = JSON.parse(run(['recall', '--file', 'app.js', '--scope', 'repoB', '--scope', '']));
-    assert.ok(!b.some((f) => f.ref === 'c1'), 'a sibling scope is isolated');
-    assert.match(sawbuck(['memory-conformance', LOCAL], dir), /conforms to the Memory Contract/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('memory-conformance: the mem0 reference provider conforms offline (recall [], debt unsupported, no crash)', () => {
-  const { d } = tmpRepo();
-  try {
-    // no MEM0_API_KEY: recall degrades to [] (clean, not an error), debt exits unsupported. A networked
-    // semantic provider must still conform without a key, so it never crashes a read.
-    const o = sawbuck(['memory-conformance', MEM0], d, { MEM0_API_KEY: '' });
-    assert.match(o, /recall: ok/, 'recall returns a JSON array even with no key');
-    assert.match(o, /debt:\s+unsupported/, 'a semantic store signals debt unsupported, not a bare []');
-    assert.match(o, /conforms to the Memory Contract/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('recall + composition: a second provider (obsidian) contributes notes alongside logbook', () => {
-  const { d } = tmpRepo();                       // commits a.js
-  const V = mkdtempSync(join(tmpdir(), 'sawbuck-vault-'));
-  try {
-    writeFileSync(join(V, 'gotcha.md'), '# a.js gotcha\n\nThe value in a.js must stay 1 for the downstream parser.\n');
-    writeFileSync(join(d, 'a.js'), 'export const v = 2;\n');   // a working change, so a.js is a changed path
-    // SAWBUCK_MEMORY lists both; recall pulls notes from the contract-dialect provider (obsidian),
-    // logbook (git-truth) is not asked for notes. The default obsidian bin resolves next to memory.mjs.
-    const o = sawbuck(['recall', '.'], d, { SAWBUCK_MEMORY: 'logbook,obsidian', OBSIDIAN_VAULT: V });
-    assert.match(o, /\[obsidian\]/, 'tags the note with its source provider');
-    assert.match(o, /a\.js gotcha/, 'surfaces the relevant vault note');
-  } finally { rmSync(d, { recursive: true, force: true }); rmSync(V, { recursive: true, force: true }); }
 });
 
 test('git attach leaves the worktree clean and detach --verify proves full removal', () => {

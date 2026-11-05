@@ -28,8 +28,8 @@ let paths = multi('--file');
 if (!paths.length) paths = git('diff', '--name-only', base, head).split('\n').filter(Boolean);
 if (!paths.length) { console.log(asJson ? '[]' : 'rank: no paths to rank'); process.exit(0); }
 
-// the full event record (the memory provider's recall facts), ranked client-side below
-// (the provider's --file does not narrow the record, so we pull it once and filter by path here).
+// the full event record (Logbook's facts), ranked client-side below
+// (Logbook's --file does not narrow the record, so we pull it once and filter by path here).
 const EVENTS = memEvents(repo);
 
 const resolveRename = (f) => f.replace(/\{[^}]*=>\s*([^}]*)\}/g, '$1').replace(/\/{2,}/g, '/');
@@ -83,9 +83,9 @@ const DEBT_MIN = Math.max(1, +(process.env.SAWBUCK_DEBT_MIN) || 6);
 // Still-live filter + ambient debt, via the memory adapter (the Memory Contract's `debt`
 // capability), scoped to the touched paths so the per-turn hook stays cheap. A suppression on a path
 // now CLEAN of suppressions is churn, not current risk (the study: AutoMapper carries 4 live
-// `[Ignore]` vs ~158/repo across C# history). The adapter runs the provider's own detection + gating
-// and returns classified suppressions, so the glue never imports the provider's pattern. null = the
-// provider failed -> treat all as live (do not penalize); [] = genuinely clean. --raw turns it off.
+// `[Ignore]` vs ~158/repo across C# history). The adapter runs Logbook's own detection + gating
+// and returns classified suppressions, so the glue never imports its pattern. null = the
+// Logbook failed -> treat all as live (do not penalize); [] = genuinely clean. --raw turns it off.
 let liveSet = null;
 const liveDebt = new Map(); // path -> { n, skips, bare }: live suppressions, for ambient surfacing
 if (!raw && paths.length) {

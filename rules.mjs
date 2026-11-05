@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { readHistory, typedText } from './history.mjs';
 
 const MAX_LINES = 3000;
-const SECRET = /(sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{10,}|eyJ[\w-]{20,}\.[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|\b[a-f0-9]{40,}\b|(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)/i;
+export const SECRET = /(sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{10,}|eyJ[\w-]{20,}\.[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|\b[a-f0-9]{40,}\b|(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)/i;
 const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 const paths = (home) => ({ dir: join(home, '.sawbuck'), input: join(home, '.sawbuck', 'rule-input.txt') });
 

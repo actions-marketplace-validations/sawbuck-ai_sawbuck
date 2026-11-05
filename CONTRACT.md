@@ -10,9 +10,9 @@ The contract has one property that holds all of it together: a verdict is **dete
 
 A corollary worth stating as an invariant: **the gate is defined only by in-repo, versioned config.** External systems (a dashboard, an issue tracker, a memory provider) may *report on* a verdict, but they must never *define* the guardrail. A guardrail that lives outside the repo is one the check cannot see in the diff, so it cannot be fingerprinted, so loosening it leaves no trace to catch as gamed. Memory (the input) is a pluggable socket; the gate (the output) stays in-repo and fingerprinted.
 
-> This contract covers the check. Sawbuck pairs it with the other half, **memory** (the relevant history for what you touch, plus the live debt), as the mirror idea: where the check is a standard others *conform to*, memory is a socket others *fill*. The default memory provider is @promptwheel/logbook, carried along so it works out of the box, but it is swappable; logbook is a default, not a requirement of the idea.
+> This contract covers the check. Sawbuck pairs it with the other half, **memory**: the relevant history for what you touch, plus the live debt, from @promptwheel/logbook.
 >
-> Both halves nest with your folders, so policy and memory flow top-down and isolate across siblings. A parent `promptwheel.config.json` passes its guardrails down via `extends` (repos inherit the base gate; local metrics override by name), and memory inherits a parent folder's shared scope the same way (a repo sees itself and its ancestors, never a sibling). One model for both: the directory tree is the scope.
+> Policy nests with your folders: a parent `promptwheel.config.json` passes its guardrails down via `extends` (repos inherit the base gate; local metrics override by name).
 
 ---
 

@@ -1,6 +1,8 @@
 // Your steering shape: what you push on, as 11 spokes in 4 groups. The model labels a sample of your messages; only the
-// totals are kept. Two models agree on single messages about half the time and on the shape at 0.93, so a single label is
-// never shown. It says what you pushed on, not how good you are. Each run is saved with its date to compare later.
+// totals are kept. Three models agreed on single messages about 70% of the time and on the shape at 0.87 or better, so a
+// single label is never shown. It says what you pushed on, not how good you are. Each run is saved with its date.
+// What the agent did is counted from transcripts, and a count is only a lead: the model reads a sample of the turns behind
+// it before a pattern is named, because reading 24 of them once showed most were wrong.
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -12,7 +14,7 @@ export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['sc
 const SPOKES = Object.values(GROUPS).flat();
 const MIN_SPOKES = 200;   // below this, spokes are noise: show the 4 groups
 const SAMPLE = 600;
-const paths = (home) => ({ dir: join(home, '.sawbuck'), rules: join(home, '.sawbuck', 'rule-input.txt'), input: join(home, '.sawbuck', 'shape-input.txt'), hist: join(home, '.sawbuck', 'shape-history.jsonl'), expo: join(home, '.sawbuck', 'shape-exposure.json'), svg: join(home, '.sawbuck', 'shape.svg') });
+const paths = (home) => ({ dir: join(home, '.sawbuck'), rules: join(home, '.sawbuck', 'rule-input.txt'), input: join(home, '.sawbuck', 'shape-input.txt'), hist: join(home, '.sawbuck', 'shape-history.jsonl'), expo: join(home, '.sawbuck', 'shape-exposure.json'), turns: join(home, '.sawbuck', 'shape-turns.txt'), review: join(home, '.sawbuck', 'shape-review.json'), svg: join(home, '.sawbuck', 'shape.svg') });
 const title = (s) => s[0].toUpperCase() + s.slice(1);
 
 export function prepareShape({ home = homedir() } = {}) {
@@ -22,7 +24,13 @@ export function prepareShape({ home = homedir() } = {}) {
   for (let i = lines.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [lines[i], lines[j]] = [lines[j], lines[i]]; }
   const pick = lines.slice(0, SAMPLE);
   writeFileSync(p.input, pick.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n', { mode: 0o600 });
-  writeFileSync(p.expo, JSON.stringify({ ...exposure({ root: join(home, '.claude', 'projects') }), written: writtenRules({ home }) }) + '\n');
+  const { examples, ...counts } = exposure({ root: join(home, '.claude', 'projects') });
+  writeFileSync(p.expo, JSON.stringify({ ...counts, written: writtenRules({ home }) }) + '\n');
+  // only the counts that could become a pattern get read: excerpts, so private, and gone after --check
+  rmSync(p.review, { force: true });
+  const take = (xs) => { const a = [...xs]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a.slice(0, READ); };
+  const parts = Object.keys(examples).filter((s) => doingPct(s, counts) >= threshold(s)).map((s) => `## ${s}: ${SEEN[s].says}\n${take(examples[s]).map((l, i) => `${i + 1}\t${l}`).join('\n')}`);
+  if (parts.length) writeFileSync(p.turns, parts.join('\n\n') + '\n', { mode: 0o600 }); else rmSync(p.turns, { force: true });
   return { input: p.input, lines: pick.length, secrets: r.secrets };
 }
 
@@ -43,28 +51,30 @@ export function tally(labels) {
 // What was not said: each spoke we can measure from what the agent did, read against how often you push on it.
 const MIN_TURNS = 30;   // a pattern needs enough turns behind it: 1 of 3 is not one
 const HIGH_PUSH = 8, HIGH_DOING = 10, HIGH_FAULT = 5, CLEAR_LOW = 5, CLEAR_HIGH = 10;   // a fault counts sooner than plain activity
+const READ = 6;   // turns read per count
 const SEEN = {
   proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code with no test, build, syntax check or run of that file within 3 turns', rule: 'Run the tests before saying a change works.' },
-  safety: { fault: true, of: 'working', n: 'risky', says: 'touched something risky', rule: 'Ask before force pushing, deleting outside temp folders, or touching secrets, workflows or deploy files.' },
-  process: { of: 'working', n: 'shipped', says: 'committed, pushed or published', rule: 'Do not commit or push unless I ask.' },
-  voice: { of: 'working', n: 'copy', says: 'wrote docs or copy', rule: 'Write docs in plain, short sentences.' },
-  visual: { of: 'working', n: 'ui', says: 'changed the interface', rule: 'Show me interface changes before calling them done.' },
+  safety: { fault: true, of: 'working', n: 'risky', says: 'touched something risky', rule: 'Ask before force pushing, deleting outside temp folders, or touching secrets, workflows or deploy config.' },
   simplicity: { fault: true, of: 'working', n: 'big', says: 'added 200 lines or more', rule: 'Keep changes small. Ask before adding more than 200 lines.' },
-  naming: { of: 'working', n: 'renames', says: 'renamed something', rule: 'Ask before renaming anything public.' },
   autonomy: { of: 'working', n: 'asked', says: 'stopped to ask you', rule: 'Keep going on reversible work without asking.' },
 };
-export function patterns(t, c) {
+const doingPct = (s, c) => Math.round(100 * (c[SEEN[s].n] || 0) / Math.max(1, c[SEEN[s].of]));
+const threshold = (s) => (SEEN[s].fault ? HIGH_FAULT : HIGH_DOING);
+// review: { proof: { real, of } }, the model's reading of a sample. A count the model read and mostly threw out is a false
+// alarm; a count nobody read is not named. Big diffs need no reading: a line count is what it says.
+export function patterns(t, c, review = {}) {
   if (!c || !c.working) return [];
   return Object.entries(SEEN).map(([s, m]) => {
-    const pct = Math.round(100 * (c[m.n] || 0) / Math.max(1, c[m.of]));
-    const push = t.shares[s], often = pct >= (m.fault ? HIGH_FAULT : HIGH_DOING), pushed = push >= HIGH_PUSH;
-    // a fault you keep raising is a fight; activity you raise is just attention, since committing is not a failure
+    const raw = doingPct(s, c), r = review[s];
+    const read = !!(r && r.of > 0), needs = s !== 'simplicity' && raw >= threshold(s);
+    const pct = read && needs ? Math.round(raw * Math.min(1, r.real / r.of)) : raw;
+    const push = t.shares[s], often = pct >= threshold(s), pushed = push >= HIGH_PUSH;
     const has = !!(c.written && c.written[s]);
     const enough = c[m.of] >= MIN_TURNS;
     // between CLEAR_LOW and CLEAR_HIGH a relabel flips the pattern (Autonomy did), so it is not named
     const close = often && push > CLEAR_LOW && push < CLEAR_HIGH;
-    const kind = !enough ? 'too few' : close ? 'too close' : often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
-    return { spoke: s, kind, pct, count: c[m.n] || 0, of: c[m.of], push, says: m.says, rule: m.rule, has };
+    const kind = !enough ? 'too few' : needs && !read ? 'unread' : needs && !often ? 'false alarm' : close ? 'too close' : often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
+    return { spoke: s, kind, pct, count: c[m.n] || 0, of: c[m.of], push, says: m.says, rule: m.rule, has, read: read ? r : null };
   });
 }
 
@@ -113,7 +123,8 @@ export function shapeCli(args, { home = homedir() } = {}) {
   let prev = null;
   if (existsSync(p.hist)) { const l = readFileSync(p.hist, 'utf8').trim().split('\n').filter(Boolean); if (l.length) prev = JSON.parse(l[l.length - 1]); }
   let c = null; try { c = JSON.parse(readFileSync(p.expo, 'utf8')); } catch {}
-  const found = patterns(t, c);
+  let review = {}; try { review = JSON.parse(readFileSync(p.review, 'utf8')); } catch {}
+  const found = patterns(t, c, review);
   writeFileSync(p.svg, shapeSvg(t, found));
   const out = [`🐴 your steering shape, from ${t.n} messages that pushed on something (${t.none} did not). What you push on, not a score.`, ''];
   for (const [g, ss] of Object.entries(GROUPS)) {
@@ -125,14 +136,19 @@ export function shapeCli(args, { home = homedir() } = {}) {
   appendFileSync(p.hist, JSON.stringify({ at: new Date().toISOString(), n: t.n, groups: t.groups, shares: t.shares, ...(c ? { exposure: c } : {}) }) + '\n');
   const fight = found.filter((f) => f.kind === 'fighting it'), blind = found.filter((f) => f.kind === 'blind spot');
   if (fight.length || blind.length) out.push('', '  Patterns to work on:');
-  for (const f of fight) out.push(`    Fighting it: ${title(f.spoke)}. You push on it (${f.push}%), and the agent still ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}).`, f.has ? '      You seem to have a written rule on this already, and it is not holding. Make it specific, or protect it in the contract.' : `      Try: ${f.rule}`);
-  for (const f of blind) out.push(`    Not said: ${title(f.spoke)}. The agent ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}), and only ${f.push}% of your pushes touch it. Is that what you want?`, `      Try: ${f.rule}`);
+  for (const f of fight) out.push(`    Fighting it: ${title(f.spoke)}. You push on it (${f.push}%), and the agent still ${f.says} in about ${f.pct}% of turns (${f.count} flagged of ${f.of}, ${f.read ? `${f.read.real} of ${f.read.of} real when read` : 'not read'}).`, f.has ? '      You seem to have a written rule on this already, and it is not holding. Make it specific, or protect it in the contract.' : `      Try: ${f.rule}`);
+  for (const f of blind) out.push(`    Not said: ${title(f.spoke)}. The agent ${f.says} in about ${f.pct}% of turns (${f.count} flagged of ${f.of}${f.read ? `, ${f.read.real} of ${f.read.of} real when read` : ''}), and only ${f.push}% of your pushes touch it. Is that what you want?`, `      Try: ${f.rule}`);
   const covered = found.filter((f) => f.kind === 'covered');
   if (covered.length) out.push('', `  Written down already, so left out: ${covered.map((f) => title(f.spoke)).join(', ')}. Matched by keyword, so check they say what you mean.`);
+  const fa = found.filter((f) => f.kind === 'false alarm');
+  if (fa.length) out.push('', `  Looked like a pattern, not one after reading the turns: ${fa.map((f) => `${title(f.spoke)} (${f.read.real} of ${f.read.of} real)`).join(', ')}.`);
+  const unread = found.filter((f) => f.kind === 'unread');
+  if (unread.length) out.push('', `  Not named, because nobody read the turns behind them: ${unread.map((f) => title(f.spoke)).join(', ')}.`);
+  rmSync(p.turns, { force: true }); rmSync(p.review, { force: true });
   const close = found.filter((f) => f.kind === 'too close');
   if (close.length) out.push('', `  Too close to call, so not named: ${close.map((f) => title(f.spoke)).join(', ')}.`);
   if (found.some((f) => f.kind === 'too few')) out.push('', `  Not enough recent turns to name every pattern yet: each needs ${MIN_TURNS}.`);
-  if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work or edits made by a script, so it is a lead to check. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
+  if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work or edits made by a script. Patterns come from counts plus a reading of a few turns, so check them. Only proof, safety, simplicity and autonomy have a behaviour signal; the rest show what you said.');
   out.push('', `  Card: ${p.svg}`);
   if (args.includes('--png')) { const png = pngCard(p.svg); out.push(png ? `  Image to share: ${png}` : '  No image tool here (rsvg-convert or Chrome): open the card in a browser to save an image.'); }
   return out.join('\n');

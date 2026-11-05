@@ -57,10 +57,6 @@
     "debt.mjs",
     "status.mjs",
     "memory.mjs",
-    "providers/obsidian.mjs",
-    "providers/mem0.mjs",
-    "providers/local.mjs",
-    "providers/claude.mjs",
     "README.md",
     "CONTRACT.md"
   ]

@@ -18,15 +18,15 @@ const failRaw = flag('--fail-on', null); // undocumented | test | any | <N>; bar
 const failMode = failRaw === true ? 'undocumented' : (failRaw ? String(failRaw).toLowerCase() : null);
 const asJson = process.argv.includes('--json');
 
-// events give fragility + fall-back dates (the memory provider's recall facts). Best-effort.
+// events give fragility + fall-back dates (Logbook's facts). Best-effort.
 const events = memEvents(repo);
 
 // the live suppression ledger via the memory adapter (the Memory Contract's `debt` capability). Each
 // item arrives classified (documented/testSkip) and with its line content and blame date (`since`),
-// so this file no longer imports the provider's pattern or gating. null = the provider FAILED
+// so this file does not import Logbook's pattern or gating. null = Logbook FAILED
 // (unmeasurable is NOT clean, refuse and exit nonzero); [] = a genuinely clean tree.
 const live = memDebt(repo);
-if (live === null) { console.error('sawbuck debt: could not read the suppression ledger (the memory provider failed)'); process.exit(1); }
+if (live === null) { console.error('sawbuck debt: could not read the suppression ledger (Logbook failed)'); process.exit(1); }
 const bare = live.filter((it) => !it.documented && it.content).length;
 
 // --since REF: the DELTA. Suppressions in HEAD but not at REF = debt this branch/PR adds.

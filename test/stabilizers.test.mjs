@@ -22,7 +22,7 @@ const require = createRequire(import.meta.url);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
 const PW = require.resolve('promptwheel/bin/promptwheel.mjs');   // the check engine (sibling)
-const GLUE_FILES = ['sawbuck.mjs', 'reflect.mjs', 'sawbuck-hook.mjs', 'rank.mjs', 'debt.mjs', 'memory.mjs', 'status.mjs', 'bins.mjs', 'contract.mjs', 'providers/obsidian.mjs', 'providers/local.mjs', 'providers/claude.mjs'].map((f) => join(HERE, '..', f));
+const GLUE_FILES = ['sawbuck.mjs', 'reflect.mjs', 'sawbuck-hook.mjs', 'rank.mjs', 'debt.mjs', 'memory.mjs', 'status.mjs', 'bins.mjs', 'contract.mjs'].map((f) => join(HERE, '..', f));
 
 const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-shome-'));
 after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
