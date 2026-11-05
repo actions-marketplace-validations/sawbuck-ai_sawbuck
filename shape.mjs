@@ -88,7 +88,7 @@ function notSaid(p) {
       seen.add(String(t.n)); quotes.push(one(t.quote, 80));
     }
     if (quotes.length < MIN_CITES || !one(c.what, 200)) continue;
-    out.push(`    ${one(c.what, 200)} (${quotes.length} turns)`, ...quotes.slice(0, 3).map((q) => `      "${q}"`), ...(one(c.rule, 200) ? [`      Try: ${one(c.rule, 200)}`] : []));
+    out.push(`    ${one(c.what, 200)} (${quotes.length} turns)`, ...[...new Set(quotes)].slice(0, 3).map((q) => `      "${q}"`), ...(one(c.rule, 200) ? [`      Try: ${one(c.rule, 200)}`] : []));
   }
   const n = Object.keys(turns).length;
   return out.length ? ['', `  Not said, from one read of ${n} past turns. Leads to check, with the agent's own words:`, ...out] : ['', `  Not said: nothing stood out in the ${n} past turns read.`];
