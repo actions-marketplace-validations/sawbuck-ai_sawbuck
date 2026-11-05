@@ -14,8 +14,10 @@
 
 import { execFileSync } from 'node:child_process';
 import { erasedBlock } from './rewrites.mjs';
+import { steersReport } from './steers.mjs';
+import { ensureExcluded } from './exclude.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { basename, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { recall as memRecall, conform as memConform } from './memory.mjs';
@@ -92,6 +94,7 @@ Usage:
   sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
   sawbuck where             List every repo Sawbuck is attached to
   sawbuck contract          Sign this repo: tests, tripwires, protected paths, and the architecture lock (--dry-run to preview)
+  sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
   sawbuck statusline        One-line segment for your status line (🐴 watching | N caught | steer %)
 
   sawbuck recall [repo]     Related notes for your changes from extra memory providers
@@ -115,13 +118,22 @@ function gitDir(repo) { try { return resolve(repo, execFileSync('git', ['-C', re
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
-if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { out(help); process.exit(0); }
+if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  out(flags.has('--all') ? help : `sawbuck ${version}: sign your agent to a contract
+
+  sawbuck contract   sign this repo: protected paths, your tests, CI
+  sawbuck check      verify your latest change right now
+  sawbuck status     what it has caught here
+
+  sawbuck help --all   everything else`);
+  process.exit(0);
+}
 
 switch (cmd) {
   case 'contract': {
     const top = gitTop(repoArg());
     if (!top) usage(`${repoArg()} is not a git repository (a contract signs one; run it inside your project)`);
-    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => a === '--dry-run')], { stdio: 'inherit' }); }
+    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => ['--dry-run', '--strict', '--no-ci'].includes(a))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
   }
@@ -176,9 +188,10 @@ switch (cmd) {
     else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a hard rule in the contract was broken, however green the rest is.');
-    else if (rep.verdict === 'fail') out(`🐴 ✗ regression: a guarded metric got worse (${(rep.metrics || []).filter((x) => x.guard && !x.ok).map((x) => x.name).join(', ') || 'a guard'}).`);
+    else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
     else out('🐴 ≈ inconclusive: the check ran but could not measure your metric (it did not run in isolation). Point it at your real test command: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json.');
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
+    for (const x of rep.explained || []) out(`🐴 ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
     if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
@@ -190,7 +203,7 @@ switch (cmd) {
     if (!lines.length) { out('sawbuck: no activity recorded yet (the check logs here on each commit/turn).'); break; }
     const ni = rest.indexOf('-n');
     const n = ni > -1 ? (parseInt(rest[ni + 1], 10) || 20) : 20;
-    const icon = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' };
+    const icon = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎', mandate: '⛔' };
     const recent = lines.slice(-n).reverse();
     out(`sawbuck activity (last ${recent.length}):`);
     for (const l of recent) {
@@ -244,6 +257,7 @@ switch (cmd) {
     if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit' && top) {
       try {
+        ensureExcluded(repo);   // before the first write: under user-level hooks nothing else has done it yet
         const stDir = join(repo, '.sawbuck'); const stPath = join(stDir, 'state.json');
         let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
         const now = new Date().toISOString();
@@ -341,13 +355,16 @@ switch (cmd) {
   case 'trace': { traceRepo(repoRoot()); break; }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'where': { whereAttached(); break; }
+  case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.
     try {
-      const repo = process.cwd();
-      if (existsSync(join(repo, '.git'))) {
+      const repo = gitTop(process.cwd());
+      if (!repo) process.stdout.write('🐴 sawbuck · no repo here');
+      if (repo) {
+        const name = basename(repo);
         let caught = 0;
-        try { const r = JSON.parse(readFileSync(join(repo, '.sawbuck', 'results.json'), 'utf8')); caught = (r.regressions || 0) + (r.gamed || 0); } catch {}
+        try { const r = JSON.parse(readFileSync(join(repo, '.sawbuck', 'results.json'), 'utf8')); caught = (r.regressions || 0) + (r.gamed || 0) + (r.mandates || 0); } catch {}
         // the last verdict from the activity feed (includes verified passes), so you see it working each turn
         let last = '';
         try { const L = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').trim().split('\n'); const e = JSON.parse(L[L.length - 1]); last = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' }[e.kind] || ''; } catch {}
@@ -355,20 +372,22 @@ switch (cmd) {
         const active = existsSync(join(repo, '.sawbuck', 'state.json'));
         const armed = existsSync(join(repo, 'promptwheel.config.json')) || existsSync(join(repo, 'package.json'));
         const mem = existsSync(join(repo, 'LOGBOOK.md')) || existsSync(join(repo, 'events.jsonl'));
-        const seg = caught > 0 ? `🐴 sawbuck · ${caught} caught` : active ? `🐴 sawbuck · watching` : armed ? `🐴 sawbuck · ready` : mem ? `🐴 sawbuck · memory` : '';
-        const base = seg ? (last ? `${seg} · ${last}` : seg) : '';
+        const label = caught > 0 ? `${caught} caught` : active ? 'watching' : armed ? 'ready' : mem ? 'memory' : '';
+        const seg = label ? `🐴 sawbuck · ${label}` : '';
+        const named = label ? `🐴 sawbuck · ${name} · ${label}` : '';   // which repo it detected, in the default line
+        const base = named ? (last ? `${named} · ${last}` : named) : '';
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
         let st = '';
         try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round(((sj.ema != null ? sj.ema : sj.steeringRate) || 0) * 100); st = `${p >= 50 ? '✊' : '🐎'} steer ${p}%`; } } catch {}
         // configurable template: SAWBUCK_STATUSLINE picks which segments show and in what order
-        // (tokens {status} {sawbuck} {verdict} {steer} plus any literal text); empty tokens collapse
+        // (tokens {status} {sawbuck} {repo} {verdict} {steer} plus any literal text); empty tokens collapse
         // so you never get a dangling separator. Unset = the default composition. Mix in other
         // tools (git branch, model, your own adapters) by composing in your statusline script.
         const tpl = process.env.SAWBUCK_STATUSLINE;
         let outp;
         if (tpl && tpl.trim()) {
-          const tok = { status: base, sawbuck: seg, verdict: last, steer: st };
-          outp = tpl.replace(/\{(status|sawbuck|verdict|steer)\}/g, (_, k) => tok[k] || '')
+          const tok = { status: base, sawbuck: seg, repo: label ? name : '', verdict: last, steer: st };
+          outp = tpl.replace(/\{(status|sawbuck|repo|verdict|steer)\}/g, (_, k) => tok[k] || '')
                     .replace(/\s*·\s*·\s*/g, ' · ').replace(/^\s*·\s*/, '').replace(/\s*·\s*$/, '').replace(/\s{2,}/g, ' ').trim();
         } else {
           outp = [base, st].filter(Boolean).join(' · ');
@@ -522,6 +541,12 @@ export function nodeCmd(execPath = process.execPath, platform = process.platform
 }
 function wireClaude(repo, opts) {
   const { user, shared } = opts;
+  // user-level hooks already cover every repo; a second set would run each check twice and spend the
+  // send-back budget twice as fast. --shared is a deliberate team file, so it is written anyway.
+  if (!user && !shared) {
+    const uf = claudeFile(repo, { user: true }).f;
+    try { if (readFileSync(uf, 'utf8').includes('sawbuck.mjs')) { out(`sawbuck: already watching here through your user-level hooks (${uf}); nothing to add`); return; } } catch {}
+  }
   const { dir, f } = claudeFile(repo, opts);
   const dirExisted = existsSync(dir);
   const fileExisted = existsSync(f);
@@ -557,6 +582,21 @@ function wireClaude(repo, opts) {
   put('Stop', chk);
   mkdirSync(dir, { recursive: true });
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  // attach often runs inside a turn (saying yes to the offer), and that turn's Stop hook then has no baseline, so the
+  // files signing just wrote would read as the agent's violations. What is here now is the baseline; anything after it counts.
+  if (!user && existsSync(join(repo, 'promptwheel.config.json'))) {
+    try {
+      ensureExcluded(repo);
+      const stPath = join(repo, '.sawbuck', 'state.json');
+      let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+      if (!st.turnBaseline) {
+        let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+        st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }) };
+        st.lastPromptAt = new Date().toISOString();
+        mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
+      }
+    } catch {}
+  }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
   const mp = user ? userManifestPath() : manifestPath(repo);
   const m = readManifest(mp);

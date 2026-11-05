@@ -22,17 +22,17 @@ const readJSON = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } ca
 const readLines = (p) => { try { return readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
 const git = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
-const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' };
+const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎', mandate: '⛔' };
 
 // --- 1) the outcome record: what the check has done here -------------------
 // results.json holds the all-time catch tally (gamed + regression, never trimmed); activity.jsonl is
 // the recent per-check feed (verified included, capped ~200). We read both and keep each honest.
 const results = readJSON(join(repo, '.sawbuck', 'results.json')) || {};
 const feed = readLines(join(repo, '.sawbuck', 'activity.jsonl')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 0 };
+const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 0, mandate: 0 };
 for (const e of feed) if (e && tally[e.kind] != null) tally[e.kind]++;
 const seen = feed.length;
-const catchesAllTime = (results.regressions || 0) + (results.gamed || 0);
+const catchesAllTime = (results.regressions || 0) + (results.gamed || 0) + (results.mandates || 0);
 const latest = results.latest || (feed.length ? feed[feed.length - 1] : null);
 const since = feed.length ? (feed[0].at || '').slice(0, 10) : null;
 // the steer rate, if the reins judge has been scoring turns here (an OFFLINE read of its file; the
@@ -89,6 +89,7 @@ if (seen || catchesAllTime) {
     const parts = [
       tally.verified ? `${ICON.verified} ${tally.verified} verified` : '',
       tally.gamed ? `${ICON.gamed} ${tally.gamed} gamed` : '',
+      tally.mandate ? `${ICON.mandate} ${tally.mandate} protected path${tally.mandate === 1 ? '' : 's'}` : '',
       tally.regression ? `${ICON.regression} ${tally.regression} regression${tally.regression === 1 ? '' : 's'}` : '',
       tally.inconclusive ? `${ICON.inconclusive} ${tally.inconclusive} inconclusive` : '',
       tally.allowed ? `${ICON.allowed} ${tally.allowed} allowed` : '',

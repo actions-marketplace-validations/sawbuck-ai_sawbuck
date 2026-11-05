@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ensureExcluded } from './exclude.mjs';
 // sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry.
 // Each turn: if a new commit landed, run reflect on it; then render the dispatch
 // on a fresh catch OR every N turns (config). State in .sawbuck/state.json.
@@ -124,7 +125,16 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
     const accept = committedHit ? ' To accept this change on purpose, change the mandate in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
-    logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
+    // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
+    // a block must not replace a gamed verdict that is still standing.
+    if (st.mandateCountedPrompt !== promptId) {
+      st.mandateCountedPrompt = promptId;
+      const r = readRec() || { regressions: 0, gamed: 0, latest: null };
+      r.mandates = (r.mandates || 0) + 1;
+      r.lastMandate = { name: hits[0].name, file: hits[0].files[0], at: now };
+      writeRec(r);
+      logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
+    }
     if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
       st.mandateBlocks = (st.mandateBlocks || 0) + 1;
       saveState();
@@ -193,20 +203,3 @@ saveState();
 // dirties the worktree, including under `attach --user`, which is global and cannot
 // set this up per-repo at attach time. Idempotent; markers match the CLI's so a
 // per-repo `detach` removes them.
-function ensureExcluded(r) {
-  try {
-    // the repository's own exclude file, wherever its git dir is (a worktree or submodule keeps it elsewhere)
-    const rel = sh(r, 'rev-parse', '--git-path', 'info/exclude');
-    if (!rel) return;
-    const f = resolve(r, rel);
-    // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
-    // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/*\n!.promptwheel/packs/\nevents.jsonl\nannotations.jsonl\nannotation-reviews.jsonl\ndecision-cards.jsonl\nLOGBOOK.md\nJOURNEY.md\n.claude/settings.local.json\n# <<< sawbuck <<<\n';
-    const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
-    const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
-    const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;
-    if (next === body) return;
-    mkdirSync(dirname(f), { recursive: true });
-    writeFileSync(f, next);
-  } catch {}
-}
