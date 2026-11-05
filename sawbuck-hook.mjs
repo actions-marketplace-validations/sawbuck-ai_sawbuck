@@ -130,7 +130,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     const restore = Object.keys(before).length ? ' To put back what you overwrote: ' + Object.entries(before).map(([f, h]) => `restore ${f} to the content it had when the prompt began: git cat-file -p ${h} > ${f}`).join('; ') + '.' : '';
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
     const accept = committedHit ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
-    const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
+    const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach again, which upgrades the hooks.)';
     // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
     // a block must not replace a gamed verdict that is still standing.
     if (st.mandateCountedPrompt !== promptId) {

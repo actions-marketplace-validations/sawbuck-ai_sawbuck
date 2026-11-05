@@ -1,8 +1,8 @@
 # sawbuck
 
-**Sign your agent to a contract so it does what you want.**
+**Agents follow written rules. Most repos have none.** Sawbuck turns what you keep telling your agent into written rules, and re-runs your tests to prove they held.
 
-You write the contract (what a real win looks like); Sawbuck enforces it, re-proving every win from the agent's **source** edits alone, so a test that went from red to green only because the agent edited the test, mocked the grader, or loosened a declared config reads `gamed` and goes back. Deterministic and zero-LLM: no model in the verdict, nothing read from the agent's trajectory. Attach it and it carries your repo's history along: what broke in these files before, surfaced before you touch them.
+It re-proves every win from the agent's **source** edits alone, so a test that went from red to green only because the agent edited the test reads as gamed.
 
 > Sawbuck is the reference implementation of the [Verified-Outcome Contract](CONTRACT.md): the open interface for a coding loop you can trust.
 
@@ -13,7 +13,7 @@ In Claude Code, install the plugin and keep working:
 /plugin install sawbuck-reins@sawbuck
 ```
 
-The first time you open a git repository with no contract, Claude finishes your task and offers once to sign it. Say yes: every turn checks protected paths, and every commit is re-proved.
+The first time you open a git repository with no rules, Claude finishes your task and offers once to add them. Say yes: it writes the rule, sets your protected paths, and checks every turn.
 
 Or from the command line:
 
@@ -21,10 +21,10 @@ Or from the command line:
 # 1 · try it (no install, no commitment): verify your latest change right now
 npx sawbuck check
 
-# 2 · sign this repo: the written rule, your tests, protected paths, CI
+# 2 · give this repo its rules: the written rule, your tests, protected paths
 npm i -g sawbuck
-sawbuck contract
-sawbuck attach --claude   # then watch every Claude Code turn
+sawbuck contract          # --full adds supply-chain guards, a repo lock and a CI check
+sawbuck attach            # check every Claude Code turn
 ```
 
 **Zero-config:** it auto-detects your test command, so there is nothing to write to start.
@@ -54,36 +54,36 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 - **Remembers what broke.** `context` surfaces the relevant history (reverts, fragile areas, test-weakening) for the files you are touching: a ranked trail guide, before you act.
 - **Shows you everything.** `status` is the inventory: what it has caught for you over time, the debt accruing now, and whether it is armed here, in one view. On-demand, so it is quiet until you go looking.
 - **Rides on, does not replace.** Sawbuck is the verify + memory layer. Your agent and your loop stay yours.
-- **Clean on and off.** the default `attach` touches nothing in your worktree (the hook lives in `.git/`, the record is excluded locally); `--claude` writes one git-excluded settings file; `detach` removes what it wired. Signed contract files stay because they are yours to review; `--purge` deletes the record. `trace` shows every byte it placed, and `detach --verify` proves the wiring is gone.
+- **Clean on and off.** `attach` writes one git-excluded settings file; `detach` removes what it wired. Signed contract files stay because they are yours to review; `--purge` deletes the record. `trace` shows every byte it placed, and `detach --verify` proves the wiring is gone.
 
 ## Commands
 
 | command | what |
 |---|---|
-| `sawbuck contract` | one command to sign a repo: keeps your contract, adds tests and tripwires if there are none, protected paths, the supply-chain guards, and the architecture lock. `--dry-run` previews it. |
+| `sawbuck contract` | gives a repo its rules: keeps what is there, adds your tests if there are none, protected paths, and the written rule. `--full` adds supply-chain guards, a repo lock and a CI check. `--dry-run` previews |
 | `sawbuck check [--base R --head R] [--repeat N] [--allow "reason"] [--json]` | verify your latest change (working tree if dirty, else the last commit, or a range); zero-config, no attach, no record. Every `promptwheel run` flag passes through: this is the engine with a plain-spoken verdict |
-| `sawbuck attach [--claude \| --user]` | enforce it (git post-commit / project Claude hooks / user-level for every project) |
-| `sawbuck detach [--claude \| --user]` | remove it; no flag reverses whatever is attached here |
+| `sawbuck attach [--user]` | check every Claude Code turn, here or in every repo |
+| `sawbuck detach [--user]` | remove it; no flag reverses whatever is attached here |
 | `/sawbuck-reins:audit` | finds rules in your agent files that can pull against each other, and proposes which wins. No history needed |
 | `/sawbuck-reins:rules` | proposes the rules you keep enforcing, from your own messages, each with quotes; you pick what to keep. Tested on one person so far |
 | `/sawbuck-reins:shape` | what you push on, what the agent did, and the gap between them, as a card |
 | `sawbuck status` | the inventory (caught over time + debt now + armed state), in one view; `--log` for the recent per-check feed |
 | `sawbuck debt` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
-| `sawbuck trace` · `sawbuck doctor` · `detach --verify` | show the footprint; check the attachment resolves; prove a clean removal |
+| `sawbuck doctor` · `detach --verify` | check the attachment resolves; prove a clean removal |
 | `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught) |
 
-## Give your agent the contract
+## Give your agent the rule
 
-`sawbuck init` writes this block into your `AGENTS.md` for you (and `CLAUDE.md` / `.cursorrules` if present; `--no-agent-block` to skip), and `sawbuck attach --claude` enforces it through the hook: every turn checks protected paths, and every commit is re-proved. Here it is to paste yourself if you want:
+`sawbuck init` writes this block into your `AGENTS.md` for you (and `CLAUDE.md` / `.cursorrules` if present; `--no-agent-block` to skip), and `sawbuck attach` enforces it through the hook: every turn checks protected paths, and every commit is re-proved. Here it is to paste yourself if you want:
 
-    This repo is under a Sawbuck contract: a change is done only when the win survives verification
+    In this repo a change is done only when the win survives verification
     from the source alone. Before finishing, run `sawbuck check`. If it reads `gamed`, the green came
     from editing a test, config, or grader, not the source, so undo that and earn it in the source.
     Run `sawbuck context` first to see what broke in these files before (reverts, weakened tests,
     fragile spots). Never skip, weaken, or delete a test to go green.
 
-**After you sign.** A new contract starts by watching: protected paths, new install scripts and sources outside the registry block from day one, and new dependencies and structure changes show as notes. `sawbuck contract --strict` blocks them all. When something fails, the check says what changed in words. If your tests can't run in CI, the check says so and doesn't fail the job, and protected paths are still enforced. To accept it on a pull request, someone with write access comments `sawbuck-allow: <reason>` and re-runs the check; the reason stays on the record. An agent signed in as that person could post the same comment, so branch protection and review still matter. Locally, use `--allow "<reason>"`.
+**With `--full`.** It starts by watching: protected paths, new install scripts and sources outside the registry block from day one, and new dependencies and structure changes show as notes. `sawbuck contract --strict` blocks them all. When something fails, the check says what changed in words. If your tests can't run in CI, the check says so and doesn't fail the job, and protected paths are still enforced. To accept it on a pull request, someone with write access comments `sawbuck-allow: <reason>` and re-runs the check; the reason stays on the record. An agent signed in as that person could post the same comment, so branch protection and review still matter. Locally, use `--allow "<reason>"`.
 
 **Rewritten history.** Logbook reads git, so a squash or a rebase takes a revert with it. `sawbuck context` also reads the reflog for commits no branch reaches any more and shows them for the files in hand, and once attached it keeps them in `.sawbuck/rewritten.jsonl` after the reflog expires. It stays local: a clone does not get it, nothing older than the reflog comes back, and work that was never committed is not in git at all. Your steering is separate: `reins` reads your agent transcripts, not git.
 

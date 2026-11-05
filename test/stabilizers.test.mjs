@@ -138,16 +138,6 @@ test('stabilizer: detach --purge removes the record too', () => {
 });
 
 // ---- 7) doctor + runtime-resolved hook ------------------------------------
-test('stabilizer: the git hook resolves sawbuck at runtime (survives a reinstall)', () => {
-  const { d } = tmpGit();
-  try {
-    sawbuck(['attach', '.'], d);
-    const hook = readFileSync(join(d, '.git', 'hooks', 'post-commit'), 'utf8');
-    assert.match(hook, /command -v sawbuck/, 'prefers a sawbuck on PATH');
-    assert.match(hook, /command -v node \|\| echo '[^']+'\)" "/, 'falls back to the absolute path, and finds node without PATH');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('stabilizer: doctor reports a healthy attachment, and flags a stale one', () => {
   const { d } = tmpGit();
   try {

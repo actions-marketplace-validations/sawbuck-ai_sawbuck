@@ -33,19 +33,6 @@ function tmpRepo() {
   return { d, g };
 }
 
-test('attach wires an idempotent git post-commit hook; detach is a true inverse', () => {
-  const { d } = tmpRepo();
-  try {
-    sawbuck(['attach', '.'], d);
-    const pc = join(d, '.git', 'hooks', 'post-commit');
-    assert.ok(existsSync(pc), 'post-commit created');
-    assert.match(readFileSync(pc, 'utf8'), /# >>> sawbuck >>>/);
-    assert.match(sawbuck(['attach', '.'], d), /already attached/);       // idempotent
-    sawbuck(['detach', '.'], d);
-    assert.ok(!existsSync(pc), 'post-commit we created is removed, not left as a stub');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('init --yes writes a contract and investigates git history (evidence-backed guards)', () => {
   const { d, g } = tmpRepo();
   try {
@@ -170,16 +157,6 @@ test('attach --dry-run writes nothing', () => {
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('trace shows the footprint, and reports clean after detach', () => {
-  const { d } = tmpRepo();
-  try {
-    sawbuck(['attach', '.'], d);
-    assert.match(sawbuck(['trace', '.'], d), /post-commit/);
-    sawbuck(['detach', '.'], d);
-    assert.match(sawbuck(['trace', '.'], d), /no footprint/);
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('statusline reflects the profile (memory / ready / watching / caught)', () => {
   const { d } = tmpRepo();
   try {
@@ -203,24 +180,6 @@ test('attach refuses a non-git directory', () => {
   const d = mkdtempSync(join(tmpdir(), 'sawbuck-nogit-'));
   try { assert.throws(() => sawbuck(['attach', '.'], d)); }
   finally { rmSync(d, { recursive: true, force: true }); }
-});
-
-test('git post-commit hook records a catch through a REAL commit (GIT_DIR inheritance regression)', () => {
-  const { d, g } = tmpRepo();
-  try {
-    writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ linkNodeModules: false, repeat: 1, metrics: [{ name: 'tests_pass', cmd: 'node --test calc.test.mjs 2>&1', extract: 'exit', direction: 'pass', guard: true }] }));
-    writeFileSync(join(d, 'calc.mjs'), 'export const sub = (a, b) => a + b; // BUG\n');
-    writeFileSync(join(d, 'calc.test.mjs'), "import {test} from 'node:test';import assert from 'node:assert';import {sub} from './calc.mjs';\ntest('sub',()=>assert.strictEqual(sub(5,3),2));\n");
-    g('add', '-A'); g('commit', '-q', '-m', 'base (red)');
-    sawbuck(['attach', '.'], d);
-    sawbuck(['__hook', '--repo', d], d);   // arm the reflex on the base commit
-    // the cheat: edit the TEST to expect the buggy value, landed via a REAL git commit so the
-    // post-commit hook fires with git's own GIT_DIR/GIT_INDEX_FILE exported (the bug's trigger).
-    writeFileSync(join(d, 'calc.test.mjs'), "import {test} from 'node:test';import assert from 'node:assert';import {sub} from './calc.mjs';\ntest('sub',()=>assert.strictEqual(sub(5,3),8));\n");
-    g('commit', '-q', '-am', 'fake the pass');
-    const r = JSON.parse(readFileSync(join(d, '.sawbuck', 'results.json'), 'utf8'));
-    assert.ok((r.gamed || 0) + (r.regressions || 0) >= 1, 'the post-commit hook caught the faked win through a real commit (the hook must clear inherited git env)');
-  } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
 test('rank filters findings per path (regression for the --file no-op bug)', () => {
@@ -301,18 +260,6 @@ test('attach --claude writes gitignored settings.local.json and keeps git status
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('attach --claude --shared writes the tracked settings.json (visible in git by design)', () => {
-  const { d } = tmpRepo();
-  const f = join(d, '.claude', 'settings.json');
-  try {
-    sawbuck(['attach', '--claude', '--shared', '.'], d);
-    assert.ok(existsSync(f), 'wrote the shared, tracked settings.json');
-    assert.match(porcelain(d), /\.claude/, 'shared settings intentionally show up in git');
-    sawbuck(['detach', '--claude', '.'], d);
-    assert.ok(!existsSync(f), 'removed');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('attach --claude will not clobber a malformed settings file', () => {
   const { d } = tmpRepo();
   const dir = join(d, '.claude'); const f = join(dir, 'settings.local.json');
@@ -345,16 +292,6 @@ test('the reflex keeps the record out of git status under any attach mode (incl.
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('where lists an attached repo and drops it after detach', () => {
-  const { d } = tmpRepo();
-  try {
-    sawbuck(['attach', '.'], d);
-    assert.ok(sawbuck(['doctor', '--all'], d).includes(d), 'where lists the attached repo');
-    sawbuck(['detach', '.'], d);
-    assert.ok(!sawbuck(['doctor', '--all'], d).includes(d), 'where no longer lists it after detach');
-  } finally { rmSync(d, { recursive: true, force: true }); }
-});
-
 test('check (CLI) leaves an honest source fix uncharted (no false positive through the command)', () => {
   const { d, g } = tmpRepo();
   try {
@@ -384,7 +321,7 @@ test('frame resolves mandates through extends and turn joins frame + history in 
     assert.match(frame, /db\/migrations\/\*\*/, 'the local mandate shows');
     writeFileSync(join(d, 'a.js'), 'b\n');
     const turn = sawbuck(['turn', '.'], d, { LOGBOOK_NO_CACHE: '1' });
-    assert.ok(turn.startsWith('▣ contract (sawbuck)'), 'turn leads with the frame');
+    assert.ok(turn.startsWith('▣ rules (sawbuck)'), 'turn leads with the frame');
     // no mandates -> frame is silent, turn is silent on a clean trail
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [] }));
     assert.equal(sawbuck(['frame', '.'], d).trim(), '');
@@ -1020,9 +957,9 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
   const sb = (...a) => execFileSync(process.execPath, [SB, ...a], { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   assert.equal(existsSync(join(d, 'promptwheel.config.json')), false);
-  assert.match(sb('contract', '--dry-run'), /would write/);
+  assert.match(sb('contract', '--full', '--dry-run'), /would write/);
   assert.equal(existsSync(join(d, 'promptwheel.config.json')), false, 'a dry run writes nothing');
-  const out = sb('contract');
+  const out = sb('contract', '--full');
   assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested');
   const cfg = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'));
   assert.ok(cfg.metrics.some((m) => m.name === 'lock_drift'), 'the lock guard');
@@ -1030,7 +967,7 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   assert.ok(cfg.mandates.some((m) => m.name === 'workflows-frozen')); assert.ok(!cfg.mandates.some((m) => m.paths.some((p) => p.includes('auth'))), 'product code is never frozen for you');
   assert.equal(cfg.allowTrailer, false); assert.ok(existsSync(join(d, 'promptwheel.lock.json')));
   const again = readFileSync(join(d, 'promptwheel.config.json'), 'utf8');
-  assert.match(sb('contract'), /already signed/); assert.equal(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'), again, 'running it twice changes nothing');
+  assert.match(sb('contract', '--full'), /already signed/); assert.equal(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'), again, 'running it twice changes nothing');
   sb('attach', '.');
   g('add', '-A'); g('commit', '-qm', 'sign');
   assert.ok(execFileSync('git', ['ls-files', '.promptwheel/packs'], { cwd: d, encoding: 'utf8' }).includes('lock.mjs'), 'the scanners are tracked even after attach: the gate runs in clean worktrees');
@@ -1069,7 +1006,7 @@ test('sawbuck contract works in a repo already attached, and one that gitignores
   // an exclude block as an older attach wrote it
   writeFileSync(join(d, '.git/info/exclude'), '# >>> sawbuck >>>\n.sawbuck/\n.promptwheel/\n# <<< sawbuck <<<\n');
   const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
-  execFileSync(process.execPath, [SB, 'contract'], { cwd: d, stdio: 'ignore' });
+  execFileSync(process.execPath, [SB, 'contract', '--full'], { cwd: d, stdio: 'ignore' });
   g('add', '-A'); g('commit', '-qm', 'sign');
   assert.ok(execFileSync('git', ['ls-files', '.promptwheel/packs'], { cwd: d, encoding: 'utf8' }).includes('lock.mjs'), 'the scanners reach git');
   assert.ok(!execFileSync('git', ['ls-files'], { cwd: d, encoding: 'utf8' }).includes('outcomes'), 'the record stays out');
@@ -1083,7 +1020,7 @@ test('a signed repo with a clean tree does not block its own turn: the hook keep
   const env = { HOME: home, XDG_CONFIG_HOME: join(home, 'cfg'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c' };
   const g = (...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', env: { ...process.env, ...env } });
   g('init', '-q'); writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'a', scripts: { test: 'node -e 0' } })); g('add', '-A'); g('commit', '-qm', 'base');
-  sawbuck(['contract'], d, env); g('add', '-A'); g('commit', '-qm', 'sign');
+  sawbuck(['contract', '--full'], d, env); g('add', '-A'); g('commit', '-qm', 'sign');
   sawbuck(['attach', '--claude'], d, env);
   const hook = (args, ev) => execFileSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 's', prompt: 'x' }), env: { ...process.env, ...env } });
   for (let i = 0; i < 2; i++) {

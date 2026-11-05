@@ -43,7 +43,6 @@
     "rules.mjs",
     "history.mjs",
     "shape.mjs",
-    "exposure.mjs",
     "agent-block.mjs",
     "exclude.mjs",
     "repo-state.mjs",

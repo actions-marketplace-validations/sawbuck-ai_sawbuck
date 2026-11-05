@@ -137,7 +137,7 @@ if (!isGit) {
 } else if (state === 'watching') {
   out.push(`   Measuring here  ·  ${hasConfig ? '✓ wired in with a contract (promptwheel.config.json)' : '✓ wired in (zero-config auto-detect)'}. It verifies each commit/turn automatically.`);
 } else if (state === 'ready') {
-  out.push(`   Measuring here  ·  checkable but not wired yet. Try it now: \`sawbuck check\`  •  make it automatic: \`sawbuck attach --claude\``);
+  out.push(`   Measuring here  ·  checkable but not wired yet. Try it now: \`sawbuck check\`  •  make it automatic: \`sawbuck attach\``);
 } else {
   out.push(`   Measuring here  ·  ${hasConfig ? 'a contract exists' : 'no test command detected yet'}. \`sawbuck init\` to set up the check, or \`sawbuck context\` for the history alone.`);
 }

@@ -1,16 +1,10 @@
 #!/usr/bin/env node
 // sawbuck, the CLI. Zero-dep.
-// `attach` wires Sawbuck's reflex into a repo (a git post-commit hook by default,
-// or Claude Code hooks); `detach` removes it and leaves the repo exactly as it
-// was. Isolation invariant: the repo never imports Sawbuck, and detach is a true
-// inverse of attach. Rides two engines: promptwheel (the check) + @promptwheel/logbook.
+// `attach` wires the Claude Code hooks into a repo; `detach` removes them and leaves the repo exactly as it was. The
+// repo never imports Sawbuck. Rides two engines: promptwheel (the check) + @promptwheel/logbook.
 //
-// How removal stays honest: attach writes a receipt to .git/sawbuck/attach.json
-// recording every file/dir it created or modified and every .git/info/exclude
-// line it added. detach reads the receipt and reverses exactly that, deleting
-// what it created, stripping only its own lines from what it modified, touching
-// nothing it did not touch. `trace` prints the footprint; `detach --verify`
-// proves the repo came back clean; `doctor` checks the attachment still resolves.
+// attach writes a receipt to .git/sawbuck/attach.json recording every file it created or modified. detach reads it and
+// reverses exactly that; `detach --verify` proves the repo came back clean; `doctor` checks the attachment still resolves.
 
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
@@ -61,7 +55,7 @@ const dry = flags.has('--dry-run');
 let version = '0.0.0';
 try { version = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8')).version; } catch {}
 
-const help = `sawbuck ${version}: sign your agent to a contract
+const help = `sawbuck ${version}: write down the rules your agent follows, and prove they held
 
 Usage:
   sawbuck check [repo] [--base R --head R] [--repeat N] [--allow "<reason>"] [--json]
@@ -70,13 +64,11 @@ Usage:
                             fastest way to see it work. Every promptwheel run flag passes through.
                             Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
   sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block]
-                            Customize the contract (promptwheel.config.json), with notes from what your
-                            git history shows actually breaks, plus a short contract guide in AGENTS.md
+                            Customize the rules (promptwheel.config.json), with notes from what your
+                            git history shows actually breaks, plus a short guide in AGENTS.md
                             (--no-agent-block to skip). Wizard in a terminal, non-interactive in a pipe/CI (or --yes).
-  sawbuck attach --claude   Check every Claude Code turn in this repo. --dry-run prints the footprint and writes nothing
-                            Also: no flag for a git post-commit hook, --claude --shared for a tracked settings file,
-                            --user for every repo
-  sawbuck detach [repo] [--claude | --user] [--all] [--verify] [--purge]
+  sawbuck attach [repo]     Check every Claude Code turn in this repo. --user for every repo. --dry-run prints the footprint
+  sawbuck detach [repo] [--user] [--verify] [--purge]
                             Remove it and restore the repo (no flag: whatever is attached here); --verify
                             proves it came back clean; --purge also deletes the record (.sawbuck/)
   sawbuck status [repo]     The inventory: caught over time + debt accruing now + whether it is armed. --json
@@ -85,9 +77,9 @@ Usage:
                             The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
                             shows only what a branch adds; --fail-on exits nonzero (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
-  sawbuck trace [repo]      Show every file Sawbuck has placed in this repo (the footprint)
-  sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all lists and checks every repo
-  sawbuck contract          Sign this repo: tests, tripwires, protected paths, and the architecture lock (--dry-run to preview)
+  sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck
+  sawbuck contract          Give this repo its rules: protected paths, your tests (--dry-run to preview)
+                            --full adds supply-chain guards, the repo lock and a CI check; --strict makes them block
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
@@ -113,9 +105,9 @@ const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
-  out(flags.has('--all') ? help : `sawbuck ${version}: sign your agent to a contract
+  out(flags.has('--all') ? help : `sawbuck ${version}: write down the rules your agent follows, and prove they held
 
-  sawbuck contract   sign this repo: protected paths, your tests, CI
+  sawbuck contract   give this repo its rules: protected paths, your tests
   sawbuck check      verify your latest change right now
   sawbuck status     what it has caught here
 
@@ -126,8 +118,8 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
 switch (cmd) {
   case 'contract': {
     const top = gitTop(repoArg());
-    if (!top) usage(`${repoArg()} is not a git repository (a contract signs one; run it inside your project)`);
-    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => ['--dry-run', '--strict', '--no-ci'].includes(a))], { stdio: 'inherit' }); }
+    if (!top) usage(`${repoArg()} is not a git repository (run it inside your project)`);
+    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => ['--dry-run', '--full', '--strict'].includes(a))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
   }
@@ -182,7 +174,7 @@ switch (cmd) {
     if (rep.verdict === 'pass' && win) out(`🐴 ✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
-    else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a hard rule in the contract was broken, however green the rest is.');
+    else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a rule in the contract was broken, however green the rest is.');
     else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
     else out('🐴 ≈ inconclusive: the check ran but could not measure your metric (it did not run in isolation). Point it at your real test command: `sawbuck init`, or set setup/linkDirs in promptwheel.config.json.');
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
@@ -215,7 +207,7 @@ switch (cmd) {
     // the ONE per-prompt hook. The agent gets the contract frame once a session and again after a compaction: one
     // written statement held in every bench, so saying it on each prompt only spends context. The relevant history
     // is on demand (`sawbuck context`), and per turn only with {"turn":{"context":true}} in sawbuck.config.json.
-    // Wired by `attach --claude` on UserPromptSubmit and after a compaction.
+    // Wired by `attach` on UserPromptSubmit and after a compaction.
     // the repository the way the Stop hook sees it: the root of the cwd under user-level wiring (a
     // subdirectory belongs to its repo), the pinned path under project wiring; '' outside a repo
     const top = gitTop(repoArg());
@@ -284,21 +276,18 @@ switch (cmd) {
     const top = gitTop(repoArg());
     if (!top && !user) usage(`${repoArg()} is not a git repository (attach wires one; run it inside your project, or name its path)`);
     const repo = top || repoArg();
-    if (user) { wireClaude(repo, { user: true }); if (!dry) verifyAttach(repo); break; }
-    if (flags.has('--claude')) { wireClaude(repo, { shared: flags.has('--shared') }); if (!dry) verifyAttach(repo); break; }
-    wireGit(repo);
+    wireClaude(repo, { user });
     if (!dry) verifyAttach(repo);
     break;
   }
   case 'detach': {
     const purge = flags.has('--purge');
-    if (flags.has('--all')) { detachAll(purge); break; }
     const repo = repoRoot();
     if (flags.has('--user')) unwireClaude(repo, { user: true });
     else if (flags.has('--claude')) unwireClaude(repo, {});
     else {
-      // no flag: reverse whatever this repo's receipt says is attached (git and/or project Claude
-      // hooks), so a bare `detach` is always the inverse of the `attach` you ran.
+      // no flag: reverse whatever this repo's receipt says is attached, older git hooks included,
+      // so a bare `detach` is always the inverse of the `attach` you ran.
       const a = readManifest(manifestPath(repo)).attachments || {};
       const hasClaude = !!(a.claude || a['claude-shared']);
       if (hasClaude) unwireClaude(repo, {});
@@ -308,8 +297,7 @@ switch (cmd) {
     if (flags.has('--verify')) verifyClean(repo);
     break;
   }
-  case 'trace': { traceRepo(repoRoot()); break; }
-  case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
+  case 'doctor': { doctorRepo(repoRoot()); break; }
   case 'rules': { out(rulesCli(rest)); break; }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
@@ -422,40 +410,7 @@ function excludeFile(repo) { return gitPath(repo, 'info/exclude'); }
 function syncExclude(repo, manifest) { return Object.keys(manifest.attachments || {}).length ? ensureExcluded(repo) : clearExcluded(repo); }
 
 // --- git post-commit --------------------------------------------------------
-// The hook prefers a `sawbuck` on PATH (so it survives a reinstall/upgrade) and
-// falls back to the absolute path of the sawbuck that attached (dev checkouts).
-function hookBlock(repo) {
-  const r = JSON.stringify(repo);
-  // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check
-  // shells out to git (worktrees, diffs) and would inherit them, operate on the wrong
-  // repo, and silently catch nothing. Clear them so the reflex runs against `repo` clean.
-  return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; else ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; fi || true\n${S_END}\n`;
-}
-function wireGit(repo) {
-  if (!gitTop(repo)) usage(`${repo} is not a git repository`);
-  const pc = gitPath(repo, 'hooks/post-commit');
-  const existed = existsSync(pc);
-  let body = existed ? readFileSync(pc, 'utf8') : '#!/bin/sh\n';
-  if (body.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
-  if (!body.startsWith('#!')) body = '#!/bin/sh\n' + body;
-  if (!body.endsWith('\n')) body += '\n';
-  if (dry) {
-    out(dryText([
-      `${existed ? 'modify' : 'create'}  ${pc}  (post-commit hook block)`,
-      `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})`,
-      `create  ${manifestPath(repo)}  (attach receipt)`,
-    ]));
-    return;
-  }
-  writeFileSync(pc, body + hookBlock(repo));
-  chmodSync(pc, 0o755);
-  const m = readManifest(manifestPath(repo));
-  m.attachments = { ...m.attachments, git: { pc: { created: !existed } } };
-  syncExclude(repo, m);
-  writeManifest(manifestPath(repo), m);
-  regAdd(repo, 'git');
-  out(`sawbuck: attached (git post-commit) in ${repo}`);
-}
+// Older versions could attach here. Nothing wires it now; detach still takes it out.
 function unwireGit(repo) {
   const pc = gitPath(repo, 'hooks/post-commit');
   const m = readManifest(manifestPath(repo));
@@ -470,7 +425,6 @@ function unwireGit(repo) {
     else writeFileSync(pc, stripped);
   }
   if (hasReceipt) { delete m.attachments.git; syncExclude(repo, m); writeManifest(manifestPath(repo), m); }
-  regRemove(repo, 'git');
   out(`sawbuck: detached (git) from ${repo}`);
 }
 function isTrivialHook(text) { return text.replace(/^#!.*\n?/, '').trim() === ''; }
@@ -492,10 +446,10 @@ export function nodeCmd(execPath = process.execPath, platform = process.platform
   return `"$(command -v node || echo ${JSON.stringify(execPath).replace(/^"|"$/g, "'")})"`;
 }
 function wireClaude(repo, opts) {
-  const { user, shared } = opts;
+  const { user } = opts;
   // user-level hooks already cover every repo; a second set would run each check twice and spend the
   // send-back budget twice as fast. --shared is a deliberate team file, so it is written anyway.
-  if (!user && !shared) {
+  if (!user) {
     const uf = claudeFile(repo, { user: true }).f;
     try { if (readFileSync(uf, 'utf8').includes('sawbuck.mjs')) { out(`sawbuck: already watching here through your user-level hooks (${uf}); nothing to add`); return; } } catch {}
   }
@@ -555,19 +509,17 @@ function wireClaude(repo, opts) {
       }
     } catch {}
   }
-  const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
+  const mode = user ? 'user' : 'claude';
   const mp = user ? userManifestPath() : manifestPath(repo);
   const m = readManifest(mp);
   const prev = (m.attachments || {})[mode];   // an upgrade keeps the receipt of what the first attach created
   m.attachments = { ...m.attachments, [mode]: { file: f, fileCreated: prev ? !!prev.fileCreated : !fileExisted, dirCreated: prev ? !!prev.dirCreated : !dirExisted } };
   if (!user) syncExclude(repo, m);
   writeManifest(mp, m);
-  regAdd(repo, mode);
-  out(upgrading ? `sawbuck: updated the ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f} to this version`
-                : `sawbuck: wired ${user ? 'USER-LEVEL' : shared ? 'shared project' : 'project'} Claude Code hooks in ${f}`);
+  out(upgrading ? `sawbuck: updated the ${user ? 'USER-LEVEL' : 'project'} Claude Code hooks in ${f} to this version`
+                : `sawbuck: wired ${user ? 'USER-LEVEL' : 'project'} Claude Code hooks in ${f}`);
   if (!user && !existsSync(join(repo, 'AGENTS.md')) && !existsSync(join(repo, 'CLAUDE.md'))) out('  no written rule here yet, and that is what changes the agent: run sawbuck contract.');
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
-  else if (!shared) out('  (settings.local.json is gitignored; use --shared to commit the hooks for your team)');
 }
 function unwireClaude(repo, { user }) {
   const mp = user ? userManifestPath() : manifestPath(repo);
@@ -593,7 +545,6 @@ function unwireClaude(repo, { user }) {
     if (rec) { delete m.attachments[mode]; touched = true; }
   }
   if (touched) { if (!user) syncExclude(repo, m); writeManifest(mp, m); }
-  for (const mode of modes) regRemove(repo, mode);
   if (!did && !touched) out('sawbuck: no Claude attachment found to detach');
 }
 function removeClaudeEntries(cfg) {
@@ -621,13 +572,6 @@ function footprint(repo) {
   const mp = manifestPath(repo);
   if (existsSync(mp)) { const m = readManifest(mp); items.push({ what: mp, state: `receipt: ${Object.keys(m.attachments || {}).join(', ') || 'empty'}` }); }
   return items;
-}
-function traceRepo(repo) {
-  const items = footprint(repo);
-  if (!items.length) { out(`sawbuck: no footprint in ${repo}, nothing attached.`); return; }
-  out(`sawbuck footprint in ${repo}:`);
-  for (const it of items) out(`  ${it.state.padEnd(22)} ${it.what}`);
-  out('\n  detach reverses every line above; `detach --verify` proves it.');
 }
 function verifyClean(repo) {
   // the record dirs may stay (your data, unless --purge); the mechanism must be gone.
@@ -673,36 +617,5 @@ function doctorRepo(repo) {
   out(pathOk ? '\n  sawbuck resolves on PATH, attachments survive a reinstall.' : '\n  tip: `npm i -g sawbuck` so hooks resolve by PATH and survive an upgrade.');
   if (bad) process.exitCode = 1;
 }
-function doctorAll() {
-  const r = regRead();
-  if (!r.repos.length) { out('sawbuck: nothing to check (registry empty).'); return; }
-  out('sawbuck is attached to:');
-  for (const x of r.repos) out(`  ${x.mode.padEnd(14)} ${x.repo}`);
-  for (const repo of new Set(r.repos.map((x) => x.repo))) doctorRepo(repo);
-}
-
-// --- registry: know and remove every attachment -----------------------------
-function regPath() { return join(homedir(), '.sawbuck', 'registry.json'); }
-function regRead() { try { const r = JSON.parse(readFileSync(regPath(), 'utf8')); r.repos = (r.repos || []).filter((x) => existsSync(x.repo)); return r; } catch { return { repos: [] }; } }   // a repo that is gone is not attached
-function regWrite(r) {
-  const f = regPath();
-  if (!r.repos.length) { delFile(f); rmIfEmptyDir(dirname(f)); return; }
-  mkdirSync(dirname(f), { recursive: true });
-  writeFileSync(f, JSON.stringify(r, null, 2) + '\n');
-}
-function regAdd(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); r.repos.push({ repo, mode, at: new Date().toISOString() }); regWrite(r); }
-function regRemove(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); regWrite(r); }
-function detachAll(purge) {
-  const r = regRead();
-  if (!r.repos.length) { out('sawbuck: nothing to detach (registry empty).'); return; }
-  for (const x of [...r.repos]) {
-    if (x.mode === 'git') unwireGit(x.repo);
-    else if (x.mode === 'user') unwireClaude(x.repo, { user: true });
-    else unwireClaude(x.repo, {});
-    if (purge) purgeRecord(x.repo);
-  }
-  out('sawbuck: detached everywhere.');
-}
-
 // --- shared helpers ---------------------------------------------------------
 function dryText(plan) { return ['sawbuck --dry-run: would leave this footprint (writing nothing):', ...plan.map((p) => '  ' + p), '  all of it reversible with `detach`.'].join('\n'); }
