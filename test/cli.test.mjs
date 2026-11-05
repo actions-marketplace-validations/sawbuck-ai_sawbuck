@@ -58,7 +58,7 @@ test('init --yes writes a contract and investigates git history (evidence-backed
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('event feed: the check logs every result (gamed + verified) and sawbuck log reads it', () => {
+test('event feed: the check logs every result (gamed + verified) and sawbuck status --log reads it', () => {
   const { d, g } = tmpRepo();
   try {
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ linkNodeModules: false, repeat: 1, metrics: [{ name: 'tests_pass', cmd: 'node --test calc.test.mjs 2>&1', extract: 'exit', direction: 'pass', guard: true }] }));

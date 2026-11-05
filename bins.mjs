@@ -1,6 +1,6 @@
 // bins.mjs: resolve the two engine CLIs once, for every sawbuck entry point.
 // Order: env override (PW_BIN / LB_BIN), the installed package, then the dev sibling checkout.
-// The memory engine is reached only through memory.mjs (the Memory Contract seam); LB lives
+// Logbook is reached only through memory.mjs; LB lives
 // here so the resolver is written once, not per file.
 
 import { dirname, join } from 'node:path';

@@ -4,8 +4,6 @@
 
 It re-proves every win from the agent's **source** edits alone, so a test that went from red to green only because the agent edited the test reads as gamed.
 
-> Sawbuck is the reference implementation of the [Verified-Outcome Contract](CONTRACT.md): the open interface for a coding loop you can trust.
-
 In Claude Code, install the plugin and keep working:
 
 ```
@@ -13,7 +11,7 @@ In Claude Code, install the plugin and keep working:
 /plugin install sawbuck-reins@sawbuck
 ```
 
-The first time you open a git repository with no rules, Claude finishes your task and offers once to add them. Say yes: it writes the rule, sets your protected paths, and checks every turn.
+The first time you open a git repository with no rules, Claude finishes your task and offers once to add them. Say yes: it writes the rule, sets your protected paths, and watches every turn: protected paths at the end of each turn, each commit re-proved from the source.
 
 Or from the command line:
 
@@ -24,7 +22,7 @@ npx sawbuck check
 # 2 · give this repo its rules: the written rule, protected paths, and your tests if it has no config yet
 npm i -g sawbuck
 sawbuck contract          # --full adds supply-chain guards, a repo lock and, on a GitHub repo, a CI check
-sawbuck attach            # check every Claude Code turn (--shared for a team file, --git for any other agent)
+sawbuck attach            # watch every Claude Code turn (--shared for a team file, --git for any other agent)
 ```
 
 **Zero-config:** it finds npm, pytest, cargo and go tests on its own, so in those repos there is nothing to write to start. Anything else (a Makefile target, say) reads inconclusive until you set the command in `promptwheel.config.json`.
@@ -46,17 +44,18 @@ $ sawbuck check        # after fixing the source and restoring the test
    (it survives a source-only re-run).
 ```
 
-Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `64` could not run (not a git repo, no commit, a bad ref, an unknown flag, a bad or missing flag value, a bad config, or `--working` with nothing uncommitted, and it says which); no detectable test command reads `3` inconclusive, and says so.
+Exit codes: `0` pass (verified, held, or allowed) · `1` sent back (a regression or a protected path) · `2` gamed · `3` inconclusive · `64` could not run (not a git repo, no commit, a bad ref, an unknown flag, a bad or missing flag value, a bad config, or `--working` with nothing uncommitted, and it says which); no detectable test command reads `3` inconclusive, and says so.
 
 ## What it does
 
-- **Verifies the win.** `check` re-runs your metric from the source diff alone. A test that went from red to green because of a deleted, weakened, or skipped test, a mocked grader, an edited golden file, or a loosened declared config reads `gamed`. A suite weakened while it stays green is not proved: there is no win to re-run. Tripwires catch skips and removed assertions in a signed repo. Deterministic, zero-LLM, $0, and it never reads the trajectory. No appeals once signed; `--allow` lets a change through with a person's reason, and the check says it was allowed, never verified. A `Sawbuck-Allow:` commit trailer clears nothing in `sawbuck check`, the Stop hook or the git hook, signed or not, because an agent can write a commit message. Red-teamed across 9 ecosystems in 26 scenarios: 12 caught, 10 stated limits, 4 honest ([promptwheel/bench/REDTEAM.md](https://github.com/promptwheel-ai/promptwheel/blob/main/bench/REDTEAM.md)).
+- **Verifies the win.** `check` re-runs your metric from the source diff alone. A test that went from red to green because of a deleted, weakened, or skipped test, a mocked grader, an edited golden file, or a loosened declared config reads `gamed`. A suite weakened while it stays green is not proved: there is no win to re-run. Tripwires catch skips and removed assertions in a signed repo. Deterministic, zero-LLM, $0, and it never reads the trajectory. No appeals once signed; `--allow` lets a change through with a person's reason, and the check says it was allowed, never verified. A `Sawbuck-Allow:` commit trailer clears nothing in `sawbuck check`, the Stop hook or the git hook, signed or not, because an agent can write a commit message. Red-teamed in 26 scenarios across 9 ecosystems: of 22 cheats, 12 were caught and 10 got through, each one a limit the report lists, and all 4 honest fixes passed ([promptwheel/bench/REDTEAM.md](https://github.com/promptwheel-ai/promptwheel/blob/main/bench/REDTEAM.md)).
 - **Says what it cannot see.** A cheat that lives inside the source itself (a value hardcoded to the one visible case, logic keyed to the test environment) is invisible to a source-only re-run, by construction. That limit is in [the contract](CONTRACT.md#3-the-integrity-boundary-what-counts-as-gaming), not hidden.
 - **Remembers what broke.** `context` surfaces the relevant history (reverts, fragile areas, test-weakening) for the files you are touching: a ranked trail guide, before you act.
 - **Shows you everything.** `status` is the inventory: what it has caught for you over time, the debt accruing now, and whether it is armed here, in one view. It says watching only while hooks are wired for this repo, not because an earlier attach left its record on disk. On-demand, so it is quiet until you go looking.
 - **Rides on, does not replace.** Sawbuck is the verify + memory layer. Your agent and your loop stay yours.
 - **Clean on and off.** `attach` writes a git-excluded `.claude/settings.local.json`, the lines in `.git/info/exclude` that keep its files out of `git status`, a receipt under `.git/sawbuck/`, a line in `~/.sawbuck/registry.json` (the list `detach --all` reads), and in a signed repo `.sawbuck/state.json` (`attach --git` writes the post-commit hook and `.sawbuck/state.json` in place of the settings file); `attach --dry-run` lists all of it. `detach` removes the hooks and the receipt, and still removes the hooks when the receipt is lost; `detach --dry-run` lists what would go. A post-commit hook that was there before `attach --git` is put back byte for byte. Signed contract files stay because they are yours to review. The record (`.sawbuck/`, the logbook files) stays too, still out of `git status`, until `detach --purge` deletes it and the exclude lines. `detach --verify` proves the wiring is gone and names what is left.
 - **A limit of the hooks file.** `.claude/settings.local.json` is kept out of git, so taking the hooks out of it shows in no diff, and the check cannot see it. `sawbuck doctor` can: it reads the receipt and says the hooks are gone, or that the set is incomplete (a missing Stop hook, say). `sawbuck attach --shared` avoids it: the hooks go in a tracked file, and a removal shows in git.
+- **A limit of the turn hook.** The hook re-runs your tests on commits, not on uncommitted work. A test edited to go green and left uncommitted is not sent back at the end of that turn. It is caught when it is committed, and `sawbuck check` reads it on demand, which is what the written rule tells the agent to run before finishing.
 - **A limit of the git hook.** `attach --git` pins the hook to the checkout it was attached from, so a commit made in a linked git worktree is not checked. A hooks folder inside the work tree (`core.hooksPath`, as husky sets it) is refused, and attach prints the line to add by hand; `detach`, `doctor` and `status` do not know about a line added that way.
 
 ## Commands
@@ -65,16 +64,33 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 |---|---|
 | `sawbuck contract` | gives a repo its rules: protected paths and the written rule. With no config yet it writes one with your detected tests; an existing config is kept as it is, and gets no tests added. `--full` adds supply-chain guards, a repo lock and a CI check (only with a github.com origin and a real test command; it says when it skips it). `--strict` makes them block, also after an earlier `--full`. `--dry-run` previews |
 | `sawbuck check [--base R --head R] [--repeat N] [--allow "reason"] [--json]` | verify your latest change (working tree if dirty, else the last commit, or a range); zero-config, no attach, no record. Every `promptwheel run` flag passes through: this is the engine with a plain-spoken verdict |
-| `sawbuck attach [--user \| --shared \| --git]` | check every Claude Code turn here. `--user`: in every repo that has a `promptwheel.config.json`. `--shared`: a tracked `.claude/settings.json` a team commits, with no path from your machine in it. `--git`: a post-commit hook, so every commit is checked whatever made it, from the first one after attach (the very first commit of a repo has nothing to be checked against). It leaves a hook alone if it is not a shell script or not executable, and says what to add by hand |
+| `sawbuck attach [--user \| --shared \| --git]` | watch every Claude Code turn here: protected paths at the end of each turn, a source-only re-run on each commit. `--user`: in every repo that has a `promptwheel.config.json`. `--shared`: a tracked `.claude/settings.json` a team commits, with no path from your machine in it. `--git`: a post-commit hook, so every commit is checked whatever made it, from the first one after attach (the very first commit of a repo has nothing to be checked against). It leaves a hook alone if it is not a shell script or not executable, and says what to add by hand |
 | `sawbuck detach [--user] [--all] [--verify] [--purge] [--dry-run]` | remove the hooks; no flag removes whatever is wired here, with or without the receipt, `--all` does every repo. `--purge` also deletes the record, `--dry-run` only lists what would go |
 | `/sawbuck-reins:audit` | finds rules in your agent files that can pull against each other, and proposes which wins. No history needed |
 | `/sawbuck-reins:rules` | proposes the rules you keep enforcing, from your own messages, each with quotes; you pick what to keep. Tested on one person so far |
 | `/sawbuck-reins:shape` | what you push on, from a sample of your own messages, as a card. It also reads up to 120 past turns and names habits the agent has that you never push on, each with the agent's own words. Leads from one read, tested on one person |
+| `sawbuck init` | writes only the config: your detected tests and the tripwires, with notes from your history. `contract` runs it for you when the repo has no config yet |
 | `sawbuck status` | the inventory (caught over time, debt now, armed state, what you keep saying), in one view; `--log` for the recent per-check feed |
 | `sawbuck debt [repo]` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
 | `sawbuck doctor [--all]` · `detach --verify` | run what each hook runs (project and user level) and say if it still works, if the set is incomplete, or if it is gone (exit 1), `--all` for every repo it is attached to; prove the wiring is gone |
 | `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught) |
+
+## Protected paths
+
+`sawbuck contract` protects these by default. A change to one reads "sent back", whoever made it.
+
+| rule | paths | how a person makes an exception |
+|---|---|---|
+| `contract-frozen` | `promptwheel.config.json`, `sawbuck.config.json` | `sawbuck check --allow "<reason>"` |
+| `hooks-frozen` | `.claude/settings.json`, `.claude/settings.local.json`, `.sawbuck/**` | `sawbuck check --allow "<reason>"` |
+| `workflows-frozen` | `.github/workflows/**` | remove the rule first |
+| `registry-config-frozen` | `.npmrc`, `.yarnrc`, `.yarnrc.yml` | remove the rule first |
+| `build-images-frozen` | `Dockerfile*`, `docker-compose*` | remove the rule first |
+| `publish-scripts-frozen` | `scripts/release*`, `scripts/publish*` | remove the rule first |
+| `codeowners-frozen` | `CODEOWNERS` | remove the rule first |
+
+To remove a rule, delete its entry under `mandates` in `promptwheel.config.json`, in a commit of its own. That file is protected too, so that commit takes `--allow`. Then make the change. To protect another path, add an entry the same way: `{"name": "billing-frozen", "paths": ["src/billing/**"], "reason": "billing changes go through review"}`.
 
 ## Give your agent the rule
 
@@ -120,9 +136,9 @@ Debt is on demand: `sawbuck debt`, and `sawbuck context` for the files in hand. 
 
 ## The engines
 
-Sawbuck is thin glue over two roles, each behind an open interface that points in opposite directions:
+Sawbuck is thin glue over two engines:
 
-- **the check** : the deterministic outcome gate, a published standard (the [Verified-Outcome Contract](CONTRACT.md)) that others conform to. Reference implementation: **promptwheel**. You plug in *what* to measure (your tests, lint, coverage, an eval); the source re-proof is the fixed part. Embed it with `import { check }`, or check any tool's verdict with `conformsToContract()` from the same package.
+- **the check** : the deterministic outcome gate, written up as a draft spec (the [Verified-Outcome Contract](CONTRACT.md)). Reference implementation: **promptwheel**. You plug in *what* to measure (your tests, lint, coverage, an eval); the source re-proof is the fixed part. Embed it with `import { check }`, or check any tool's verdict with `conformsToContract()` from the same package.
 - **the memory** : the relevant history for the files you touch, plus the live debt, from **@promptwheel/logbook** (git history as agent memory; also ships an MCP server).
 
 Apache 2.0.

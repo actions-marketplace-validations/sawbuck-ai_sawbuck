@@ -21,9 +21,7 @@ const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (pro
 const repo = resolve(flag('--repo', process.cwd()));
 const asJson = process.argv.includes('--json');
 
-const readJSON = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
 const readLines = (p) => { try { return readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
-const git = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
 
 const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎', mandate: '⛔' };
 
@@ -38,8 +36,6 @@ for (const e of feed) if (e && tally[e.kind] != null) tally[e.kind]++;
 const seen = feed.length;
 const latest = results.latest || (feed.length ? feed[feed.length - 1] : null);
 const since = feed.length ? (feed[0].at || '').slice(0, 10) : null;
-// the steer rate, if the reins judge has been scoring turns here (an OFFLINE read of its file, in repoState; the
-// recent-window average over roughly the last twenty scored turns, as the band and statusline show it)
 
 // --- 2) the armed state: what it can measure here (shared with the statusline) ---
 const isGit = !!existsSync(join(repo, '.git'));
@@ -147,7 +143,7 @@ if (!isGit) {
 } else if (state === 'watching' && wired === 'user' && !hasConfig) {
   out.push('   Measuring here  ·  wired in at user level, and that check runs only in a repo that has a promptwheel.config.json. `sawbuck contract` writes one.');
 } else if (state === 'watching') {
-  out.push(`   Measuring here  ·  ${hasConfig ? '✓ wired in with a contract (promptwheel.config.json)' : '✓ wired in (zero-config auto-detect)'}. It verifies each commit/turn automatically.`);
+  out.push(`   Measuring here  ·  ${hasConfig ? '✓ wired in with a contract (promptwheel.config.json)' : '✓ wired in (zero-config auto-detect)'}. Protected paths are checked at the end of each turn, and each commit is re-proved from the source.`);
 } else if (state === 'ready') {
   out.push(`   Measuring here  ·  checkable but not wired yet. Try it now: \`sawbuck check\`  •  make it automatic: \`sawbuck attach\``);
 } else {

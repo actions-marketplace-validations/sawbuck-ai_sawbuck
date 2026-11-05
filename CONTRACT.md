@@ -89,7 +89,7 @@ A win is **`gamed`** when it does not survive a **source-only re-run**: revert e
 
 ## 4. The context record (the trail knowledge)
 
-A conforming implementation also carries the repo's history as deterministic memory: a ledger derived from git (hotspots, reverted approaches, suppressed or weakened tests, fragile areas), surfaced per turn as a ranked slice for the files being touched. It is a projection of git, never a second source of truth, so it is always reconstructable and never drifts from what actually happened.
+A conforming implementation also carries the repo's history as deterministic memory: a ledger derived from git (hotspots, reverted approaches, suppressed or weakened tests, fragile areas), surfaced on demand as a ranked slice for the files being touched. It is a projection of git, never a second source of truth, so it is always reconstructable and never drifts from what actually happened.
 
 ---
 

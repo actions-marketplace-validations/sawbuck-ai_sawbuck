@@ -20,7 +20,7 @@ import { basename, join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { PW } from './bins.mjs';
-import { frameBlock, mandatesInForce, protectedDirty, blobAt, lockState } from './contract.mjs';
+import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lockState } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const HERE = dirname(SELF);
@@ -61,12 +61,6 @@ function detectedTests(repo) {
 const metricLive = (m) => !!m && !m.inert && m.status !== 'unmeasurable' && m.before != null;
 const S_END = '# <<< sawbuck <<<';
 const BLOCK_RE = new RegExp(`${S_START}[\\s\\S]*?${S_END}\\n?`, 'g');   // exactly what attach --git puts in, so taking it out leaves the bytes that were there
-// the record/state dirs the engines write into the worktree; excluded locally so
-// attach never dirties `git status`.
-// The record Sawbuck keeps on disk but must never let dirty git status: the engine records
-// plus the logbook's root working-set (ledger cache, digests, annotation planes). It is
-// memory, not the user's source, a user who wants LOGBOOK.md committed still can explicitly
-// (exclude only affects UNtracked files).
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -87,7 +81,8 @@ Usage:
                             Verify your latest change right now (working tree if dirty, else the last
                             commit, or the range you name). Zero-config, no attach, no hook. The
                             fastest way to see it work. Every promptwheel run flag passes through.
-                            Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
+                            Exit 0 pass (verified, held, or allowed) · 1 sent back (a regression or a
+                            protected path) · 2 gamed · 3 inconclusive · 64 could not run
                             (--working with nothing uncommitted is 64 too)
   sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block] [--force]
                             Write promptwheel.config.json: your detected tests and the tripwires, with
@@ -95,7 +90,8 @@ Usage:
                             AGENTS.md (--no-agent-block to skip). Wizard in a terminal, non-interactive in
                             a pipe/CI (or --yes). An existing config needs --force.
   sawbuck attach [repo] [--user | --shared | --git] [--dry-run]
-                            Check every Claude Code turn in this repo. --user: every repo that has a
+                            Watch every Claude Code turn in this repo: protected paths at the end of each
+                            turn, a source-only re-run on each commit. --user: every repo that has a
                             promptwheel.config.json. --shared: a tracked settings file a team commits.
                             --git: a post-commit hook, for any other agent or none (commits in a linked
                             worktree are not checked). --dry-run prints every file it would write
@@ -151,6 +147,7 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
 
   sawbuck contract   give this repo its rules: protected paths, your tests
   sawbuck check      verify your latest change right now
+  sawbuck attach     make it automatic in Claude Code: protected paths each turn, every commit re-proved
   sawbuck status     what it has caught here
 
   sawbuck help --all   everything else`);
@@ -243,7 +240,14 @@ switch (cmd) {
       out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
       if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('🐴 note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
     }
-    else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a protected path changed, however green the rest is.');
+    else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
+      out('🐴 ✗ sent back: a protected path changed, however green the rest is.');
+      // the way through, for a person who meant it: two of the default rules take a reason, the rest are lifted first
+      const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
+      const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
+      if (soft.length) out(`🐴 if a person meant this: sawbuck check --allow "<reason>" accepts ${names(soft)}, and the result shows the reason.`);
+      if (hard.length) out(`🐴 ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
+    }
     else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
     else out(`🐴 ≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
@@ -468,7 +472,7 @@ function verifyAttach(repo) {
   const { rep } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
   const m = rep && (rep.metrics || [])[0];
   if (metricLive(m)) out(`   ✓ I can measure "${m.name}" here. On each commit I'll verify a win survived a source-only re-run, and flag it if it did not.`);
-  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : 'the check did not run'} I stay quiet until then.`);
+  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : 'the check did not run'}`);
 }
 
 // --- the attach receipt (out of the worktree, inside .git) ------------------
@@ -691,6 +695,7 @@ function wireClaude(repo, opts) {
   const kind = user ? 'USER-LEVEL' : shared ? 'shared project' : 'project';
   out(upgrading ? `sawbuck: updated the ${kind} Claude Code hooks in ${f} to this version` : `sawbuck: wired ${kind} Claude Code hooks in ${f}`);
   if (shared) out(`  commit ${relative(repo, f)} so the team gets the check. It runs sawbuck ${version} through npx on every machine.`);
+  if (shared && protectedAmong(repo, [relative(repo, f)]).length) out(`  That file is a protected path in this repo, so the check on its commit reads "sent back" unless a person passes --allow "team hooks" (on a pull request: a comment, sawbuck-allow: team hooks).`);
   if (!user && !existsSync(join(repo, 'AGENTS.md')) && !existsSync(join(repo, 'CLAUDE.md'))) out('  no written rule here yet, and that is what changes the agent: run sawbuck contract.');
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
 }

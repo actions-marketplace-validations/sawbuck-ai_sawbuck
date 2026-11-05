@@ -1,8 +1,9 @@
 // Find the rules you keep enforcing and never wrote down. `prepare` gathers what you typed to Claude Code, on this
 // machine, with copies and likely secrets removed. The agent proposes rules from it, each with quotes. `check` proves
 // every quote is really yours: a rule with fewer than two real quotes is dropped. Nothing is added to any file here.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+// Once the check has run, the gathered messages and the candidates are deleted: they were for that one read.
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync, rmSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { readHistory, typedText } from './history.mjs';
 
@@ -10,6 +11,11 @@ const MAX_LINES = 3000;
 export const SECRET = /(sk-[a-z0-9_-]{16,}|gh[pousr]_[a-z0-9]{20,}|github_pat_\w{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[\w-]{10,}|eyJ[\w-]{20,}\.[\w-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY|\b[a-f0-9]{40,}\b|(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)/i;
 const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 const paths = (home) => ({ dir: join(home, '.sawbuck'), input: join(home, '.sawbuck', 'rule-input.txt') });
+// remove what one read gathered. A file the model wrote counts only when it sits in ~/.sawbuck: anywhere else it is the person's own.
+export function forget(home, ...files) {
+  const dir = resolve(paths(home).dir);
+  for (const f of files) if (f && dirname(resolve(f)) === dir) rmSync(f, { force: true });
+}
 
 export function prepareRules({ home = homedir() } = {}) {
   const found = [];
@@ -60,6 +66,7 @@ export function rulesCli(args, { home = homedir() } = {}) {
     if (!file || !existsSync(file) || !statSync(file).isFile()) return '🐴 sawbuck: --check needs the candidates file.';
     if (!existsSync(paths(home).input)) return '🐴 sawbuck: run sawbuck rules --prepare first.';
     const { kept, dropped } = checkRules(file, { home });
+    forget(home, paths(home).input, file);
     const out = [`🐴 ${kept.length} rules have at least 2 quotes that are really yours${dropped.length ? `, ${dropped.length} dropped` : ''}.`];
     kept.forEach((r, n) => { out.push('', `${n + 1}. ${r.rule}`); for (const q of r.quotes.slice(0, 3)) out.push(`     "${q.slice(0, 110)}"`); });
     return out.join('\n');

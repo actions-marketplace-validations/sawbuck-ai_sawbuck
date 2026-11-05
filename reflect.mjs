@@ -16,14 +16,11 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { record as memRecord } from './memory.mjs';
 import { PW } from './bins.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-// The MEMORY engine is reached only through memory.mjs (the Memory Contract seam), never
-// resolved or shelled directly here.
+// Logbook is reached only through memory.mjs, never resolved or shelled directly here.
 
 const flag = (name, def) => { const i = process.argv.indexOf(name); return i > -1 ? process.argv[i + 1] : def; };
 const repo = flag('--repo', process.cwd());
@@ -110,15 +107,12 @@ const reason = kind === 'gamed'
   : `sawbuck: a change here regressed a guarded metric beyond noise`;
 
 // --- 3) record the finding in memory (unreviewed, machine-authored note) ----
-// The Memory Contract's `record` capability, through the adapter (no direct engine shell here).
-// Kept simple: a commit-attached digest note. A later pass could add --span grounding
-// and true coupling (the fix diff -> "change X also needs Y"). A gamed verdict still standing
-// over the same span is the same catch, not a new one: no second note, no second tick.
-const repeatOfStanding = standing && kind === 'gamed';
-if (!repeatOfStanding) memRecord(repo, { sha, reason: reason.slice(0, 280), side: 'diff', evidenceFile, by: 'sawbuck' });
+// A note on the commit, through the Logbook adapter. A gamed verdict still standing over the same span never
+// gets here (it exited above), so one catch is one note and one tick.
+memRecord(repo, { sha, reason: reason.slice(0, 280), by: 'sawbuck' });
 
 // --- 4) tick the results record (the visible proof-of-work) -----------------
-if (!repeatOfStanding) { if (kind === 'gamed') rec.gamed += 1; else rec.regressions += 1; }
+if (kind === 'gamed') rec.gamed += 1; else rec.regressions += 1;
 rec.latest = { sha: sha.slice(0, 8), kind, base: baseSha || null, file: evidenceFile, reason: reason.replace(/^sawbuck: /, '').slice(0, 140), at: new Date().toISOString(), by: by || null };
 writeRec();
 
