@@ -84,6 +84,9 @@ if (standing) {
   process.exit(0);
 }
 if (verdict !== 'gamed' && verdict !== 'fail') process.exit(0);   // only breakage is worth recording
+// A fail that is only a protected path, under the Claude hooks: the Stop hook's wall counts it and sends the turn
+// back, so counting it here too would show two catches for one change. The git hook has no wall, so it records it.
+if (verdict === 'fail' && by && (report.mandates || []).length && !(report.metrics || []).some((m) => m.guard && m.ok === false)) process.exit(0);
 
 // map the engine verdict to Sawbuck's plain outcome words
 const kind = verdict === 'gamed' ? 'gamed' : 'regression';

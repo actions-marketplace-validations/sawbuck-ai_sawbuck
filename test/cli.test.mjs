@@ -6,7 +6,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -160,6 +160,7 @@ test('attach preserves a pre-existing post-commit hook and detach restores it', 
   const pc = join(d, '.git', 'hooks', 'post-commit');
   try {
     writeFileSync(pc, '#!/bin/sh\necho mine\n');
+    chmodSync(pc, 0o755);   // a hook git actually runs
     sawbuck(['attach', '--git', '.'], d);
     assert.match(readFileSync(pc, 'utf8'), /echo mine/, 'theirs kept');
     assert.match(readFileSync(pc, 'utf8'), /^#!\/bin\/sh\n# >>> sawbuck >>>/, 'our block goes in right after the shebang line');

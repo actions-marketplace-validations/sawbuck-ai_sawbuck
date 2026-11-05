@@ -15,7 +15,7 @@ import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
 import { ensureExcluded, clearExcluded, EXCLUDED, RECORD_DIRS } from './exclude.mjs';
 import { repoState, hooksIn, OURS, S_START } from './repo-state.mjs';
-import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, rmdirSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { basename, join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -191,8 +191,8 @@ switch (cmd) {
   case 'status': {
     // the inventory: one view unioning what the check has caught over time, what debt is accruing
     // now, and whether it is armed here. The "show me everything" face. --log is the recent feed.
-    if (flags.has('--log')) { logReport(repoArg(), rest); break; }
-    try { execFileSync(process.execPath, [join(HERE, 'status.mjs'), '--repo', repoArg(), ...rest.filter((a) => a.startsWith('--'))], { stdio: 'inherit' }); }
+    if (flags.has('--log')) { logReport(repoRoot(), rest); break; }
+    try { execFileSync(process.execPath, [join(HERE, 'status.mjs'), '--repo', repoRoot(), ...rest.filter((a) => a.startsWith('--'))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
   }
@@ -543,6 +543,10 @@ function wireGit(repo) {
   const existed = existsSync(pc);
   const was = existed ? readFileSync(pc, 'utf8') : '';
   if (was.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
+  // our block is shell, and git only runs an executable hook: a hook in another language, or one git is not running,
+  // is left exactly as it is
+  if (existed && was.startsWith('#!') && !/^#!\s*\S*\/(env\s+)?(ba|da|z|k)?sh\b/.test(was.split('\n')[0])) usage(`the post-commit hook here is not a shell script (${was.split('\n')[0]}). Add this line to it by hand: npx -y sawbuck@${version} __hook`);
+  if (existed && process.platform !== 'win32') { let x = false; try { x = !!(statSync(pc).mode & 0o111); } catch {} if (!x) usage(`the post-commit hook here is not executable, so git does not run it. Make it executable (chmod +x ${relative(repo, pc)}) or remove it, then run attach --git again.`); }
   // Our block goes right after the shebang line, so a hook that ends in `exit 0` still reaches it. The receipt notes
   // the shebang or the newline we had to add, so detach leaves a hook that was here before byte for byte as it was.
   const shebang = !was.startsWith('#!'), nl = !shebang && !was.includes('\n');
@@ -615,7 +619,7 @@ function wireClaude(repo, opts) {
   // send-back budget twice as fast. --shared is a deliberate team file, so it is written anyway.
   if (!user && !shared) {
     const uf = claudeFile(repo, { user: true }).f;
-    try { if (OURS.test(readFileSync(uf, 'utf8'))) { out(`sawbuck: already watching here through your user-level hooks (${uf}); nothing to add`); return; } } catch {}
+    try { if (OURS.test(readFileSync(uf, 'utf8'))) { out(`sawbuck: already watching here through your user-level hooks (${uf}); nothing to add${existsSync(join(repo, 'promptwheel.config.json')) ? '' : '. The check runs here once this repo has its rules: sawbuck contract'}`); return; } } catch {}
   }
   const { dir, f } = claudeFile(repo, opts);
   const dirExisted = existsSync(dir);
@@ -816,7 +820,7 @@ function regWrite(r) {
   putFile(f, JSON.stringify(r, null, 2) + '\n', 'the list of attached repos');
 }
 function regAdd(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); r.repos.push({ repo, mode, at: new Date().toISOString() }); regWrite(r); }
-function regRemove(repo, mode) { const r = regRead(); const keep = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); if (keep.length !== r.repos.length) regWrite({ ...r, repos: keep }); }
+function regRemove(repo, mode) { const r = regRead(); const keep = r.repos.filter((x) => !(x.mode === mode && (mode === 'user' || x.repo === repo))); if (keep.length !== r.repos.length) regWrite({ ...r, repos: keep }); }
 function detachAll(purge) {
   const r = regRead();
   if (!r.repos.length) { say('sawbuck: nothing to detach: not attached anywhere.'); return; }
