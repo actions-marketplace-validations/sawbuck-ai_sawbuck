@@ -4,7 +4,7 @@
 // lock. Zero-LLM. Re-running changes nothing. Protected product code (auth, billing) is suggested, never added:
 // freezing those is a person's decision.
 import { ensureExcluded } from './exclude.mjs';
-import { writeAgentBlock, standingRules } from './agent-block.mjs';
+import { writeAgentBlock } from './agent-block.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, cpSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
@@ -86,7 +86,7 @@ try {
     const locked = existsSync(join(repo, 'promptwheel.lock.json'));
     if (!locked) run([join(pack, 'lock.mjs'), 'write', repo], repo);
     const added = (cfg.mandates.length - before.m) + (cfg.metrics.length - before.g);
-    process.stdout.write(added || !locked ? `sawbuck: signed. ${cfg.metrics.length} guards, ${cfg.mandates.length} protected-path rules, and the shape of this repo in promptwheel.lock.json.\n${strict ? '' : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${standingRules().length ? `  Added your ${standingRules().length} standing rules from ~/.sawbuck/rules.md to AGENTS.md.\n` : ''}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the contract.\n' : ''}` : 'sawbuck: already signed, nothing changed.\n');
+    process.stdout.write(added || !locked ? `sawbuck: signed. ${cfg.metrics.length} guards, ${cfg.mandates.length} protected-path rules, and the shape of this repo in promptwheel.lock.json.\n${strict ? '' : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the contract.\n' : ''}` : 'sawbuck: already signed, nothing changed.\n');
   }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 

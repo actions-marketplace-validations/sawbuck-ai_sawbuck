@@ -1,8 +1,9 @@
 // Your steering shape: what you push on, as 12 spokes in 4 groups. The model labels a sample of your messages; only the
 // totals are kept. Two models agree on single messages about half the time and on the shape at 0.93, so a single label is
 // never shown. It says what you pushed on, not how good you are. Each run is saved with its date to compare later.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { prepareRules } from './rules.mjs';
 import { exposure, writtenRules } from './exposure.mjs';
@@ -76,6 +77,25 @@ export function shapeSvg(t, found = []) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" font-family="system-ui,sans-serif"><rect width="1000" height="1000" fill="#0b0e13"/><text x="50" y="70" fill="#e8e6e1" font-size="40" font-weight="700">My steering shape</text>${[0.25, 0.5, 0.75, 1].map((v) => `<polygon points="${ring(v)}" fill="none" stroke="#2a313b"/>`).join('')}<polygon points="${names.map((_, i) => pt(i, vals[i]).join(',')).join(' ')}" fill="#c9a24a" fill-opacity="0.35" stroke="#c9a24a" stroke-width="4"/>${seenPts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="9" fill="#4fb3a5"/>`).join('')}${labels}<text x="50" y="960" fill="#8d94a0" font-size="19">Gold: what I push on, from ${t.n} messages.${seenPts.length ? ' Teal dots: what the agent did.' : ''} Relative to my own top. Not a score. sawbuck.ai</text></svg>\n`;
 }
 
+// A PNG of the card, with what is already on the machine: sawbuck ships no image library. A snap browser sees neither
+// a hidden folder nor the real /tmp, so it works in a plain folder in home and the result is copied over.
+function pngCard(svg) {
+  const png = svg.replace(/\.svg$/, '.png');
+  rmSync(png, { force: true });
+  const run = (bin, args) => { try { execFileSync(bin, args, { stdio: 'ignore', timeout: 30000 }); return true; } catch { return false; } };
+  if (run('rsvg-convert', ['-w', '1200', '-o', png, svg]) && existsSync(png)) return png;
+  const tmp = join(dirname(dirname(svg)), `sawbuck-shape-${process.pid}`);
+  try {
+    mkdirSync(tmp, { recursive: true });
+    const a = join(tmp, 'shape.svg'), b = join(tmp, 'shape.png');
+    copyFileSync(svg, a);
+    for (const bin of ['google-chrome', 'chromium', 'chromium-browser']) {
+      if (run(bin, ['--headless', '--disable-gpu', '--hide-scrollbars', '--window-size=1000,1000', `--screenshot=${b}`, `file://${a}`]) && existsSync(b)) { copyFileSync(b, png); return png; }
+    }
+  } catch {} finally { rmSync(tmp, { recursive: true, force: true }); }
+  return '';
+}
+
 export function shapeCli(args, { home = homedir() } = {}) {
   if (args.includes('--prepare')) { const r = prepareShape({ home }); return `🐴 ${r.lines} of your messages are ready in ${r.input}${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}.`; }
   const i = args.indexOf('--check');
@@ -109,5 +129,6 @@ export function shapeCli(args, { home = homedir() } = {}) {
   if (found.some((f) => f.kind === 'too few')) out.push('', `  Not enough recent turns to name every pattern yet: each needs ${MIN_TURNS}.`);
   if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
   out.push('', `  Card: ${p.svg}`);
+  if (args.includes('--png')) { const png = pngCard(p.svg); out.push(png ? `  Image to share: ${png}` : '  No image tool here (rsvg-convert or Chrome): open the card in a browser to save an image.'); }
   return out.join('\n');
 }

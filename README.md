@@ -70,7 +70,7 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 | `sawbuck debt` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
 | `sawbuck trace` · `sawbuck doctor` · `detach --verify` | show the footprint; check the attachment resolves; prove a clean removal |
-| `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught / steer %) |
+| `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught) |
 
 ## Give your agent the contract
 
@@ -111,15 +111,13 @@ jobs:
 
 `--fail-on` takes `undocumented` (a bare `# type: ignore` / `# noqa` with no code), `test` (a newly disabled test), `any`, or a number of new suppressions. Exit 1 fails the check; add `--json` for the machine-readable delta. This repo is also a composite action: `uses: sawbuck-ai/sawbuck@v0` with `base` and `fail-on` inputs.
 
-Debt also rises on its own: once attached, the per-turn `context` hook surfaces the live suppression debt on the files your agent is touching when it is the suspect kind (undocumented, a disabled test, or on code that keeps breaking), so you do not have to run anything.
+Debt is on demand: `sawbuck debt`, and `sawbuck context` for the files in hand. To have history added to every turn, set `{"turn":{"context":true}}` in `sawbuck.config.json`. It is off by default because a written rule did the work in every bench, and context spent on each prompt is context lost.
 
 ## The engines
 
 Sawbuck is thin glue over two roles, each behind an open interface that points in opposite directions:
 
 - **the check** : the deterministic outcome gate, a published standard (the [Verified-Outcome Contract](CONTRACT.md)) that others conform to. Reference implementation: **promptwheel**. You plug in *what* to measure (your tests, lint, coverage, an eval); the source re-proof is the fixed part. Embed it with `import { check }`, or check any tool's verdict with `promptwheel conformance`.
-- **the memory** : the relevant history for the files you touch, plus the live debt. A socket you can fill. Default provider: **@promptwheel/logbook** (git history as agent memory; also ships an MCP server). Sawbuck reads it through one adapter, so you can *compose in your own* memory: `SAWBUCK_MEMORY=logbook,obsidian` keeps logbook as the git-truth + debt provider and adds your notes, then `sawbuck recall`. Four reference providers ship in `providers/`: **obsidian** (local notes vault; set `OBSIDIAN_VAULT`), **local** (a plain JSON file, zero setup), **claude** (read-only: your project's `CLAUDE.md` / `.claude` memory, already there, nothing to configure), and **mem0** (semantic memory; the one that reaches the network, so it needs a `MEM0_API_KEY` or a `~/.mem0` key file, unlike the offline default; verified against Mem0's v3 API). Any bin that speaks the three contract verbs works; `sawbuck memory-conformance <bin>` checks one. Composed providers are **folder-scoped and isolated by default**: each repo sees only its own memory, never a sibling's. Drop a `.sawbuck-root` marker (or set `SAWBUCK_MEMORY_ROOT`) in a parent folder to let repos under it inherit that folder's shared memory, top down. logbook is the default, not a hard requirement of the idea.
-
-In one line: the check is a standard we publish for others to meet; the memory is a socket we expose for others to fill. Sawbuck composes the two.
+- **the memory** : the relevant history for the files you touch, plus the live debt, from **@promptwheel/logbook** (git history as agent memory; also ships an MCP server).
 
 Apache 2.0.

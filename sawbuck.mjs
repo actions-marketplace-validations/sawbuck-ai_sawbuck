@@ -13,7 +13,7 @@
 // proves the repo came back clean; `doctor` checks the attachment still resolves.
 
 import { execFileSync } from 'node:child_process';
-import { erasedBlock } from './rewrites.mjs';
+import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
@@ -90,7 +90,7 @@ Usage:
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
   sawbuck frame [repo]      The contract's protected paths, inherited ones included, as one compact block;
                             silent without a contract (--speak explains)
-  sawbuck turn [repo]       frame + context in one block: what attach --claude runs on every prompt
+  sawbuck turn [repo]       What attach --claude runs on a prompt: the frame, once a session and after a compaction
 
   sawbuck trace [repo]      Show every file Sawbuck has placed in this repo (the footprint)
   sawbuck doctor [repo]     Check the attachment still resolves to a live sawbuck; --all for every repo
@@ -99,14 +99,10 @@ Usage:
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
-  sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals
+  sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
   sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
-  sawbuck statusline        One-line segment for your status line (🐴 watching | N caught | steer %)
+  sawbuck statusline        One-line segment for your status line (🐴 watching | N caught)
 
-  sawbuck recall [repo]     Related notes for your changes from extra memory providers
-                            (SAWBUCK_MEMORY=logbook,obsidian + OBSIDIAN_VAULT), alongside context
-  sawbuck memory-conformance <bin>
-                            Check a provider bin speaks the Memory Contract (recall/debt/record)
   sawbuck --help | --version
 
 Engines: promptwheel (the check) + @promptwheel/logbook (memory). Zero-LLM, offline, free.`;
@@ -242,9 +238,10 @@ switch (cmd) {
     break;
   }
   case 'turn': {
-    // the ONE per-prompt hook: the contract frame (forward: what must hold) and the relevant history
-    // (backward: what broke here before) in a single block, one process per prompt. Silent when
-    // there is nothing to say. Wired by `attach --claude` on UserPromptSubmit and after a compaction.
+    // the ONE per-prompt hook. The agent gets the contract frame once a session and again after a compaction: one
+    // written statement held in every bench, so saying it on each prompt only spends context. The relevant history
+    // is on demand (`sawbuck context`), and per turn only with {"turn":{"context":true}} in sawbuck.config.json.
+    // Wired by `attach --claude` on UserPromptSubmit and after a compaction.
     // the repository the way the Stop hook sees it: the root of the cwd under user-level wiring (a
     // subdirectory belongs to its repo), the pinned path under project wiring; '' outside a repo
     const top = gitTop(repoArg());
@@ -259,8 +256,8 @@ switch (cmd) {
     // a file still carrying the content the last violation flagged is never baselined; and the
     // baseline's commit does not advance past a flagged commit until a clean stop or a commit the
     // person made between turns that no longer carries the flagged content.
-    let hookEvent = '';
-    if (flags.has('--hook') && !process.stdin.isTTY) { try { hookEvent = String(JSON.parse(readFileSync(0, 'utf8') || '{}').hook_event_name || ''); } catch {} }
+    let hookEvent = '', session = '', framed = false;
+    if (flags.has('--hook') && !process.stdin.isTTY) { try { const h = JSON.parse(readFileSync(0, 'utf8') || '{}'); hookEvent = String(h.hook_event_name || ''); session = String(h.session_id || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit' && top) {
       try {
         ensureExcluded(repo);   // before the first write: under user-level hooks nothing else has done it yet
@@ -291,11 +288,16 @@ switch (cmd) {
             st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo) };
           }
         }
+        framed = !!session && st.framedSession === session;
+        if (session) st.framedSession = session;
         st.lastPromptAt = now;   // every prompt, mandates or not: the walls key their block budgets on it when the harness sends no prompt_id
         mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
       } catch { /* the frame never fails a prompt */ }
     }
-    const o = [frameBlock(repo), contextBlock(repo, false)].filter(Boolean).join('\n');
+    let history = false;
+    try { history = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')).turn?.context === true; } catch {}
+    if (!history && top) erasedCommits(repo);   // the ledger outlives the reflog whether or not it is printed
+    const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false) : ''].filter(Boolean).join('\n');
     if (o) out(o);
     break;
   }
@@ -402,7 +404,7 @@ switch (cmd) {
   default: die(`unknown command '${cmd}'\n\n${help}`);
 }
 
-// --- the per-turn block: frame (forward, from contract.mjs) + context (backward) ---------------
+// --- context: the ranked history for the files in hand, on demand ---------------------------
 // the read face: ranked relevant history for what you're working on right now. Silent when there is
 // nothing to say, so it is safe on every UserPromptSubmit (that hook's stdout is injected into context;
 // "nothing notable" every turn would be noise). `speak` forces a reply for the explicit command.
@@ -568,8 +570,8 @@ function wireClaude(repo, opts) {
     cfg.hooks[event].push({ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] });
   };
   put('UserPromptSubmit', ctx);
-  // right after a compaction the summary has just dropped detail: re-impress the contract frame and the
-  // relevant history there too (SessionStart with the `compact` source injects stdout into context).
+  // right after a compaction the summary has just dropped detail: re-impress the contract frame there too
+  // (SessionStart with the `compact` source injects stdout into context).
   put('SessionStart', ctx, 'compact');
   put('Stop', chk);
   mkdirSync(dir, { recursive: true });
