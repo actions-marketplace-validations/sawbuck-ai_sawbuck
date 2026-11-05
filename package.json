@@ -42,6 +42,7 @@
     "steers.mjs",
     "rules.mjs",
     "shape.mjs",
+    "exposure.mjs",
     "agent-block.mjs",
     "exclude.mjs",
     "contract-cmd.mjs",
