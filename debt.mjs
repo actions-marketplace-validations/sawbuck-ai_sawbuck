@@ -28,7 +28,7 @@ if (failMode && !/^(undocumented|test|tests|disabled|any|\d+)$/.test(failMode)) 
 // the gate: fail (exit 1) when the list holds the kind of debt --fail-on names. With --since the list is what the
 // branch adds; without it, everything live in HEAD.
 const gateFails = (list) => !failMode ? false
-  : /^\d+$/.test(failMode) ? list.length >= +failMode
+  : /^\d+$/.test(failMode) ? list.length >= Math.max(1, +failMode)   // 0 means any: a clean list never fails
   : failMode === 'any' ? list.length > 0
   : (failMode === 'test' || failMode === 'tests' || failMode === 'disabled') ? list.some((it) => it.testSkip)
   : list.some((it) => !it.documented);
