@@ -484,12 +484,12 @@ function hiddenLeft(repo) {
 
 // --- git post-commit (attach --git) -----------------------------------------
 // For any agent or none: every commit is checked, whatever made it. The hook prefers a `sawbuck` on PATH (so it
-// survives a reinstall) and falls back to the absolute path of the sawbuck that attached.
+// survives a reinstall), then the absolute path of the sawbuck that attached, then the same version through npx.
 function hookBlock(repo) {
   const r = JSON.stringify(repo);
   // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check shells out to git and would
   // inherit them, operate on the wrong repo, and silently catch nothing. Clear them first.
-  return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; else ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; fi || true\n${S_END}\n`;
+  return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else npx -y sawbuck@${version} __hook --repo ${r}; fi || true\n${S_END}\n`;
 }
 function wireGit(repo) {
   const pc = gitPath(repo, 'hooks/post-commit');
@@ -714,9 +714,9 @@ function hookRuns(command) {
 }
 function doctorRepo(repo) {
   const checks = [];
-  // the git hook tries a sawbuck on PATH first, then the baked path
+  // the git hook tries a sawbuck on PATH first, then the baked path, then npx
   const pc = gitPath(repo, 'hooks/post-commit');
-  try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) { const baked = extractBaked(b); let onPath = false; try { onPath = !!execFileSync('sh', ['-c', 'command -v sawbuck'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {} checks.push({ mode: 'git', file: pc, ok: onPath || (!!baked && existsSync(baked)) }); } } } catch {}
+  try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) { const baked = extractBaked(b); let onPath = false; try { onPath = !!execFileSync('sh', ['-c', 'command -v sawbuck'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {} checks.push({ mode: 'git', file: pc, ok: onPath || (!!baked && existsSync(baked)) || /npx -y sawbuck@/.test(b) }); } } } catch {}
   for (const [mode, f] of [['claude', join(repo, '.claude', 'settings.local.json')], ['claude-shared', join(repo, '.claude', 'settings.json')], ['user', join(homedir(), '.claude', 'settings.json')]]) {
     let cfg = null; try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { continue; }
     const cmds = Object.values((cfg && cfg.hooks) || {}).flat().flatMap((h) => (h && Array.isArray(h.hooks) ? h.hooks : [])).map((x) => x && x.command).filter((c) => typeof c === 'string' && OURS.test(c));
