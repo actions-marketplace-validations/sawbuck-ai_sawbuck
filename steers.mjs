@@ -37,7 +37,7 @@ export function steersReport({ json = false, home } = {}) {
   const groups = groupSteers(steers);
   const repeated = groups.filter((g) => g.n >= 3 && g.sessions >= 2);
   if (json) return JSON.stringify({ steers: steers.length, scored: stats.scored, unscored: stats.lost, repeated });
-  if (!steers.length && !stats.scored) return '🐴 sawbuck: no steers recorded. The plugin\'s live judge is off by default; /sawbuck-reins:rules reads your history instead.';
+  if (!steers.length && !stats.scored) return '🐴 sawbuck: no steers recorded yet. They appear as you work with the plugin\'s live judge on.';
   const out = [`🐴 ${steers.length} steers kept, from ${stats.scored} replies scored${stats.lost ? ` (${stats.lost} could not be scored, so this undercounts)` : ''}. Measured, not estimated.`];
   if (repeated.length) {
     out.push('', 'You keep saying:');

@@ -14,7 +14,7 @@ export function repoState(repo) {
   const armed = hasConfig || has('package.json');
   const state = has('.sawbuck/state.json') ? 'watching' : armed ? 'ready' : (has('LOGBOOK.md') || has('events.jsonl')) ? 'memory' : '';
   // the reins engine's file; reins does the model work, never sawbuck. A rate nobody has updated for a week is
-  // history, not a reading, and the judge is off unless someone turned it on.
+  // history, not a reading: the judge was turned off, or the plugin is not running.
   const s = record('steer.json');
   const live = s && s.scored && !(s.at && Date.now() - Date.parse(s.at) > WEEK);
   const steer = live ? { rate: Math.round(((s.ema != null ? s.ema : s.steeringRate) || 0) * 100), scored: s.scored } : null;
