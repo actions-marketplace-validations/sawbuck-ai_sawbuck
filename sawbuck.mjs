@@ -17,7 +17,8 @@ import { erasedBlock } from './rewrites.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
-import { ensureExcluded, RECORD_DIRS } from './exclude.mjs';
+import { ensureExcluded, clearExcluded, EXCLUDED, RECORD_DIRS } from './exclude.mjs';
+import { repoState } from './repo-state.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -370,22 +371,16 @@ switch (cmd) {
       if (!repo) process.stdout.write('🐴 sawbuck · no repo here');
       if (repo) {
         const name = basename(repo);
-        let caught = 0;
-        try { const r = JSON.parse(readFileSync(join(repo, '.sawbuck', 'results.json'), 'utf8')); caught = (r.regressions || 0) + (r.gamed || 0) + (r.mandates || 0); } catch {}
+        const { caught, state, steer } = repoState(repo);
         // the last verdict from the activity feed (includes verified passes), so you see it working each turn
         let last = '';
         try { const L = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').trim().split('\n'); const e = JSON.parse(L[L.length - 1]); last = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' }[e.kind] || ''; } catch {}
-        // one state model, shared with the Reins band: watching (wired in) / ready (checkable, not wired yet) / memory (history only)
-        const active = existsSync(join(repo, '.sawbuck', 'state.json'));
-        const armed = existsSync(join(repo, 'promptwheel.config.json')) || existsSync(join(repo, 'package.json'));
-        const mem = existsSync(join(repo, 'LOGBOOK.md')) || existsSync(join(repo, 'events.jsonl'));
-        const label = caught > 0 ? `${caught} caught` : active ? 'watching' : armed ? 'ready' : mem ? 'memory' : '';
+        const label = caught > 0 ? `${caught} caught` : state;
         const seg = label ? `🐴 sawbuck · ${label}` : '';
         const named = label ? `🐴 sawbuck · ${name} · ${label}` : '';   // which repo it detected, in the default line
         const base = named ? (last ? `${named} · ${last}` : named) : '';
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
-        let st = '';
-        try { const sj = JSON.parse(readFileSync(join(repo, '.sawbuck', 'steer.json'), 'utf8')); if (sj && sj.scored) { const p = Math.round(((sj.ema != null ? sj.ema : sj.steeringRate) || 0) * 100); st = `${p >= 50 ? '✊' : '🐎'} steer ${p}%`; } } catch {}
+        const st = steer ? `${steer.rate >= 50 ? '✊' : '🐎'} steer ${steer.rate}%` : '';
         // configurable template: SAWBUCK_STATUSLINE picks which segments show and in what order
         // (tokens {status} {sawbuck} {repo} {verdict} {steer} plus any literal text); empty tokens collapse
         // so you never get a dangling separator. Unset = the default composition. Mix in other
@@ -456,26 +451,9 @@ function delFile(p) { try { if (existsSync(p)) unlinkSync(p); } catch {} }
 function rmIfEmptyDir(d) { try { if (existsSync(d) && readdirSync(d).length === 0) rmdirSync(d); } catch {} }
 
 // --- .git/info/exclude: keep the worktree clean without touching .gitignore --
-// Rewrites a single marked block to the union of excludes the current
-// attachments need. Never deletes the file (an empty one is git's own default).
+// Any attachment keeps the block, the last one out takes it. Returns whether the file changed.
 function excludeFile(repo) { return gitPath(repo, 'info/exclude'); }
-function syncExclude(repo, manifest) {
-  const need = new Set();
-  const a = manifest.attachments || {};
-  if (Object.keys(a).length) for (const d of RECORD_DIRS) need.add(d);     // any attach → the check may write the record dirs
-  if (a.claude) need.add('.claude/settings.local.json');                    // default claude settings are local; hide them too
-  const lines = [...need];
-  const f = excludeFile(repo);
-  let body = (existsSync(f) ? readFileSync(f, 'utf8') : '').replace(BLOCK_RE, '\n').replace(/\n{3,}/g, '\n\n');
-  if (lines.length) {
-    if (body && !body.endsWith('\n')) body += '\n';
-    body += `${S_START}\n${lines.join('\n')}\n${S_END}\n`;
-    mkdirSync(dirname(f), { recursive: true });
-    writeFileSync(f, body);
-  } else if (existsSync(f)) {
-    writeFileSync(f, body);                                                 // strip our block, leave the rest
-  }
-}
+function syncExclude(repo, manifest) { return Object.keys(manifest.attachments || {}).length ? ensureExcluded(repo) : clearExcluded(repo); }
 
 // --- git post-commit --------------------------------------------------------
 // The hook prefers a `sawbuck` on PATH (so it survives a reinstall/upgrade) and
@@ -498,7 +476,7 @@ function wireGit(repo) {
   if (dry) {
     out(dryText([
       `${existed ? 'modify' : 'create'}  ${pc}  (post-commit hook block)`,
-      `exclude ${excludeFile(repo)}  (${RECORD_DIRS.join(', ')})`,
+      `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})`,
       `create  ${manifestPath(repo)}  (attach receipt)`,
     ]));
     return;
@@ -516,7 +494,8 @@ function unwireGit(repo) {
   const pc = gitPath(repo, 'hooks/post-commit');
   const m = readManifest(manifestPath(repo));
   const hasReceipt = !!m.attachments?.git;
-  if (!existsSync(pc) && !hasReceipt) { out('sawbuck: nothing to detach'); return; }
+  // signing with no attach still hides the record, so a repo with no receipt can have a block to take back
+  if (!existsSync(pc) && !hasReceipt) { out(syncExclude(repo, m) ? `sawbuck: removed the record lines from ${excludeFile(repo)}` : 'sawbuck: nothing to detach'); return; }
   if (existsSync(pc)) {
     const stripped = readFileSync(pc, 'utf8').replace(BLOCK_RE, '\n').replace(/\n{3,}/g, '\n\n');
     const created = m.attachments?.git?.pc?.created;
@@ -578,7 +557,7 @@ function wireClaude(repo, opts) {
   if (dry) {
     out(dryText([
       `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
-      user ? null : `exclude ${excludeFile(repo)}  (${RECORD_DIRS.join(', ')}${shared ? '' : ', .claude/settings.local.json'})`,
+      user ? null : `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})`,
       `create  ${user ? userManifestPath() : manifestPath(repo)}  (attach receipt)`,
     ].filter(Boolean)));
     return;

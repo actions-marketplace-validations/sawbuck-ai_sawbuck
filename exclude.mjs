@@ -7,20 +7,26 @@ const sh = (r, ...a) => { try { return execFileSync('git', ['-C', r, ...a], { en
 
 export const RECORD_DIRS = ['.sawbuck/', '.promptwheel/*', '!.promptwheel/packs/', 'events.jsonl', 'annotations.jsonl', 'annotation-reviews.jsonl', 'decision-cards.jsonl', 'LOGBOOK.md', 'JOURNEY.md'];
 
-export function ensureExcluded(r) {
+// everything the block hides, under any attach mode
+export const EXCLUDED = [...RECORD_DIRS, '.claude/settings.local.json'];
+
+// The one writer of the block, in the repository's own exclude file wherever its git dir is (a worktree or
+// submodule keeps it elsewhere). Rewrites to the current set, so a grown set retrofits existing repos; no lines
+// strips it. Returns whether the file changed.
+function writeBlock(r, lines) {
   try {
-    // the repository's own exclude file, wherever its git dir is (a worktree or submodule keeps it elsewhere)
     const rel = sh(r, 'rev-parse', '--git-path', 'info/exclude');
-    if (!rel) return;
+    if (!rel) return false;
     const f = resolve(r, rel);
-    // the record dirs + the logbook's root ledger cache (events.jsonl). Rewrite the block to
-    // the CURRENT set rather than bail on presence, so a grown set retrofits existing repos.
-    const WANT = `# >>> sawbuck >>>\n${[...RECORD_DIRS, '.claude/settings.local.json'].join('\n')}\n# <<< sawbuck <<<\n`;
     const body = existsSync(f) ? readFileSync(f, 'utf8') : '';
     const stripped = body.replace(/# >>> sawbuck >>>[\s\S]*?# <<< sawbuck <<<\n?/g, '');
-    const next = (stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + WANT;
-    if (next === body) return;
+    const block = lines.length ? `# >>> sawbuck >>>\n${lines.join('\n')}\n# <<< sawbuck <<<\n` : '';
+    const next = (block && stripped && !stripped.endsWith('\n') ? stripped + '\n' : stripped) + block;
+    if (next === body) return false;
     mkdirSync(dirname(f), { recursive: true });
     writeFileSync(f, next);
-  } catch {}
+    return true;
+  } catch { return false; }
 }
+export const ensureExcluded = (r) => writeBlock(r, EXCLUDED);
+export const clearExcluded = (r) => writeBlock(r, []);

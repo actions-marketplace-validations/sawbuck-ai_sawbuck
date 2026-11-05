@@ -46,6 +46,7 @@
     "exposure.mjs",
     "agent-block.mjs",
     "exclude.mjs",
+    "repo-state.mjs",
     "contract-cmd.mjs",
     "bins.mjs",
     "contract.mjs",

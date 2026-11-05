@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { scopeChain, recall as recallMem } from '../memory.mjs';
 import { globToRe, mandateHits, mandatesInForce, protectedDirty } from '../contract.mjs';
+import { ensureExcluded } from '../exclude.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
@@ -1219,3 +1220,17 @@ test('a signed repo with a clean tree does not block its own turn: the hook keep
   assert.ok(readFileSync(join(d, '.git/info/exclude'), 'utf8').includes('.claude/settings.local.json'));
 });
 
+test('detach takes back the exclude block in a repo that was never attached', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sawbuck-noattach-'));
+  try {
+    execFileSync('git', ['init', '-q', d]);
+    const xf = join(d, '.git', 'info', 'exclude');
+    const before = readFileSync(xf, 'utf8');
+    ensureExcluded(d);
+    assert.match(readFileSync(xf, 'utf8'), /# >>> sawbuck >>>/);
+    const out = sawbuck(['detach', '.'], d);
+    assert.match(out, /removed the record lines/);
+    assert.equal(readFileSync(xf, 'utf8'), before, 'exact inverse, byte for byte');
+    assert.match(sawbuck(['detach', '.'], d), /nothing to detach/, 'and nothing left the second time');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});

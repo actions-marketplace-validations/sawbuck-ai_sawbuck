@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { repoState } from './repo-state.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
@@ -27,26 +28,19 @@ const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: 
 // --- 1) the outcome record: what the check has done here -------------------
 // results.json holds the all-time catch tally (gamed + regression, never trimmed); activity.jsonl is
 // the recent per-check feed (verified included, capped ~200). We read both and keep each honest.
-const results = readJSON(join(repo, '.sawbuck', 'results.json')) || {};
+const { results, caught: catchesAllTime, state: kind, steer, armed, hasConfig } = repoState(repo);
 const feed = readLines(join(repo, '.sawbuck', 'activity.jsonl')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 0, mandate: 0 };
 for (const e of feed) if (e && tally[e.kind] != null) tally[e.kind]++;
 const seen = feed.length;
-const catchesAllTime = (results.regressions || 0) + (results.gamed || 0) + (results.mandates || 0);
 const latest = results.latest || (feed.length ? feed[feed.length - 1] : null);
 const since = feed.length ? (feed[0].at || '').slice(0, 10) : null;
-// the steer rate, if the reins judge has been scoring turns here (an OFFLINE read of its file; the
+// the steer rate, if the reins judge has been scoring turns here (an OFFLINE read of its file, in repoState; the
 // recent-window average over roughly the last twenty scored turns, as the band and statusline show it)
-const steerRec = readJSON(join(repo, '.sawbuck', 'steer.json'));
-const steer = steerRec && steerRec.scored ? { rate: Math.round(((steerRec.ema != null ? steerRec.ema : steerRec.steeringRate) || 0) * 100), scored: steerRec.scored } : null;
 
-// --- 2) the armed state: what it can measure here (mirror of statusline) ---
+// --- 2) the armed state: what it can measure here (shared with the statusline) ---
 const isGit = !!existsSync(join(repo, '.git'));
-const hasConfig = existsSync(join(repo, 'promptwheel.config.json'));
-const watching = existsSync(join(repo, '.sawbuck', 'state.json'));
-const armed = hasConfig || existsSync(join(repo, 'package.json'));
-const mem = existsSync(join(repo, 'LOGBOOK.md')) || existsSync(join(repo, 'events.jsonl'));
-const state = watching ? 'watching' : armed ? 'ready' : mem ? 'memory' : 'unarmed';
+const state = kind || 'unarmed';
 
 // --- 3) the live debt ledger: best-effort, bounded -------------------------
 // A full-repo HEAD grep + gating; fast on normal repos, can be heavy on a giant one. Bounded so
