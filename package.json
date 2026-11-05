@@ -33,7 +33,7 @@
     "sawbuck": "sawbuck.mjs"
   },
   "dependencies": {
-    "@promptwheel/logbook": "0.9.10",
+    "@promptwheel/logbook": "0.10.0",
     "promptwheel": "0.7.16"
   },
   "files": [
