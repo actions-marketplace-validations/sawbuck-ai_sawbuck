@@ -77,11 +77,10 @@ const normMult = (p, kind) => {
 // The "slider": debt rises on its own, but gently. A disabled test or an undocumented suppression
 // on a touched file always surfaces; a file that is churning (hot / reverted) surfaces any debt;
 // a stable file's routine documented suppressions stay quiet until they pile past DEBT_MIN. Tune
-// with SAWBUCK_DEBT_MIN. This is how debt rises by itself in the per-turn context, no command run.
+// with SAWBUCK_DEBT_MIN. This is how debt shows up in `sawbuck context` with no command of its own.
 const DEBT_MIN = Math.max(1, +(process.env.SAWBUCK_DEBT_MIN) || 6);
 
-// Still-live filter + ambient debt, via the memory adapter (the Memory Contract's `debt`
-// capability), scoped to the touched paths so the per-turn hook stays cheap. A suppression on a path
+// Still-live filter + ambient debt, via the Logbook adapter, scoped to the touched paths so the read stays cheap. A suppression on a path
 // now CLEAN of suppressions is churn, not current risk (the study: AutoMapper carries 4 live
 // `[Ignore]` vs ~158/repo across C# history). The adapter runs Logbook's own detection + gating
 // and returns classified suppressions, so the glue never imports its pattern. null = the

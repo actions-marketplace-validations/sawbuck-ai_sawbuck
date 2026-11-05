@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmS
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { prepareRules, SECRET } from './rules.mjs';
+import { prepareRules, SECRET, forget } from './rules.mjs';
 import { readHistory, typedText } from './history.mjs';
 
 export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['scope', 'autonomy'], Craft: ['voice', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
@@ -117,7 +117,6 @@ export function tally(labels) {
   return { n: total, none, groups, ratings, shares, spokes: total >= MIN_SPOKES };
 }
 
-// What was not said: each spoke we can measure from what the agent did, read against how often you push on it.
 export function shapeSvg(t) {
   const names = t.spokes ? SPOKES : Object.keys(GROUPS);
   const vals = t.spokes ? names.map((s) => t.ratings[s] / 99) : names.map((g) => 0.25 + 0.75 * t.groups[g] / Math.max(1, ...Object.values(t.groups)));
@@ -172,6 +171,7 @@ export function shapeCli(args, { home = homedir() } = {}) {
   }
   if (!t.spokes) out.push('', `  Too few messages for the 11 spokes (${t.n} of ${MIN_SPOKES}), so this shows the 4 groups.`);
   appendFileSync(p.hist, JSON.stringify({ at: new Date().toISOString(), n: t.n, groups: t.groups, shares: t.shares }) + '\n');
+  forget(home, p.input, p.rules, file);   // the sampled messages and their labels were for this one read; the totals above are what stays
   out.push(...notSaid(p));
   out.push('', `  Card: ${p.svg}`);
   if (args.includes('--png')) { const png = pngCard(p.svg); out.push(png ? `  Image to share: ${png}` : '  No image tool here (rsvg-convert or Chrome): open the card in a browser to save an image.'); }

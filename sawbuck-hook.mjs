@@ -6,11 +6,11 @@ import { ensureExcluded } from './exclude.mjs';
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-import { mandateHits, hashOf, protectedDirty, protectedAmong, lockState } from './contract.mjs';
+import { mandateHits, hashOf, protectedAmong, lockState } from './contract.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
 const stop = process.argv.includes('--stop');   // wired as the Claude Code Stop hook: enforce the contract on a gamed turn
@@ -182,8 +182,3 @@ if (total > (st.shownTotal || 0)) {
   st.shownTotal = total;
 }
 saveState();
-
-// Keep the record dirs out of `git status` via .git/info/exclude, so Sawbuck never
-// dirties the worktree, including under `attach --user`, which is global and cannot
-// set this up per-repo at attach time. Idempotent; markers match the CLI's so a
-// per-repo `detach` removes them.

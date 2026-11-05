@@ -37,7 +37,7 @@ const asJson = process.argv.includes('--json');
 // events give fragility + fall-back dates (Logbook's facts). Best-effort.
 const events = memEvents(repo);
 
-// the live suppression ledger via the memory adapter (the Memory Contract's `debt` capability). Each
+// the live suppression ledger via the Logbook adapter. Each
 // item arrives classified (documented/testSkip) and with its line content and blame date (`since`),
 // so this file does not import Logbook's pattern or gating. null = Logbook FAILED
 // (unmeasurable is NOT clean, refuse and exit nonzero); [] = a genuinely clean tree.
