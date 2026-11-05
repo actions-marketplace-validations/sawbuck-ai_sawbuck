@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync } fr
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { prepareRules } from './rules.mjs';
-import { exposure } from './exposure.mjs';
+import { exposure, writtenRules } from './exposure.mjs';
 
 export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['direction', 'scope', 'autonomy'], Craft: ['voice', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
 const SPOKES = Object.values(GROUPS).flat();
@@ -21,7 +21,7 @@ export function prepareShape({ home = homedir() } = {}) {
   for (let i = lines.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [lines[i], lines[j]] = [lines[j], lines[i]]; }
   const pick = lines.slice(0, SAMPLE);
   writeFileSync(p.input, pick.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n', { mode: 0o600 });
-  writeFileSync(p.expo, JSON.stringify(exposure({ root: join(home, '.claude', 'projects') })) + '\n');
+  writeFileSync(p.expo, JSON.stringify({ ...exposure({ root: join(home, '.claude', 'projects') }), written: writtenRules({ home }) }) + '\n');
   return { input: p.input, lines: pick.length, secrets: r.secrets };
 }
 
@@ -41,14 +41,14 @@ export function tally(labels) {
 // What was not said: each spoke we can measure from what the agent did, read against how often you push on it.
 const HIGH_PUSH = 8, HIGH_DOING = 10, HIGH_FAULT = 5;   // a fault counts sooner than plain activity
 const SEEN = {
-  proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code and ran no check within 3 turns' },
-  safety: { fault: true, of: 'working', n: 'risky', says: 'touched something risky' },
-  process: { of: 'working', n: 'shipped', says: 'committed, pushed or published' },
-  voice: { of: 'working', n: 'copy', says: 'wrote docs or copy' },
-  visual: { of: 'working', n: 'ui', says: 'changed the interface' },
-  simplicity: { fault: true, of: 'working', n: 'big', says: 'added 200 lines or more' },
-  naming: { of: 'working', n: 'renames', says: 'renamed something' },
-  autonomy: { of: 'working', n: 'asked', says: 'stopped to ask you' },
+  proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code and ran no check within 3 turns', rule: 'Run the tests before saying a change works.' },
+  safety: { fault: true, of: 'working', n: 'risky', says: 'touched something risky', rule: 'Ask before force pushing, deleting outside temp folders, or touching secrets, workflows or deploy files.' },
+  process: { of: 'working', n: 'shipped', says: 'committed, pushed or published', rule: 'Do not commit or push unless I ask.' },
+  voice: { of: 'working', n: 'copy', says: 'wrote docs or copy', rule: 'Write docs in plain, short sentences.' },
+  visual: { of: 'working', n: 'ui', says: 'changed the interface', rule: 'Show me interface changes before calling them done.' },
+  simplicity: { fault: true, of: 'working', n: 'big', says: 'added 200 lines or more', rule: 'Keep changes small. Ask before adding more than 200 lines.' },
+  naming: { of: 'working', n: 'renames', says: 'renamed something', rule: 'Ask before renaming anything public.' },
+  autonomy: { of: 'working', n: 'asked', says: 'stopped to ask you', rule: 'Keep going on reversible work without asking.' },
 };
 export function patterns(t, c) {
   if (!c || !c.working) return [];
@@ -56,8 +56,9 @@ export function patterns(t, c) {
     const pct = Math.round(100 * (c[m.n] || 0) / Math.max(1, c[m.of]));
     const push = t.shares[s], often = pct >= (m.fault ? HIGH_FAULT : HIGH_DOING), pushed = push >= HIGH_PUSH;
     // a fault you keep raising is a fight; activity you raise is just attention, since committing is not a failure
-    const kind = often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? 'blind spot' : pushed ? 'handled' : 'quiet';
-    return { spoke: s, kind, pct, count: c[m.n] || 0, of: c[m.of], push, says: m.says };
+    const has = !!(c.written && c.written[s]);
+    const kind = often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
+    return { spoke: s, kind, pct, count: c[m.n] || 0, of: c[m.of], push, says: m.says, rule: m.rule, has };
   });
 }
 
@@ -99,9 +100,11 @@ export function shapeCli(args, { home = homedir() } = {}) {
   appendFileSync(p.hist, JSON.stringify({ at: new Date().toISOString(), n: t.n, groups: t.groups, shares: t.shares, ...(c ? { exposure: c } : {}) }) + '\n');
   const fight = found.filter((f) => f.kind === 'fighting it'), blind = found.filter((f) => f.kind === 'blind spot');
   if (fight.length || blind.length) out.push('', '  Patterns to work on:');
-  for (const f of fight) out.push(`    Fighting it: ${title(f.spoke)}. You push on it (${f.push}%), and the agent still ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}). Write the rule.`);
-  for (const f of blind) out.push(`    Not said: ${title(f.spoke)}. The agent ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}), and only ${f.push}% of your pushes touch it. Is that what you want?`);
-  if (found.length) out.push('', '  Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
+  for (const f of fight) out.push(`    Fighting it: ${title(f.spoke)}. You push on it (${f.push}%), and the agent still ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}).`, f.has ? '      You seem to have a written rule on this already, and it is not holding. Make it specific, or protect it in the contract.' : `      Try: ${f.rule}`);
+  for (const f of blind) out.push(`    Not said: ${title(f.spoke)}. The agent ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}), and only ${f.push}% of your pushes touch it. Is that what you want?`, `      Try: ${f.rule}`);
+  const covered = found.filter((f) => f.kind === 'covered');
+  if (covered.length) out.push('', `  Written down already, so left out: ${covered.map((f) => title(f.spoke)).join(', ')}. Matched by keyword, so check they say what you mean.`);
+  if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
   out.push('', `  Card: ${p.svg}`);
   return out.join('\n');
 }

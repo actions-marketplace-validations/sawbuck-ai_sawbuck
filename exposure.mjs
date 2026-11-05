@@ -1,7 +1,7 @@
 // What was not said. The shape records what you pushed on; this records what the agent did, from your transcripts, so a
 // spoke can be read against its opportunity: an agent that often changes code and runs nothing, in history where you
 // rarely ask for proof, is a blind spot. Plain counting of tool calls. No model, nothing leaves this machine.
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -15,10 +15,34 @@ const UI = /\.(css|scss|sass|less|tsx|jsx|vue|svelte|astro|html|svg)$/i;
 const COPY = /\.(md|mdx|txt|rst)$/i;
 const CODE = /\.(m?[jt]sx?|py|go|rs|rb|java|kt|cs|php|c|cc|cpp|h|swift|sh)$/i;
 const BIG = 200;
+const SCRATCH = /(^|\/)(tmp|scratchpad|scratch)\/|^\/tmp\/|\/\.claude\//;   // throwaway work does not need a test run
+const DAYS = 90;   // what to work on now, not what happened last year
+
+// Rules you have already written, by spoke. A plain keyword match on your own files, so it is a hint: it finds that a
+// rule on the subject exists, not that it says the right thing.
+const WRITTEN = {
+  proof: /\b(verify|verified|run the tests?|tests? pass|prove|proof|before claiming|before trusting)\b/i,
+  safety: /\b(secrets?|credentials?|force.?push|destructive|protected paths?|never delete|before deleting)\b/i,
+  simplicity: /\b(simple|simplify|bloat|smallest|minimal|keep it short|overengineer\w*)\b/i,
+  process: /\b(commit|push|publish|release|deploy)\b/i,
+  voice: /\b(em dash\w*|plain (words|language|voice)|tone|wording|ai tells?|voice)\b/i,
+  visual: /\b(design|layout|css|ui|colou?rs?|spacing)\b/i,
+  naming: /\b(naming|names?|rename)\b/i,
+  autonomy: /\b(do not ask|don't ask|ask first|ask before|proceed without|keep going)\b/i,
+};
+export function writtenRules({ home = homedir(), repo = process.cwd() } = {}) {
+  const files = [join(home, '.claude', 'CLAUDE.md'), join(home, '.sawbuck', 'rules.md'), join(repo, 'CLAUDE.md'), join(repo, 'AGENTS.md')];
+  const root = join(home, '.claude', 'projects');
+  try { for (const d of readdirSync(root)) { const m = join(root, d, 'memory'); if (existsSync(m)) for (const f of readdirSync(m)) if (/^feedback.*\.md$/.test(f)) files.push(join(m, f)); } } catch {}
+  let text = '';
+  for (const f of files) { try { text += '\n' + readFileSync(f, 'utf8'); } catch {} }
+  return Object.fromEntries(Object.entries(WRITTEN).map(([s, re]) => [s, re.test(text)]));
+}
 
 function lines(s) { return s ? String(s).split('\n').length : 0; }
 
-export function exposure({ root = join(homedir(), '.claude', 'projects') } = {}) {
+export function exposure({ root = join(homedir(), '.claude', 'projects'), days = DAYS } = {}) {
+  const since = days ? Date.now() - days * 864e5 : 0;
   const WINDOW = 3;   // a check may come a turn or two later: count code as unchecked only if none ran in the next 3 turns
   const c = { turns: 0, working: 0, code: 0, unverified: 0, risky: 0, big: 0, shipped: 0, ui: 0, copy: 0, renames: 0, asked: 0 };
   const seen = new Set();
@@ -41,6 +65,7 @@ export function exposure({ root = join(homedir(), '.claude', 'projects') } = {})
         if (!line.includes('"type":"user"') && !line.includes('"type":"assistant"')) continue;
         let e; try { e = JSON.parse(line); } catch { continue; }
         if (e.isSidechain || e.isMeta) continue;
+        if (since && e.timestamp && Date.parse(e.timestamp) < since) continue;
         if (e.uuid) { if (seen.has(e.uuid)) continue; seen.add(e.uuid); }   // a resumed session copies its history
         if (e.type === 'user') {
           const m = e.message && e.message.content;
@@ -61,7 +86,7 @@ export function exposure({ root = join(homedir(), '.claude', 'projects') } = {})
               if (/\bgit mv\b/.test(cmd)) turn.rename = true;
             } else if (b.name === 'Edit' || b.name === 'Write' || b.name === 'MultiEdit') {
               const p = String(i.file_path || '');
-              if (CODE.test(p)) turn.code++;
+              if (CODE.test(p) && !SCRATCH.test(p)) turn.code++;
               if (UI.test(p)) turn.ui = true;
               if (COPY.test(p)) turn.copy = true;
               if (RISKY_PATH.test(p)) turn.risky = true;
