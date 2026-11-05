@@ -74,11 +74,9 @@ Usage:
                             Customize the contract (promptwheel.config.json), with notes from what your
                             git history shows actually breaks, plus a short contract guide in AGENTS.md
                             (--no-agent-block to skip). Wizard in a terminal, non-interactive in a pipe/CI (or --yes).
-  sawbuck attach [repo]     Enforce the contract on every commit (a git post-commit hook)
-      --claude              instead on every Claude Code turn (project hooks in .claude/settings.local.json)
-      --shared              with --claude, write the tracked .claude/settings.json (team-shared, visible in git)
-      --user                user-level Claude hooks that follow your cwd (attach once, every project)
-      --dry-run             print the exact footprint it would leave, and write nothing
+  sawbuck attach --claude   Check every Claude Code turn in this repo. --dry-run prints the footprint and writes nothing
+                            Also: no flag for a git post-commit hook, --claude --shared for a tracked settings file,
+                            --user for every repo
   sawbuck detach [repo] [--claude | --user] [--all] [--verify] [--purge]
                             Remove it and restore the repo (no flag: whatever is attached here); --verify
                             proves it came back clean; --purge also deletes the record (.sawbuck/)
