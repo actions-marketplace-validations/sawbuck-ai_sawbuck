@@ -1,17 +1,25 @@
 // Your steering shape: what you push on, as 11 spokes in 4 groups. The model labels a sample of your messages; only the
 // totals are kept. Three models agreed on single messages about 70% of the time and on the shape at 0.87 or better, so a
 // single label is never shown. It says what you pushed on, not how good you are. Each run is saved with its date.
+//
+// What is not said: the model also reads a sample of real turns and names habits the agent has that you never push on.
+// Nothing is counted. An earlier version counted with patterns, and reading the turns showed the counts were wrong.
+// Each habit must quote the agent from 3 turns, a plain check confirms the quotes, and the excerpts are deleted after.
+// Tested on one person: on 120 turns two models named the same two habits and differed on the third, so the output
+// calls them leads.
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { prepareRules } from './rules.mjs';
+import { prepareRules, SECRET } from './rules.mjs';
+import { readHistory, typedText } from './history.mjs';
 
 export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['scope', 'autonomy'], Craft: ['voice', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
 const SPOKES = Object.values(GROUPS).flat();
 const MIN_SPOKES = 200;   // below this, spokes are noise: show the 4 groups
 const SAMPLE = 600;
-const paths = (home) => ({ dir: join(home, '.sawbuck'), rules: join(home, '.sawbuck', 'rule-input.txt'), input: join(home, '.sawbuck', 'shape-input.txt'), hist: join(home, '.sawbuck', 'shape-history.jsonl'), svg: join(home, '.sawbuck', 'shape.svg') });
+const TURNS = 120, MIN_TURNS = 20, MIN_CITES = 3;   // turns read (at 60, two reads named different habits; at 120 two models agreed on 2 of 3), fewest worth reading, turns a habit must be quoted from
+const paths = (home) => ({ dir: join(home, '.sawbuck'), rules: join(home, '.sawbuck', 'rule-input.txt'), input: join(home, '.sawbuck', 'shape-input.txt'), hist: join(home, '.sawbuck', 'shape-history.jsonl'), svg: join(home, '.sawbuck', 'shape.svg'), turns: join(home, '.sawbuck', 'shape-turns.txt'), notsaid: join(home, '.sawbuck', 'shape-notsaid.json') });
 const title = (s) => s[0].toUpperCase() + s.slice(1);
 
 export function prepareShape({ home = homedir() } = {}) {
@@ -21,7 +29,69 @@ export function prepareShape({ home = homedir() } = {}) {
   for (let i = lines.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [lines[i], lines[j]] = [lines[j], lines[i]]; }
   const pick = lines.slice(0, SAMPLE);
   writeFileSync(p.input, pick.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n', { mode: 0o600 });
-  return { input: p.input, lines: pick.length, secrets: r.secrets };
+  const turns = sampleTurns({ home });
+  rmSync(p.notsaid, { force: true });
+  if (turns.length >= MIN_TURNS) writeFileSync(p.turns, turns.map((l, i) => `${i + 1}\t${l}`).join('\n') + '\n', { mode: 0o600 }); else rmSync(p.turns, { force: true });
+  return { input: p.input, lines: pick.length, secrets: r.secrets, turns: turns.length >= MIN_TURNS ? turns.length : 0, turnsFile: p.turns };
+}
+
+// One line per past turn from the last 90 days: what you asked, what the agent did, how its reply ended, what you said
+// next. Only sessions with 3 or more typed prompts: a one-prompt session is a script, not a conversation.
+export function sampleTurns({ home = homedir(), n = TURNS, days = 90 } = {}) {
+  const since = Date.now() - days * 864e5, T = [];
+  const cut = (x, k) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, k);
+  const noise = (t) => /^[<[]/.test(t) || t.startsWith('Caveat:') || t.startsWith('This session is being continued');
+  let cur = null, S = [], typed = 0;
+  const close = (next) => { if (cur && cur.tools) S.push({ ...cur, next }); cur = null; };
+  const end = () => { close(''); if (typed >= 3) T.push(...S); S = []; typed = 0; };
+  readHistory(join(home, '.claude', 'projects'), {
+    onSession: end,
+    onEvent: (e) => {
+      if (e.timestamp && Date.parse(e.timestamp) < since) return;
+      if (e.type === 'user') {
+        const t = typedText(e.message);
+        if (t === null || noise(t.trim())) return;   // a tool result or a background notice is not your reply: the turn goes on
+        close(t); typed++; cur = { you: t, did: [], said: '', tools: 0 };
+      } else if (cur && Array.isArray(e.message && e.message.content)) {
+        for (const b of e.message.content) {
+          if (b.type === 'text' && b.text) cur.said = b.text;
+          if (b.type !== 'tool_use') continue;
+          cur.tools++;
+          const i = b.input || {};
+          if (cur.did.length < 8) cur.did.push(b.name === 'Bash' ? `ran: ${cut(i.command, 70)}` : /^(Edit|Write|MultiEdit)$/.test(b.name) ? `edited ${String(i.file_path || '').split('/').slice(-2).join('/')}` : b.name);
+        }
+      }
+    },
+  });
+  for (let i = T.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [T[i], T[j]] = [T[j], T[i]]; }
+  return T.map((t) => `you: ${cut(t.you, 160)}${AGENT}(${t.tools} tool calls): ${t.did.join('; ')} | it ended: ${cut(t.said.slice(-220), 220)}${NEXT}${cut(t.next, 120) || '(session ended)'}`).filter((l) => !SECRET.test(l)).slice(0, n);
+}
+const AGENT = ' | it did ', NEXT = ' | you next: ';
+
+// Keep a habit only if it quotes the agent's side of 3 different turns, word for word. Your own messages do not count
+// as evidence and are never printed. Returns the lines to show, and removes the excerpts either way.
+function notSaid(p) {
+  let turns = null, named = null;
+  try { turns = Object.fromEntries(readFileSync(p.turns, 'utf8').split('\n').filter(Boolean).map((l) => { const i = l.indexOf('\t'); return [l.slice(0, i), l.slice(i + 1)]; })); } catch {}
+  try { const m = readFileSync(p.notsaid, 'utf8').match(/\[[\s\S]*\]/); named = m ? JSON.parse(m[0]) : null; } catch {}
+  rmSync(p.turns, { force: true }); rmSync(p.notsaid, { force: true });
+  if (!turns || !Array.isArray(named)) return [];
+  const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const one = (x, k) => String(x || '').replace(/\s+/g, ' ').trim().slice(0, k);
+  const agentSide = (l) => { const a = l.indexOf(AGENT), b = l.lastIndexOf(NEXT); return a > -1 && b > a ? norm(l.slice(a, b)) : ''; };
+  const out = [];
+  for (const c of named.slice(0, 3)) {
+    const seen = new Set(), quotes = [];
+    for (const t of Array.isArray(c && c.turns) ? c.turns : []) {
+      const q = norm(t && t.quote), l = turns[String(t && t.n)];
+      if (!l || q.length < 12 || seen.has(String(t.n)) || !agentSide(l).includes(q)) continue;
+      seen.add(String(t.n)); quotes.push(one(t.quote, 80));
+    }
+    if (quotes.length < MIN_CITES || !one(c.what, 200)) continue;
+    out.push(`    ${one(c.what, 200)} (${quotes.length} turns)`, ...quotes.slice(0, 3).map((q) => `      "${q}"`), ...(one(c.rule, 200) ? [`      Try: ${one(c.rule, 200)}`] : []));
+  }
+  const n = Object.keys(turns).length;
+  return out.length ? ['', `  Not said, from one read of ${n} past turns. Leads to check, with the agent's own words:`, ...out] : ['', `  Not said: nothing stood out in the ${n} past turns read.`];
 }
 
 export function tally(labels) {
@@ -68,7 +138,7 @@ function pngCard(svg) {
 }
 
 export function shapeCli(args, { home = homedir() } = {}) {
-  if (args.includes('--prepare')) { const r = prepareShape({ home }); return `🐴 ${r.lines} of your messages are ready in ${r.input}${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}.`; }
+  if (args.includes('--prepare')) { const r = prepareShape({ home }); return `🐴 ${r.lines} of your messages are ready in ${r.input}${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}.${r.turns ? `\n🐴 ${r.turns} past turns are ready in ${r.turnsFile}. They are deleted after the check.` : ''}`; }
   const i = args.indexOf('--check');
   if (i === -1) return 'sawbuck shape --prepare | --check <labels.json>';
   const file = args[i + 1];
@@ -89,6 +159,7 @@ export function shapeCli(args, { home = homedir() } = {}) {
   }
   if (!t.spokes) out.push('', `  Too few messages for the 11 spokes (${t.n} of ${MIN_SPOKES}), so this shows the 4 groups.`);
   appendFileSync(p.hist, JSON.stringify({ at: new Date().toISOString(), n: t.n, groups: t.groups, shares: t.shares }) + '\n');
+  out.push(...notSaid(p));
   out.push('', `  Card: ${p.svg}`);
   if (args.includes('--png')) { const png = pngCard(p.svg); out.push(png ? `  Image to share: ${png}` : '  No image tool here (rsvg-convert or Chrome): open the card in a browser to save an image.'); }
   return out.join('\n');
