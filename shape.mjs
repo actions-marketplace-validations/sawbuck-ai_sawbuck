@@ -39,6 +39,7 @@ export function tally(labels) {
 }
 
 // What was not said: each spoke we can measure from what the agent did, read against how often you push on it.
+const MIN_TURNS = 30;   // a pattern needs enough turns behind it: 1 of 3 is not one
 const HIGH_PUSH = 8, HIGH_DOING = 10, HIGH_FAULT = 5;   // a fault counts sooner than plain activity
 const SEEN = {
   proof: { fault: true, of: 'code', n: 'unverified', says: 'changed code and ran no check within 3 turns', rule: 'Run the tests before saying a change works.' },
@@ -57,7 +58,8 @@ export function patterns(t, c) {
     const push = t.shares[s], often = pct >= (m.fault ? HIGH_FAULT : HIGH_DOING), pushed = push >= HIGH_PUSH;
     // a fault you keep raising is a fight; activity you raise is just attention, since committing is not a failure
     const has = !!(c.written && c.written[s]);
-    const kind = often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
+    const enough = c[m.of] >= MIN_TURNS;
+    const kind = !enough ? 'too few' : often && pushed ? (m.fault ? 'fighting it' : 'watched') : often ? (has ? 'covered' : 'blind spot') : pushed ? 'handled' : 'quiet';
     return { spoke: s, kind, pct, count: c[m.n] || 0, of: c[m.of], push, says: m.says, rule: m.rule, has };
   });
 }
@@ -104,6 +106,7 @@ export function shapeCli(args, { home = homedir() } = {}) {
   for (const f of blind) out.push(`    Not said: ${title(f.spoke)}. The agent ${f.says} in ${f.pct}% of turns (${f.count} of ${f.of}), and only ${f.push}% of your pushes touch it. Is that what you want?`, `      Try: ${f.rule}`);
   const covered = found.filter((f) => f.kind === 'covered');
   if (covered.length) out.push('', `  Written down already, so left out: ${covered.map((f) => title(f.spoke)).join(', ')}. Matched by keyword, so check they say what you mean.`);
+  if (found.some((f) => f.kind === 'too few')) out.push('', `  Not enough recent turns to name every pattern yet: each needs ${MIN_TURNS}.`);
   if (found.length) out.push('', '  What the agent did covers your last 90 days, not counting scratch work. Direction, scope, correctness and honesty have no behaviour signal, so they show only what you said.');
   out.push('', `  Card: ${p.svg}`);
   return out.join('\n');
