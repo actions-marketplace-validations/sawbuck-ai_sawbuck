@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock } from './rewrites.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
+import { shapeCli } from './shape.mjs';
 import { ensureExcluded, RECORD_DIRS } from './exclude.mjs';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { basename, join, dirname, resolve } from 'node:path';
@@ -96,6 +97,8 @@ Usage:
   sawbuck contract          Sign this repo: tests, tripwires, protected paths, and the architecture lock (--dry-run to preview)
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
+  sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
+  sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals
   sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
   sawbuck statusline        One-line segment for your status line (🐴 watching | N caught | steer %)
 
@@ -358,6 +361,7 @@ switch (cmd) {
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'where': { whereAttached(); break; }
   case 'rules': { out(rulesCli(rest)); break; }
+  case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.

@@ -41,6 +41,7 @@
     "rewrites.mjs",
     "steers.mjs",
     "rules.mjs",
+    "shape.mjs",
     "agent-block.mjs",
     "exclude.mjs",
     "contract-cmd.mjs",
