@@ -32,8 +32,7 @@ const node = (f, a) => { try { return execFileSync(process.execPath, [f, ...a], 
 
 let cfg = {};
 try { cfg = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')); } catch {}
-const everyTurns = cfg.dispatch?.everyTurns ?? 5;
-const onlyOnCatch = cfg.dispatch?.onlyOnCatch ?? false;
+const EVERY_TURNS = 5;
 
 const stDir = join(repo, '.sawbuck');
 const stPath = join(stDir, 'state.json');
@@ -71,8 +70,22 @@ st.lastSha = head || st.lastSha;
 st.turns += 1;
 
 // 2) the record of what the check has charted (read above, after any re-run)
-const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) : 0;
+const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) + (rec.mandates || 0) : 0;
 const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
+// the budget is per prompt: prompt_id when the harness sends one, else the prompt's own timestamp (written by
+// `sawbuck turn --hook`), never a constant that would spend it for good
+const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
+// Send the turn back, at most enforce.maxBlocks times per prompt, then let it end with a warning: it can never
+// loop, because the harness's own block cap resets on every tool call.
+const sendBack = (idKey, countKey, reason, stillOpen) => {
+  const max = +(cfg.enforce?.maxBlocks) || 3;
+  if (st[idKey] !== promptId) { st[idKey] = promptId; st[countKey] = 0; }
+  const spent = (st[countKey] || 0) >= max;
+  if (!spent) st[countKey] = (st[countKey] || 0) + 1;
+  saveState();
+  process.stdout.write(JSON.stringify(spent ? { systemMessage: `Sawbuck stopped blocking after ${max} tries: ${stillOpen}` } : { decision: 'block', reason }));
+  process.exit(0);
+};
 
 // 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
 // tree on every stop, not only on commits, because an agent usually ends a turn with uncommitted
@@ -113,17 +126,12 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   } else if (st.lastViolation) { delete st.lastViolation; }
   saveState();
   if (hits.length) {
-    const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
-    // the budget is per prompt: prompt_id when the harness sends one, else the prompt's own timestamp
-    // (written by `sawbuck turn --hook`), never a constant that would spend the budget for good
-    const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
-    if (st.mandatePromptId !== promptId) { st.mandatePromptId = promptId; st.mandateBlocks = 0; }
     const desc = hits.map((h) => `"${h.name}"${h.reason ? ' (' + h.reason + ')' : ''}: ${h.files.join(', ')}${h.committed ? ' [this rule is in the committed contract; editing promptwheel.config.json in the working tree does not lift it]' : ''}`).join('; ');
     const spared = leftAlone.length ? ` Edits that were already there before this prompt were left out of this check and must stay as they are: ${leftAlone.join(', ')}.` : '';
     const before = (st.lastViolation && st.lastViolation.before) || {};
     const restore = Object.keys(before).length ? ' To put back what you overwrote: ' + Object.entries(before).map(([f, h]) => `restore ${f} to the content it had when the prompt began: git cat-file -p ${h} > ${f}`).join('; ') + '.' : '';
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
-    const accept = committedHit ? ' To accept this change on purpose, change the mandate in the contract or revert the path.' : '';
+    const accept = committedHit ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach --claude again, which upgrades the hooks.)';
     // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
     // a block must not replace a gamed verdict that is still standing.
@@ -135,15 +143,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
       writeRec(r);
       logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
     }
-    if ((st.mandateBlocks || 0) < MAX_BLOCKS) {
-      st.mandateBlocks = (st.mandateBlocks || 0) + 1;
-      saveState();
-      process.stdout.write(JSON.stringify({ decision: 'block', reason: `Sawbuck: a mandate in the contract was violated, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${accept}${upgrade}` }));
-      process.exit(0);
-    }
-    saveState();
-    process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck stopped blocking after ${MAX_BLOCKS} tries: protected paths are still changed (${desc}).` }));
-    process.exit(0);
+    sendBack('mandatePromptId', 'mandateBlocks', `Sawbuck: a protected path in the contract was touched, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${accept}${upgrade}`, `protected paths are still changed (${desc}).`);
   }
 }
 
@@ -153,21 +153,9 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
 // bound a tool-using agent on its own. Opt out with SAWBUCK_NO_ENFORCE=1 (falls back to a flag).
 const gamedThisTurn = rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.sha === (head || '').slice(0, 8);
 if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
-  const MAX_BLOCKS = +(cfg.enforce?.maxBlocks) || 3;
-  const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
-  if (st.blockPromptId !== promptId) { st.blockPromptId = promptId; st.blockCount = 0; }
   st.shownTotal = total;
   const where = rec.latest.file;
-  if ((st.blockCount || 0) < MAX_BLOCKS) {
-    st.blockCount = (st.blockCount || 0) + 1;
-    saveState();
-    const reason = `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the metric passes on its own, then finish.`;
-    process.stdout.write(JSON.stringify({ decision: 'block', reason }));
-    process.exit(0);
-  }
-  saveState();   // budget spent: let the turn end, but warn loudly so it never loops forever
-  process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck stopped blocking after ${MAX_BLOCKS} tries: the win on ${where} is still gamed and needs a real source fix.` }));
-  process.exit(0);
+  sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the metric passes on its own, then finish.`, `the win on ${where} is still gamed and needs a real source fix.`);
 }
 
 // 3b) THE LOCK AT TURN LEVEL: tell the person the moment a turn changes the repo's structure or its resolved
@@ -191,8 +179,8 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
 
 // 4) otherwise, surface a catch on a fresh catch or on cadence (a flag; never blocks)
 const freshCatch = total > (st.shownTotal || 0);
-const cadenceHit = everyTurns > 0 && st.turns % everyTurns === 0;
-if (freshCatch || (cadenceHit && !onlyOnCatch)) {
+const cadenceHit = st.turns % EVERY_TURNS === 0;
+if (freshCatch || cadenceHit) {
   const out = node(join(HERE, 'dispatch.mjs'), ['--repo', repo]);
   if (out.trim()) process.stdout.write(out.endsWith('\n') ? out : out + '\n');
   st.shownTotal = total;

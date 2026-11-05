@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { scopeChain, recall as recallMem } from '../memory.mjs';
 import { globToRe, mandateHits, mandatesInForce, protectedDirty } from '../contract.mjs';
+import { ensureExcluded } from '../exclude.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
@@ -69,7 +70,7 @@ test('init --yes writes a contract and investigates git history (evidence-backed
     assert.match(o, /agent guide/, 'reports writing the agent guide');
     const agents = readFileSync(join(d, 'AGENTS.md'), 'utf8');
     assert.match(agents, /<!-- sawbuck:contract -->/, 'wrote the sentinel-delimited contract block');
-    assert.match(agents, /run `sawbuck check`/, 'the block orients the agent');
+    assert.match(agents, /run `(npx -y )?sawbuck check`/, 'the block orients the agent');
     assert.ok(!/promptwheel:gate/.test(agents), 'suppressed the promptwheel gate block (no double block)');
     assert.throws(() => sawbuck(['init', '--yes'], d), 'refuses to clobber an existing contract without --force');
   } finally { rmSync(d, { recursive: true, force: true }); }
@@ -513,7 +514,7 @@ test('frame resolves mandates through extends and turn joins frame + history in 
     // no mandates -> frame is silent, turn is silent on a clean trail
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [] }));
     assert.equal(sawbuck(['frame', '.'], d).trim(), '');
-    assert.match(sawbuck(['frame', '--speak', '.'], d), /no mandates/);
+    assert.match(sawbuck(['frame', '--speak', '.'], d), /no protected paths/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -802,7 +803,7 @@ test('a commit the person makes between turns is theirs, but unrelated work does
     assert.equal(state().turnBaseline.sha, base, 'the baseline does not advance past the flagged commit while HEAD carries its content');
     const r = JSON.parse(hook({ prompt_id: 'p2' }));
     assert.equal(r.decision, 'block');
-    assert.match(r.reason, /To accept this change on purpose, change the mandate in the contract or revert the path/);
+    assert.match(r.reason, /To accept this change on purpose, change the rule in the contract or revert the path/);
     // the person reverts the protected path and commits: that commit is theirs and the wall comes down
     g('checkout', base, '--', 'src/auth/login.js'); g('commit', '-q', '-am', 'person: revert the auth change');
     const head = execFileSync('git', ['-C', d, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -1030,7 +1031,7 @@ test('a commit landed between turns does not walk the agent\'s committed protect
     assert.equal(state().turnBaseline.sha, base, 'the pin holds: HEAD still carries the flagged content');
     const r = JSON.parse(hook({ prompt_id: 'p2' }));
     assert.equal(r.decision, 'block', 'the committed protected change is still charged to the agent');
-    assert.match(r.reason, /To accept this change on purpose, change the mandate in the contract or revert the path/);
+    assert.match(r.reason, /To accept this change on purpose, change the rule in the contract or revert the path/);
     // the person reverts the path and commits: the pin is released and a clean turn ends
     g('checkout', base, '--', 'src/auth/login.js'); g('commit', '-q', '-am', 'person: revert the auth change');
     const head = execFileSync('git', ['-C', d, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -1219,3 +1220,17 @@ test('a signed repo with a clean tree does not block its own turn: the hook keep
   assert.ok(readFileSync(join(d, '.git/info/exclude'), 'utf8').includes('.claude/settings.local.json'));
 });
 
+test('detach takes back the exclude block in a repo that was never attached', () => {
+  const d = mkdtempSync(join(tmpdir(), 'sawbuck-noattach-'));
+  try {
+    execFileSync('git', ['init', '-q', d]);
+    const xf = join(d, '.git', 'info', 'exclude');
+    const before = readFileSync(xf, 'utf8');
+    ensureExcluded(d);
+    assert.match(readFileSync(xf, 'utf8'), /# >>> sawbuck >>>/);
+    const out = sawbuck(['detach', '.'], d);
+    assert.match(out, /removed the record lines/);
+    assert.equal(readFileSync(xf, 'utf8'), before, 'exact inverse, byte for byte');
+    assert.match(sawbuck(['detach', '.'], d), /nothing to detach/, 'and nothing left the second time');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
