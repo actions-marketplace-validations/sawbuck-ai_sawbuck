@@ -41,6 +41,7 @@
     "rewrites.mjs",
     "steers.mjs",
     "rules.mjs",
+    "history.mjs",
     "shape.mjs",
     "exposure.mjs",
     "agent-block.mjs",
