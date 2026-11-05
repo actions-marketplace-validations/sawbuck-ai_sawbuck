@@ -1,6 +1,6 @@
 {
   "name": "sawbuck",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "description": "Sign your agent to a contract: a deterministic, zero-LLM check re-proves each win from the agent's source edits alone, so a test that went green by editing the test, grader, or config is sent back. For Claude Code, with Codex support in beta.",
   "type": "module",
   "license": "Apache-2.0",

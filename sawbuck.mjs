@@ -582,6 +582,21 @@ function wireClaude(repo, opts) {
   put('Stop', chk);
   mkdirSync(dir, { recursive: true });
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  // attach often runs inside a turn (saying yes to the offer), and that turn's Stop hook then has no baseline, so the
+  // files signing just wrote would read as the agent's violations. What is here now is the baseline; anything after it counts.
+  if (!user && existsSync(join(repo, 'promptwheel.config.json'))) {
+    try {
+      ensureExcluded(repo);
+      const stPath = join(repo, '.sawbuck', 'state.json');
+      let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+      if (!st.turnBaseline) {
+        let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+        st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }) };
+        st.lastPromptAt = new Date().toISOString();
+        mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
+      }
+    } catch {}
+  }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
   const mp = user ? userManifestPath() : manifestPath(repo);
   const m = readManifest(mp);
