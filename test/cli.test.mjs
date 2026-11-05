@@ -69,7 +69,7 @@ test('init --yes writes a contract and investigates git history (evidence-backed
     assert.match(o, /agent guide/, 'reports writing the agent guide');
     const agents = readFileSync(join(d, 'AGENTS.md'), 'utf8');
     assert.match(agents, /<!-- sawbuck:contract -->/, 'wrote the sentinel-delimited contract block');
-    assert.match(agents, /run `sawbuck check`/, 'the block orients the agent');
+    assert.match(agents, /run `(npx -y )?sawbuck check`/, 'the block orients the agent');
     assert.ok(!/promptwheel:gate/.test(agents), 'suppressed the promptwheel gate block (no double block)');
     assert.throws(() => sawbuck(['init', '--yes'], d), 'refuses to clobber an existing contract without --force');
   } finally { rmSync(d, { recursive: true, force: true }); }

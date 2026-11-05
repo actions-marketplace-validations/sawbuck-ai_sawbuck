@@ -555,8 +555,14 @@ function wireClaude(repo, opts) {
   const fileExisted = existsSync(f);
   let cfg = {};
   if (fileExisted) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it. Add the hooks by hand.`); } }
-  const ctx = user ? `${nodeCmd()} ${JSON.stringify(SELF)} turn --hook` : `${nodeCmd()} ${JSON.stringify(SELF)} turn --hook ${JSON.stringify(repo)}`;
-  const chk = user ? `${nodeCmd()} ${JSON.stringify(SELF)} __hook --by claude --stop` : `${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${JSON.stringify(repo)} --by claude --stop`;
+  // run through npx, the installed path lives in a cache that can be cleared, and a missing hook fails quietly and
+  // leaves the wall off: fall back to fetching the same version
+  const run = (args) => {
+    const direct = `${nodeCmd()} ${JSON.stringify(SELF)} ${args}`;
+    return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else npx -y sawbuck@${version} ${args}; fi` : direct;
+  };
+  const ctx = run(user ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
+  const chk = run(user ? '__hook --by claude --stop' : `__hook --repo ${JSON.stringify(repo)} --by claude --stop`);
   // attached already? "already attached" only when every hook of THIS version is present; an older
   // attachment (say, without the SessionStart[compact] hook) is upgraded in place, never left stale.
   let upgrading = false;
