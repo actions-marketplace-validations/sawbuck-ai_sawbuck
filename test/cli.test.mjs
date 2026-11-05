@@ -162,10 +162,10 @@ test('attach preserves a pre-existing post-commit hook and detach restores it', 
     writeFileSync(pc, '#!/bin/sh\necho mine\n');
     sawbuck(['attach', '--git', '.'], d);
     assert.match(readFileSync(pc, 'utf8'), /echo mine/, 'theirs kept');
-    assert.match(readFileSync(pc, 'utf8'), /# >>> sawbuck >>>/, 'our block is appended');
+    assert.match(readFileSync(pc, 'utf8'), /^#!\/bin\/sh\n# >>> sawbuck >>>/, 'our block goes in right after the shebang line');
     sawbuck(['detach', '.'], d);
     assert.ok(existsSync(pc), 'their hook is NOT deleted (we did not create it)');
-    assert.equal(readFileSync(pc, 'utf8').replace(/\n+$/, '\n'), '#!/bin/sh\necho mine\n', 'restored to theirs');
+    assert.equal(readFileSync(pc, 'utf8'), '#!/bin/sh\necho mine\n', 'restored to theirs, byte for byte');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -189,9 +189,12 @@ test('statusline reflects the profile (memory / ready / watching / caught)', () 
     // checkable (a contract, or just a test command) but not wired in yet: ready
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [{ name: 'x', cmd: 'true', extract: 'exit', direction: 'pass', guard: true }] }));
     assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · ready/);
-    // wired in (attached): watching
+    // a record left on disk is not wiring: still ready
     mkdirSync(join(d, '.sawbuck'), { recursive: true });
     writeFileSync(join(d, '.sawbuck', 'state.json'), JSON.stringify({ lastSha: '', turns: 1 }));
+    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · ready/);
+    // wired in (attached): watching
+    sawbuck(['attach', '.'], d);
     assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · watching/);
     // catches recorded: N caught
     writeFileSync(join(d, '.sawbuck', 'results.json'), JSON.stringify({ regressions: 1, gamed: 1, mandates: 1 }));

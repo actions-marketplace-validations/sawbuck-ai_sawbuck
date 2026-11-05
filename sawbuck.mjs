@@ -4,7 +4,8 @@
 // repo never imports Sawbuck. Rides two engines: promptwheel (the check) + @promptwheel/logbook.
 //
 // attach writes a receipt to .git/sawbuck/attach.json recording every file it created or modified. detach reads it and
-// reverses exactly that; `detach --verify` proves the wiring is gone and names what is left; `doctor` runs what each hook runs.
+// reverses exactly that, and still takes our hooks out when the receipt is lost; `detach --verify` proves the wiring is
+// gone and names what is left; `doctor` runs what each hook runs.
 
 import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
@@ -13,8 +14,8 @@ import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
 import { ensureExcluded, clearExcluded, EXCLUDED, RECORD_DIRS } from './exclude.mjs';
-import { repoState } from './repo-state.mjs';
-import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, unlinkSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
+import { repoState, hooksIn, OURS, S_START } from './repo-state.mjs';
+import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, rmdirSync, rmSync, readdirSync } from 'node:fs';
 import { basename, join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -26,7 +27,7 @@ const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
 // A commit message is not a person: an agent can write a Sawbuck-Allow trailer, so no sawbuck path honors one
-// (the Stop hook does the same through reflect). `--allow` is the declared override.
+// (the Stop hook and the git hook do the same through reflect). `--allow` is the declared override.
 function gateReport(repo, a) {
   let o = '', err = '', code = 0;
   try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' }, timeout: +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 120000 }); }
@@ -58,10 +59,8 @@ function detectedTests(repo) {
 }
 // is the metric live (actually ran), or inert (never ran in isolation)?
 const metricLive = (m) => !!m && !m.inert && m.status !== 'unmeasurable' && m.before != null;
-const S_START = '# >>> sawbuck >>>';
 const S_END = '# <<< sawbuck <<<';
-const BLOCK_RE = new RegExp(`\\n?${S_START}[\\s\\S]*?${S_END}\\n?`, 'g');
-const OURS = /sawbuck\.mjs|npx -y sawbuck@/;   // a hook of ours: the baked path, or the portable form --shared writes
+const BLOCK_RE = new RegExp(`${S_START}[\\s\\S]*?${S_END}\\n?`, 'g');   // exactly what attach --git puts in, so taking it out leaves the bytes that were there
 // the record/state dirs the engines write into the worktree; excluded locally so
 // attach never dirties `git status`.
 // The record Sawbuck keeps on disk but must never let dirty git status: the engine records
@@ -89,19 +88,21 @@ Usage:
                             commit, or the range you name). Zero-config, no attach, no hook. The
                             fastest way to see it work. Every promptwheel run flag passes through.
                             Exit 0 verified · 1 regression · 2 gamed · 3 inconclusive · 64 could not run
+                            (--working with nothing uncommitted is 64 too)
   sawbuck init [--yes] [--wizard] [--no-investigate] [--no-agent-block] [--force]
                             Write promptwheel.config.json: your detected tests and the tripwires, with
                             notes from what your git history shows actually breaks, plus a short guide in
                             AGENTS.md (--no-agent-block to skip). Wizard in a terminal, non-interactive in
                             a pipe/CI (or --yes). An existing config needs --force.
   sawbuck attach [repo] [--user | --shared | --git] [--dry-run]
-                            Check every Claude Code turn in this repo. --user: every repo. --shared: a
-                            tracked settings file a team commits. --git: a post-commit hook, for any other
-                            agent or none. --dry-run prints every file it would write
+                            Check every Claude Code turn in this repo. --user: every repo that has a
+                            promptwheel.config.json. --shared: a tracked settings file a team commits.
+                            --git: a post-commit hook, for any other agent or none (commits in a linked
+                            worktree are not checked). --dry-run prints every file it would write
   sawbuck detach [repo] [--user] [--all] [--verify] [--purge] [--dry-run]
-                            Remove the hooks (no flag: whatever is attached here; --all: every repo). The
+                            Remove the hooks (no flag: whatever is wired here; --all: every repo). The
                             record stays, kept out of git status; --purge deletes it. --verify proves the
-                            wiring is gone and names what is left
+                            wiring is gone and names what is left. --dry-run lists what would go
   sawbuck status [repo]     The inventory: caught over time + debt accruing now + whether it is armed. --json
                             --log [-n N] for the recent checks, newest first
   sawbuck debt [repo] [--since REF] [--fail-on undocumented|test|any|N]
@@ -109,8 +110,8 @@ Usage:
                             shows only what a branch adds; --fail-on exits 1 when that debt (or, without
                             --since, any live debt of that kind) is there (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
-  sawbuck doctor [repo]     Run what each hook runs (project and user level) and say if it still works.
-                            --all lists every repo it is attached to and checks each
+  sawbuck doctor [repo]     Run what each hook runs (project and user level) and say if it still works,
+                            is incomplete, or is gone. --all lists every repo it is attached to and checks each
   sawbuck contract [--dry-run] [--full] [--strict]
                             Give this repo its rules: protected paths, the written rule, and your detected
                             tests when there is no config yet (--dry-run to preview). --full adds supply-chain
@@ -138,6 +139,11 @@ const repoRoot = () => gitTop(repoArg()) || repoArg();
 function gitPath(repo, rel) { try { return resolve(repo, execFileSync('git', ['-C', repo, 'rev-parse', '--git-path', rel], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch { return join(repo, '.git', rel); } }
 function gitDir(repo) { try { return resolve(repo, execFileSync('git', ['-C', repo, 'rev-parse', '--git-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch { return join(repo, '.git'); } }
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
+// `detach --dry-run` walks the same path as the real detach and lists what it would touch, so the two cannot drift.
+// What a dry run "removed" reads as gone for the rest of the walk, so the steps that follow decide as they would for real.
+const planned = { lines: new Map(), gone: new Set(), receipts: new Map(), registry: null };
+const there = (p) => existsSync(p) && !planned.gone.has(p);
+const say = (s) => { if (!dry) out(s); };
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
@@ -157,14 +163,23 @@ if (rest.includes('--help') || rest.includes('-h')) {
   for (const l of help.split('\n')) { const m = l.match(/^  sawbuck (\S+)/); if (m) cur = m[1]; else if (!/^ {20,}\S/.test(l)) cur = null; if (cur === cmd) own.push(l); }
   if (own.length || ['rank', 'frame', 'turn', '__hook'].includes(cmd)) { out(own.length ? `sawbuck ${version}\n\n${own.join('\n')}` : help); process.exit(0); }
 }
-// a flag contract does not know is an error, never a silent no-op
-if (cmd === 'contract') { const bad = rest.filter((a) => a.startsWith('-') && !['--dry-run', '--full', '--strict'].includes(a)); if (bad.length) usage(`unknown flag ${bad.join(' ')} for contract (it takes --dry-run, --full, --strict)`); }
+// a flag a command does not know is an error, never a silent no-op. `check` is not here: it passes its flags to the
+// engine, which refuses the ones it does not know. --claude is what older installs pass: taken, not listed.
+const KNOWN = {
+  contract: ['--dry-run', '--full', '--strict'],
+  init: ['--yes', '-y', '--wizard', '--no-investigate', '--no-agent-block', '--force', '--preset'],
+  attach: ['--user', '--shared', '--git', '--dry-run', '--claude'],
+  detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude'],
+  doctor: ['--all'],
+  status: ['--json', '--log', '-n'],
+};
+if (KNOWN[cmd]) { const bad = rest.filter((a) => a.startsWith('-') && !KNOWN[cmd].includes(a)); if (bad.length) usage(`unknown flag ${bad.join(' ')} for ${cmd} (it takes ${KNOWN[cmd].filter((f) => f !== '--claude').join(', ')})`); }
 
 switch (cmd) {
   case 'contract': {
     const top = gitTop(repoArg());
     if (!top) usage(`${repoArg()} is not a git repository (run it inside your project)`);
-    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => ['--dry-run', '--full', '--strict'].includes(a))], { stdio: 'inherit' }); }
+    try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => KNOWN.contract.includes(a))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
   }
@@ -193,7 +208,7 @@ switch (cmd) {
     for (let i = 0; i < rest.length; i++) {
       const a = rest[i];
       if (a === '--json') { json = true; continue; }
-      if (VALUE_FLAGS.has(a)) { const v = rest[++i]; if (v == null) die(`${a} needs a value`); if (a === '--base') base = v; else if (a === '--head') head = v; else pass.push(a, v); continue; }
+      if (VALUE_FLAGS.has(a)) { const v = rest[++i]; if (v == null) usage(`${a} needs a value`); if (a === '--base') base = v; else if (a === '--head') head = v; else pass.push(a, v); continue; }
       if (a.startsWith('--')) { pass.push(a); continue; }
       pos.push(a);
     }
@@ -204,7 +219,10 @@ switch (cmd) {
     // 64 (EX_USAGE) for every "could not run" below, never a verdict code: a script or CI must not read it as gamed (2).
     if (!g('rev-parse', '--git-dir')) { out(`🐴 sawbuck: ${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`); process.exit(64); }
     if (!g('rev-parse', '--verify', 'HEAD')) { out('🐴 sawbuck: no commit yet. Make one, then `sawbuck check` verifies your next change against it.'); process.exit(64); }
-    const dirty = !base && !head && g('status', '--porcelain').length > 0;
+    const uncommitted = g('status', '--porcelain').length > 0;
+    const dirty = !base && !head && uncommitted;
+    // --working on a clean tree would read the tree against the commit it already is, and call that held
+    if (pass.includes('--working') && !uncommitted) { out('🐴 sawbuck: nothing uncommitted to check, the working tree is clean. `sawbuck check` verifies the last commit.'); process.exit(64); }
     // nothing to verify yet: a clean tree with no previous commit to diff against (a fresh repo). Say so
     // plainly instead of the generic "could not run" below, so the first run is not a dead end.
     if (!dirty && !base && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
@@ -225,7 +243,7 @@ switch (cmd) {
       out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
       if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('🐴 note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
     }
-    else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a rule in the contract was broken, however green the rest is.');
+    else if (rep.verdict === 'fail' && (rep.mandates || []).length) out('🐴 ✗ sent back: a protected path changed, however green the rest is.');
     else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
     else out(`🐴 ≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
@@ -336,24 +354,27 @@ switch (cmd) {
   }
   case 'detach': {
     const purge = flags.has('--purge');
-    if (flags.has('--all')) { if (dry) { out(dryText(regRead().repos.map((x) => `detach  ${x.mode.padEnd(14)} ${x.repo}`), 'remove')); break; } detachAll(purge); break; }
-    const repo = repoRoot();
-    if (dry) { out(dryText(footprint(repo).map((it) => `remove  ${it.state.padEnd(22)} ${it.what}`), 'remove')); break; }
-    if (flags.has('--user')) unwireClaude(repo, { user: true });
-    else if (flags.has('--claude')) unwireClaude(repo, {});
+    if (flags.has('--all')) detachAll(purge);
     else {
-      // no flag: reverse whatever this repo's receipt says is attached, older git hooks included,
-      // so a bare `detach` is always the inverse of the `attach` you ran.
-      const a = readManifest(manifestPath(repo)).attachments || {};
-      const hasClaude = !!(a.claude || a['claude-shared']);
-      if (hasClaude) unwireClaude(repo, {});
-      if (a.git || !hasClaude) unwireGit(repo);
+      const repo = repoRoot();
+      if (flags.has('--user')) unwireClaude(repo, { user: true });
+      else if (flags.has('--claude')) unwireClaude(repo, {});
+      else {
+        // no flag: take out whatever is wired in this repo, older git hooks included. The receipt says what attach
+        // wrote; our hooks in the project settings or the post-commit hook count without one, so a lost receipt or a
+        // teammate's clone of a --shared repo is not left wired.
+        const a = readManifest(manifestPath(repo)).attachments || {};
+        const hasClaude = !!(a.claude || a['claude-shared']) || [false, true].some((shared) => hooksIn(claudeFile(repo, { shared }).f));
+        if (hasClaude) unwireClaude(repo, {});
+        if (a.git || hasBlock(repo) || !hasClaude) unwireGit(repo);
+      }
+      if (purge) purgeRecord(repo);
+      syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
+      const left = recordLeft(repo);
+      if (left.length) say(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
+      if (flags.has('--verify') && !dry) verifyClean(repo);
     }
-    if (purge) purgeRecord(repo);
-    syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
-    const left = recordLeft(repo);
-    if (left.length) out(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
-    if (flags.has('--verify')) verifyClean(repo);
+    if (dry) out(dryText([...planned.lines.values()], 'remove'));
     break;
   }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
@@ -453,34 +474,44 @@ function verifyAttach(repo) {
 // --- the attach receipt (out of the worktree, inside .git) ------------------
 function manifestPath(repo) { return join(gitDir(repo), 'sawbuck', 'attach.json'); }
 function userManifestPath() { return join(homedir(), '.sawbuck', 'user-attach.json'); }
-function readManifest(p) { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return { version: 1, attachments: {} }; } }
+function readManifest(p) { if (planned.receipts.has(p)) return planned.receipts.get(p); try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return { version: 1, attachments: {} }; } }
 function writeManifest(p, m) {
-  if (!Object.keys(m.attachments || {}).length) { delFile(p); rmIfEmptyDir(dirname(p)); return; }
-  mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(m, null, 2) + '\n');
+  if (dry) planned.receipts.set(p, m);
+  if (!Object.keys(m.attachments || {}).length) { dropFile(p, 'the attach receipt'); rmIfEmptyDir(dirname(p)); return; }
+  putFile(p, JSON.stringify(m, null, 2) + '\n', 'the attach receipt');
 }
 
-function delFile(p) { try { if (existsSync(p)) unlinkSync(p); } catch {} }
-function rmIfEmptyDir(d) { try { if (existsSync(d) && readdirSync(d).length === 0) rmdirSync(d); } catch {} }
-
+// Every write and removal on the detach path goes through these two: under --dry-run each is listed instead of done.
+function putFile(f, text, what) {
+  if (dry) { planned.lines.set(f, `modify  ${f}  (${what})`); return; }
+  mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(f, text);
+}
+function dropFile(p, what) {
+  if (!there(p)) return;
+  if (dry) { planned.lines.set(p, `delete  ${p}  (${what})`); planned.gone.add(p); return; }
+  try { rmSync(p, { recursive: true, force: true }); } catch {}
+}
+function rmIfEmptyDir(d) { if (dry) return; try { if (existsSync(d) && readdirSync(d).length === 0) rmdirSync(d); } catch {} }
 // --- .git/info/exclude: keep the worktree clean without touching .gitignore --
 // Any attachment keeps the block, the last one out takes it. Returns whether the file changed.
 function excludeFile(repo) { return gitPath(repo, 'info/exclude'); }
 // The lines stay while the record they hide is still on disk: clearing them would put .sawbuck/ in git status and a
 // signed repo would fail its own hooks-frozen rule over Sawbuck's record. --purge deletes the record, then the lines.
 function syncExclude(repo, manifest) {
-  if (Object.keys(manifest.attachments || {}).length) return ensureExcluded(repo);
-  return hiddenLeft(repo).length ? false : clearExcluded(repo);
+  const changed = Object.keys(manifest.attachments || {}).length ? ensureExcluded(repo, dry) : hiddenLeft(repo).length ? false : clearExcluded(repo, dry);
+  if (dry && changed) planned.lines.set(excludeFile(repo), `modify  ${excludeFile(repo)}  (the lines that keep the record out of git status)`);
+  return changed;
 }
 // the record paths still on disk and not tracked (a committed LOGBOOK.md is the person's file)
 function recordLeft(repo) {
   const tracked = (p) => { try { return !!execFileSync('git', ['-C', repo, 'ls-files', '--', p], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return false; } };
-  return ['.sawbuck/', '.promptwheel/outcomes.jsonl', 'events.jsonl', 'annotations.jsonl', 'LOGBOOK.md', 'JOURNEY.md'].filter((p) => existsSync(join(repo, p)) && !tracked(p));
+  return ['.sawbuck/', '.promptwheel/outcomes.jsonl', 'events.jsonl', 'annotations.jsonl', 'LOGBOOK.md', 'JOURNEY.md'].filter((p) => there(join(repo, p)) && !tracked(p));
 }
 // what the block hides that is still there: the record, and a settings.local.json the person keeps
 function hiddenLeft(repo) {
   const local = join(repo, '.claude', 'settings.local.json');
-  let own = false; try { own = existsSync(local) && !execFileSync('git', ['-C', repo, 'ls-files', '--', '.claude/settings.local.json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+  let own = false; try { own = there(local) && !execFileSync('git', ['-C', repo, 'ls-files', '--', '.claude/settings.local.json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
   return [...recordLeft(repo), ...(own ? ['.claude/settings.local.json'] : [])];
 }
 
@@ -490,49 +521,74 @@ function hiddenLeft(repo) {
 function hookBlock(repo) {
   const r = JSON.stringify(repo);
   // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check shells out to git and would
-  // inherit them, operate on the wrong repo, and silently catch nothing. Clear them first.
-  return `${S_START}\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else npx -y sawbuck@${version} __hook --repo ${r}; fi || true\n${S_END}\n`;
+  // inherit them, operate on the wrong repo, and silently catch nothing. Clear them first, in a subshell: the block
+  // sits above the person's own hook lines, and those keep what git gave them.
+  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else npx -y sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
+}
+// The first commit after attach is checked only if there is a commit to check it from: HEAD as it stands now.
+// A baseline other hooks are keeping (Claude hooks wired here or at user level, a turn in flight) is left alone;
+// one left behind by an attachment that is gone is not, or commits made while nothing watched would be laid on the next one.
+function gitBaseline(repo) {
+  let sha = ''; try { sha = execFileSync('git', ['-C', repo, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+  const path = join(repo, '.sawbuck', 'state.json');
+  let st = {}; try { st = JSON.parse(readFileSync(path, 'utf8')); } catch {}
+  const kept = (st.lastSha || (st.turnBaseline && st.turnBaseline.sha)) && (Object.keys(readManifest(manifestPath(repo)).attachments || {}).length || hooksIn(claudeFile(repo, { user: true }).f));
+  return { path, st, sha: kept ? '' : sha };
 }
 function wireGit(repo) {
   const pc = gitPath(repo, 'hooks/post-commit');
+  // core.hooksPath inside the work tree (the husky way): the team tracks those files or a hook tool rewrites them, and
+  // our block pins this machine's paths. Refuse, and give the portable line a person can add.
+  if (!relative(repo, pc).startsWith('..') && relative(gitDir(repo), pc).startsWith('..')) usage(`git hooks here live in ${relative(repo, dirname(pc))}/, inside the work tree (core.hooksPath), where the team or a hook tool owns the files, so attach --git writes nothing. Use plain \`sawbuck attach\`, or add this line by hand to the post-commit hook kept there (with husky: .husky/post-commit): (unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR; npx -y sawbuck@${version} __hook --repo "$PWD") || true`);
   const existed = existsSync(pc);
-  let body = existed ? readFileSync(pc, 'utf8') : '#!/bin/sh\n';
-  if (body.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
-  if (!body.startsWith('#!')) body = '#!/bin/sh\n' + body;
-  if (!body.endsWith('\n')) body += '\n';
+  const was = existed ? readFileSync(pc, 'utf8') : '';
+  if (was.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
+  // Our block goes right after the shebang line, so a hook that ends in `exit 0` still reaches it. The receipt notes
+  // the shebang or the newline we had to add, so detach leaves a hook that was here before byte for byte as it was.
+  const shebang = !was.startsWith('#!'), nl = !shebang && !was.includes('\n');
+  const body = (shebang ? '#!/bin/sh\n' : '') + was + (nl ? '\n' : '');
+  const at = body.indexOf('\n') + 1;
+  const mp = manifestPath(repo), base = gitBaseline(repo);
   if (dry) {
     out(dryText([
       `${existed ? 'modify' : 'create'}  ${pc}  (post-commit hook block)`,
-      `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})`,
-      `create  ${manifestPath(repo)}  (attach receipt)`,
-    ]));
+      ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
+      `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
+      base.sha ? `write   ${base.path}  (the commit to check from, so the first commit after this is checked)` : null,
+      `write   ${regPath()}  (the list of attached repos, for detach --all)`,
+    ].filter(Boolean)));
     return;
   }
-  writeFileSync(pc, body + hookBlock(repo));
+  writeFileSync(pc, body.slice(0, at) + hookBlock(repo) + body.slice(at));
   chmodSync(pc, 0o755);
-  const m = readManifest(manifestPath(repo));
-  m.attachments = { ...m.attachments, git: { pc: { created: !existed } } };
+  const m = readManifest(mp);
+  m.attachments = { ...m.attachments, git: { pc: { created: !existed, ...(existed && shebang ? { shebang } : {}), ...(nl ? { nl } : {}) } } };
   syncExclude(repo, m);
-  writeManifest(manifestPath(repo), m);
+  writeManifest(mp, m);
+  if (base.sha) { try { mkdirSync(dirname(base.path), { recursive: true }); writeFileSync(base.path, JSON.stringify({ turns: 0, shownTotal: 0, ...base.st, lastSha: base.sha }, null, 2) + '\n'); } catch {} }
   regAdd(repo, 'git');
   out(`sawbuck: attached (git post-commit) in ${repo}. Every commit is checked, whatever made it.`);
 }
+function hasBlock(repo) { try { return readFileSync(gitPath(repo, 'hooks/post-commit'), 'utf8').includes(S_START); } catch { return false; } }
 function unwireGit(repo) {
   const pc = gitPath(repo, 'hooks/post-commit');
   const m = readManifest(manifestPath(repo));
-  const hasReceipt = !!m.attachments?.git;
+  const rec = m.attachments?.git;
+  const wired = hasBlock(repo);
   // signing with no attach still hides the record, so a repo with no receipt can have a block to take back
-  if (!existsSync(pc) && !hasReceipt) { out(syncExclude(repo, m) ? `sawbuck: removed the record lines from ${excludeFile(repo)}` : 'sawbuck: nothing to detach'); return; }
-  if (existsSync(pc)) {
-    const stripped = readFileSync(pc, 'utf8').replace(BLOCK_RE, '\n').replace(/\n{3,}/g, '\n\n');
-    const created = m.attachments?.git?.pc?.created;
+  if (!wired && !rec) { say(syncExclude(repo, m) ? `sawbuck: removed the record lines from ${excludeFile(repo)}` : 'sawbuck: nothing to detach'); return; }
+  if (wired) {
+    // take out what attach put in, and nothing else: a hook that was here before is the same bytes again
+    let rest = readFileSync(pc, 'utf8').replace(BLOCK_RE, '');
+    if (rec?.pc?.shebang && rest.startsWith('#!/bin/sh\n')) rest = rest.slice('#!/bin/sh\n'.length);
+    if (rec?.pc?.nl && rest.endsWith('\n')) rest = rest.slice(0, -1);
     // true inverse: if we created this hook and it is trivial again, remove it
-    if ((created || !hasReceipt) && isTrivialHook(stripped)) delFile(pc);
-    else writeFileSync(pc, stripped);
+    if ((rec?.pc?.created || !rec) && isTrivialHook(rest)) dropFile(pc, 'the post-commit hook attach created');
+    else putFile(pc, rest, 'our block in the post-commit hook');
   }
-  if (hasReceipt) { delete m.attachments.git; syncExclude(repo, m); writeManifest(manifestPath(repo), m); }
+  if (rec) { delete m.attachments.git; syncExclude(repo, m); writeManifest(manifestPath(repo), m); }
   regRemove(repo, 'git');
-  out(`sawbuck: detached (git) from ${repo}`);
+  say(`sawbuck: detached (git) from ${repo}`);
 }
 function isTrivialHook(text) { return text.replace(/^#!.*\n?/, '').trim() === ''; }
 
@@ -584,12 +640,20 @@ function wireClaude(repo, opts) {
     if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk)) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
     upgrading = true;
   }
+  const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
+  const mp = user ? userManifestPath() : manifestPath(repo);
+  const stPath = join(repo, '.sawbuck', 'state.json');
+  let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+  // attach often runs inside a turn (saying yes to the offer), and that turn's Stop hook then has no baseline, so the
+  // files signing just wrote would read as the agent's violations. What is here now is the baseline; anything after it counts.
+  const baseline = !user && existsSync(join(repo, 'promptwheel.config.json')) && !st.turnBaseline;
   if (dry) {
     out(dryText([
       `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
-      user ? null : `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})`,
-      `create  ${user ? userManifestPath() : manifestPath(repo)}  (attach receipt)`,
-      !user && existsSync(join(repo, 'promptwheel.config.json')) ? `write   ${join(repo, '.sawbuck', 'state.json')}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
+      !user && ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
+      `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
+      baseline ? `write   ${stPath}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
+      `write   ${regPath()}  (the list of attached repos, for detach --all)`,
     ].filter(Boolean)));
     return;
   }
@@ -605,23 +669,15 @@ function wireClaude(repo, opts) {
   put('Stop', chk);
   mkdirSync(dir, { recursive: true });
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
-  // attach often runs inside a turn (saying yes to the offer), and that turn's Stop hook then has no baseline, so the
-  // files signing just wrote would read as the agent's violations. What is here now is the baseline; anything after it counts.
-  if (!user && existsSync(join(repo, 'promptwheel.config.json'))) {
+  if (baseline) {
     try {
       ensureExcluded(repo);
-      const stPath = join(repo, '.sawbuck', 'state.json');
-      let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
-      if (!st.turnBaseline) {
-        let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-        st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach' };
-        st.lastPromptAt = new Date().toISOString();
-        mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
-      }
+      let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+      st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach' };
+      st.lastPromptAt = new Date().toISOString();
+      mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
     } catch {}
   }
-  const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
-  const mp = user ? userManifestPath() : manifestPath(repo);
   const m = readManifest(mp);
   const prev = (m.attachments || {})[mode];   // an upgrade keeps the receipt of what the first attach created
   m.attachments = { ...m.attachments, [mode]: { file: f, fileCreated: prev ? !!prev.fileCreated : !fileExisted, dirCreated: prev ? !!prev.dirCreated : !dirExisted } };
@@ -648,9 +704,9 @@ function unwireClaude(repo, { user }) {
         let cfg = null; try { cfg = JSON.parse(raw); } catch {}
         if (cfg) {
           removeClaudeEntries(cfg);
-          if ((rec?.fileCreated || !rec) && isTrivialSettings(cfg)) { delFile(f); if (rec?.dirCreated) rmIfEmptyDir(dirname(f)); }
-          else writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
-          out(`sawbuck: removed Claude Code hooks from ${f}`);
+          if ((rec?.fileCreated || !rec) && isTrivialSettings(cfg)) { dropFile(f, 'our Claude Code hooks were all it held'); if (rec?.dirCreated) rmIfEmptyDir(dirname(f)); }
+          else putFile(f, JSON.stringify(cfg, null, 2) + '\n', 'our Claude Code hooks');
+          say(`sawbuck: removed Claude Code hooks from ${f}`);
           did = true;
         }
       }
@@ -659,7 +715,7 @@ function unwireClaude(repo, { user }) {
   }
   if (touched) { if (!user) syncExclude(repo, m); writeManifest(mp, m); }
   for (const mode of modes) regRemove(repo, mode);
-  if (!did && !touched) out('sawbuck: no Claude attachment found to detach');
+  if (!did && !touched) say('sawbuck: no Claude attachment found to detach');
 }
 function removeClaudeEntries(cfg) {
   if (!cfg.hooks) return;
@@ -695,15 +751,14 @@ function verifyClean(repo) {
 }
 function purgeRecord(repo) {
   let n = 0;
+  const purge = (p) => { if (!there(p)) return; dropFile(p, 'the record'); n++; say(`sawbuck: purged ${p}`); };
   for (const d of RECORD_DIRS) {
-    const p = join(repo, d);
     // a committed LOGBOOK.md or JOURNEY.md is the person's file, not our record
     try { if (execFileSync('git', ['-C', repo, 'ls-files', '--', d], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) continue; } catch {}
-    try { if (existsSync(p)) { rmSync(p, { recursive: true, force: true }); n++; out(`sawbuck: purged ${p}`); } } catch {}
+    purge(join(repo, d));
   }
-  const outcomes = join(repo, '.promptwheel', 'outcomes.jsonl');   // the rest of .promptwheel/ is the signed contract: yours to keep or delete
-  try { if (existsSync(outcomes)) { rmSync(outcomes, { force: true }); n++; out(`sawbuck: purged ${outcomes}`); } } catch {}
-  if (!n) out('sawbuck: no record to purge');
+  purge(join(repo, '.promptwheel', 'outcomes.jsonl'));   // the rest of .promptwheel/ is the signed contract: yours to keep or delete
+  if (!n) say('sawbuck: no record to purge');
 }
 // the path a hook bakes in: the quoted one ending in sawbuck.mjs, in a shell hook or in JSON, where the quotes are escaped
 function extractBaked(text) { const m = text.match(/"([^"]*sawbuck\.mjs)\\?"/); return m ? m[1] : null; }
@@ -721,19 +776,26 @@ function doctorRepo(repo) {
   try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) { const baked = extractBaked(b); let onPath = false; try { onPath = !!execFileSync('sh', ['-c', 'command -v sawbuck'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {} checks.push({ mode: 'git', file: pc, ok: onPath || (!!baked && existsSync(baked)) || /npx -y sawbuck@/.test(b) }); } } } catch {}
   for (const [mode, f] of [['claude', join(repo, '.claude', 'settings.local.json')], ['claude-shared', join(repo, '.claude', 'settings.json')], ['user', join(homedir(), '.claude', 'settings.json')]]) {
     let cfg = null; try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { continue; }
-    const cmds = Object.values((cfg && cfg.hooks) || {}).flat().flatMap((h) => (h && Array.isArray(h.hooks) ? h.hooks : [])).map((x) => x && x.command).filter((c) => typeof c === 'string' && OURS.test(c));
-    if (cmds.length) checks.push({ mode, file: f, ok: [...new Set(cmds)].every(hookRuns) });
+    const ours = (list) => (Array.isArray(list) ? list : []).flatMap((h) => (h && Array.isArray(h.hooks) ? h.hooks : [])).map((x) => x && x.command).filter((c) => typeof c === 'string' && OURS.test(c));
+    const cmds = ours(Object.values((cfg && cfg.hooks) || {}).flat());
+    if (!cmds.length) continue;
+    // the set attach writes, each under its own event: the rule on a prompt and after a compaction, the check on Stop
+    const at = (event, re, matcher) => ours(((cfg.hooks || {})[event] || []).filter((h) => !matcher || (h && h.matcher === matcher))).some((c) => re.test(c));
+    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop'].filter(Boolean);
+    checks.push({ mode, file: f, ok: !missing.length && [...new Set(cmds)].every(hookRuns), missing });
   }
-  // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded)
-  const receipt = Object.keys(readManifest(manifestPath(repo)).attachments || {}).filter((m) => m.startsWith('claude') && !checks.some((c) => c.mode === m));
+  // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded, or under .git)
+  const receipt = Object.keys(readManifest(manifestPath(repo)).attachments || {}).filter((m) => !checks.some((c) => c.mode === m));
   if (!checks.length && !receipt.length) { out(`sawbuck: no attachment in ${repo}, nothing to check.`); return; }
   let bad = receipt.length;
+  const again = (m) => `sawbuck attach${{ git: ' --git', 'claude-shared': ' --shared', user: ' --user' }[m] || ''} again`;
   out(`sawbuck doctor, ${repo}:`);
   for (const c of checks) {
     if (!c.ok) bad++;
-    out(`  ${c.ok ? 'OK   ' : 'STALE'} ${c.mode.padEnd(14)} ${c.file}${c.ok ? '' : '  (the hook does not run: what it calls is gone; run sawbuck attach again)'}`);
+    const why = c.ok ? '' : c.missing && c.missing.length ? `  (the hook set is incomplete, missing: ${c.missing.join(', ')}; run ${again(c.mode)})` : `  (the hook does not run: what it calls is gone; run ${again(c.mode)})`;
+    out(`  ${c.ok ? 'OK   ' : c.missing && c.missing.length ? 'PART ' : 'STALE'} ${c.mode.padEnd(14)} ${c.file}${why}`);
   }
-  for (const m of receipt) out(`  GONE  ${m.padEnd(14)} the receipt says hooks were wired here, but the hooks are gone. Run sawbuck attach again, or sawbuck detach to drop the receipt.`);
+  for (const m of receipt) out(`  GONE  ${m.padEnd(14)} the receipt says ${m === 'git' ? 'a post-commit hook was wired here, but our block is gone' : 'hooks were wired here, but the hooks are gone'}. Run ${again(m)}, or sawbuck detach to drop the receipt.`);
   if (bad) process.exitCode = 1;
 }
 function doctorAll() {
@@ -746,18 +808,18 @@ function doctorAll() {
 
 // --- every attachment, in one list, so there is one way out of all of them ---
 function regPath() { return join(homedir(), '.sawbuck', 'registry.json'); }
-function regRead() { try { const r = JSON.parse(readFileSync(regPath(), 'utf8')); r.repos = (r.repos || []).filter((x) => existsSync(x.repo)); return r; } catch { return { repos: [] }; } }   // a repo that is gone is not attached
+function regRead() { if (planned.registry) return { ...planned.registry }; try { const r = JSON.parse(readFileSync(regPath(), 'utf8')); r.repos = (r.repos || []).filter((x) => existsSync(x.repo)); return r; } catch { return { repos: [] }; } }   // a repo that is gone is not attached
 function regWrite(r) {
   const f = regPath();
-  if (!r.repos.length) { delFile(f); rmIfEmptyDir(dirname(f)); return; }
-  mkdirSync(dirname(f), { recursive: true });
-  writeFileSync(f, JSON.stringify(r, null, 2) + '\n');
+  if (dry) planned.registry = r;
+  if (!r.repos.length) { dropFile(f, 'the list of attached repos'); rmIfEmptyDir(dirname(f)); return; }
+  putFile(f, JSON.stringify(r, null, 2) + '\n', 'the list of attached repos');
 }
 function regAdd(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); r.repos.push({ repo, mode, at: new Date().toISOString() }); regWrite(r); }
-function regRemove(repo, mode) { const r = regRead(); r.repos = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); regWrite(r); }
+function regRemove(repo, mode) { const r = regRead(); const keep = r.repos.filter((x) => !(x.repo === repo && x.mode === mode)); if (keep.length !== r.repos.length) regWrite({ ...r, repos: keep }); }
 function detachAll(purge) {
   const r = regRead();
-  if (!r.repos.length) { out('sawbuck: nothing to detach: not attached anywhere.'); return; }
+  if (!r.repos.length) { say('sawbuck: nothing to detach: not attached anywhere.'); return; }
   for (const x of [...r.repos]) {
     if (x.mode === 'git') unwireGit(x.repo);
     else if (x.mode === 'user') unwireClaude(x.repo, { user: true });
@@ -765,7 +827,7 @@ function detachAll(purge) {
     if (purge) purgeRecord(x.repo);
     syncExclude(x.repo, readManifest(manifestPath(x.repo)));
   }
-  out('sawbuck: detached everywhere.');
+  say('sawbuck: detached everywhere.');
 }
 // --- shared helpers ---------------------------------------------------------
 function dryText(plan, verb = 'leave') { return verb === 'remove' ? ['sawbuck --dry-run: would remove (changing nothing):', ...(plan.length ? plan.map((p) => '  ' + p) : ['  nothing: no wiring here'])].join('\n') : ['sawbuck --dry-run: would leave this footprint (writing nothing):', ...plan.map((p) => '  ' + p), '  all of it reversible with `detach`.'].join('\n'); }

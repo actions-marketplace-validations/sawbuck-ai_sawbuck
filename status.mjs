@@ -30,7 +30,7 @@ const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: 
 // --- 1) the outcome record: what the check has done here -------------------
 // results.json holds the all-time catch tally (gamed + regression, never trimmed); activity.jsonl is
 // the recent per-check feed (verified included, capped ~200). We read both and keep each honest.
-const { results, caught: catchesAllTime, state: kind, steer, armed, hasConfig } = repoState(repo);
+const { results, caught: catchesAllTime, state: kind, steer, armed, hasConfig, wired } = repoState(repo);
 const repeated = groupSteers(readSteers().steers).filter((g) => g.n >= 3 && g.sessions >= 2);
 const feed = readLines(join(repo, '.sawbuck', 'activity.jsonl')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 0, mandate: 0 };
@@ -144,6 +144,8 @@ if (debt && debt.total) {
 out.push('');
 if (!isGit) {
   out.push(`   Not a git repo here, so there is nothing to verify or remember. cd into your project.`);
+} else if (state === 'watching' && wired === 'user' && !hasConfig) {
+  out.push('   Measuring here  ·  wired in at user level, and that check runs only in a repo that has a promptwheel.config.json. `sawbuck contract` writes one.');
 } else if (state === 'watching') {
   out.push(`   Measuring here  ·  ${hasConfig ? '✓ wired in with a contract (promptwheel.config.json)' : '✓ wired in (zero-config auto-detect)'}. It verifies each commit/turn automatically.`);
 } else if (state === 'ready') {

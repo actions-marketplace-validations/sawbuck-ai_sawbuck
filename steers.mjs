@@ -14,7 +14,7 @@ export function readSteers(home = homedir()) {
   for (const f of files) {
     try {
       const d = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      if (Array.isArray(d.steers)) out.steers.push(...d.steers);
+      if (Array.isArray(d.steers)) out.steers.push(...d.steers.filter((e) => e && typeof e.nudge === 'string'));   // a null or half-written entry is not a steer
       if (d.steerStats) { out.stats.scored += d.steerStats.scored || 0; out.stats.lost += d.steerStats.lost || 0; }
     } catch {}
   }

@@ -52,14 +52,18 @@ try {
   const had = existsSync(cfgPath);
   // without --full, the paths that exist only for the lock and the scanners do not apply
   const mandates = preset.mandates.filter((m) => full || !JSON.stringify(m.paths || []).match(/packs|promptwheel\.lock/));
+  // what both the dry run and the real run report: every protected path in the contract after signing, and the
+  // supply-chain guards --full puts beside your own tests
+  const names = (l) => new Set((l || []).map((x) => x && x.name));
+  const counts = (c) => `${new Set([...names(c.mandates), ...names(mandates)]).size} protected paths${full ? `, ${preset.metrics.length} supply-chain guards` : ''}`;
   if (dry) {
-    let notes = 0; try { if (strict && had) notes = (JSON.parse(readFileSync(cfgPath, 'utf8')).metrics || []).filter((m) => m && m.report && REPORT.has(m.name)).length; } catch {}
-    process.stdout.write(`sawbuck contract would ${had ? 'add to' : 'write'} ${cfgPath}: ${mandates.length} protected paths${full ? `, ${preset.metrics.length} guards, the scanners under .promptwheel/packs/, and promptwheel.lock.json` : ''}${notes ? `, and make ${notes} guards that are notes block` : ''}.\n`);
+    let now = {}; try { if (had) now = JSON.parse(readFileSync(cfgPath, 'utf8')); } catch {}
+    const notes = strict ? (now.metrics || []).filter((m) => m && m.report && REPORT.has(m.name)).length : 0;
+    process.stdout.write(`sawbuck contract would ${had ? 'update' : 'write'} ${cfgPath}: ${counts(now)}${full ? ', the scanners under .promptwheel/packs/, and promptwheel.lock.json' : ''}${notes ? `, and make ${notes} guards that are notes block` : ''}.\n`);
   } else {
     if (!had) run([join(HERE, 'init.mjs'), '-y', '--no-investigate'], repo);
     const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : { repeat: 1, metrics: [] };
     const before = { m: (cfg.mandates || []).length, g: (cfg.metrics || []).length };
-    const names = (l) => new Set((l || []).map((x) => x && x.name));
     const hasM = names(cfg.mandates), hasG = names(cfg.metrics);
     cfg.mandates = [...(cfg.mandates || []), ...mandates.filter((m) => !hasM.has(m.name))];
     if (full) {
@@ -99,8 +103,8 @@ try {
     const added = (cfg.mandates.length - before.m) + (cfg.metrics.length - before.g);
     const fresh = added || hardened || ci || (full && !locked);
     process.stdout.write(!fresh ? 'sawbuck: already signed, nothing changed.\n' : full
-      ? `sawbuck: signed. ${cfg.mandates.length} protected paths, ${cfg.metrics.length} guards, and the shape of this repo in promptwheel.lock.json.\n${strict ? (hardened ? `  ${hardened} guards that were notes now block. The contract is a protected path, so the commit that carries this needs a person's reason: sawbuck check --allow "<reason>".\n` : '') : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the rest.\n' : ''}`
-      : `sawbuck: signed. ${cfg.mandates.length} protected paths, and the rule in AGENTS.md.\n  --full adds supply-chain guards, a repo lock and a CI check.\n`);
+      ? `sawbuck: signed. ${counts(cfg)}, and the shape of this repo in promptwheel.lock.json.\n${strict ? (hardened ? `  ${hardened} guards that were notes now block. The contract is a protected path, so the commit that carries this needs a person's reason: sawbuck check --allow "<reason>".\n` : '') : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the rest.\n' : ''}`
+      : `sawbuck: signed. ${counts(cfg)}, and the rule in AGENTS.md.\n  --full adds supply-chain guards, a repo lock and a CI check.\n`);
     if (full && !ci && !existsSync(wf)) process.stdout.write(`  No CI check added: ${!/github\.com/.test(remote) ? 'this repo has no github.com origin' : 'there is no real test command yet, and a placeholder would fail every pull request'}. Run sawbuck contract --full again once it has one.\n`);
   }
 } finally { rmSync(scratch, { recursive: true, force: true }); }

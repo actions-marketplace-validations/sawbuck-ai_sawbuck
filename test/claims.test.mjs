@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -166,7 +166,13 @@ test('claim: output piped to a reader that stops early ends quietly, with no sta
 test('claim: a debt gate of 0 means any new debt, and a clean branch passes it in text and JSON alike', () => { const d = repo(true); assert.equal(sb(d, 'debt', '--since', 'HEAD', '--fail-on', '0').code, 0); const j = sb(d, 'debt', '--since', 'HEAD', '--fail-on', '0', '--json'); assert.equal(j.code, 0, j.out); assert.equal(JSON.parse(j.out).fail, false); });
 test('claim: set up from a terminal, commit, then start: the first turn is not blocked by your own commit, and the next violation still is', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); const w = wired(d); save(d, 'rules and hooks'); w.prompt(); assert.ok(!blocked(w.stop()), 'the commit of the rules files is the person\'s'); w.prompt(); put(d, '.github/workflows/x.yml', 'on: push\n'); assert.ok(blocked(w.stop())); });
 // ------------------------------------------------------------ the other ways to attach
-test('claim: attach --git checks every commit, whatever made it', () => { const d = repo(false); put(d, 'promptwheel.config.json', JSON.stringify({ repeat: 1, metrics: [{ name: 'tests_pass', cmd: `${JSON.stringify(process.execPath)} --test 2>&1`, extract: 'exit', direction: 'up', guard: true }] })); save(d, 'config'); assert.equal(sb(d, 'attach', '--git').code, 0); assert.ok(!existsSync(join(d, '.claude')), 'no Claude settings'); sb(d, '__hook', '--repo', d); edit(d, 'test/add.test.js', (t) => t.replace('add(2,2),4', 'add(2,2),0')); execFileSync('git', ['add', '-A'], { cwd: d, env: ENV }); execFileSync('git', ['commit', '-qm', 'make it green'], { cwd: d, env: { ...ENV, PATH: '/usr/bin:/bin' }, stdio: 'ignore' }); const r = JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')); assert.ok((r.gamed || 0) >= 1, 'the commit was caught by the hook, with no sawbuck on PATH'); });
+// A git hook under test must not find a global sawbuck: the test command names node by its full path, and commits run with a bare PATH.
+const NODE_TESTS = JSON.stringify({ repeat: 1, metrics: [{ name: 'tests_pass', cmd: `${JSON.stringify(process.execPath)} --test 2>&1`, extract: 'exit', direction: 'up', guard: true }] });
+const hookRepo = (good = false) => { const d = repo(good); put(d, 'promptwheel.config.json', NODE_TESTS); save(d, 'config'); return d; };
+const commit = (d, msg, path = '/usr/bin:/bin') => { git(d, 'add', '-A'); const r = spawnSync('git', ['commit', '-qm', msg], { cwd: d, encoding: 'utf8', env: { ...ENV, PATH: path } }); return (r.stdout || '') + (r.stderr || ''); };
+const record = (d, f = 'results.json') => { try { return JSON.parse(readFileSync(join(d, '.sawbuck', f), 'utf8')); } catch { return {}; } };
+const cheat = (s) => s.replace('add(2,2),4', 'add(2,2),0');
+test('claim: attach --git checks every commit, whatever made it, starting with the first one', () => { const d = hookRepo(); assert.equal(sb(d, 'attach', '--git').code, 0); assert.ok(!existsSync(join(d, '.claude')), 'no Claude settings'); edit(d, 'test/add.test.js', cheat); commit(d, 'make it green'); assert.ok((record(d).gamed || 0) >= 1, 'the first commit after attach was caught by the hook, with no sawbuck on PATH'); });
 test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 3); for (const c of cmds) assert.match(c, /^npx -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
 test('claim: shared hooks find the repo from where they run, and block a protected path', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach', '--shared').code, 0); const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks; const run = (cmd, ev) => { const args = cmd.replace(/^npx -y sawbuck@[\d.]+ /, '').split(' '); return spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'shared', prompt: 'x' }) }).stdout || ''; }; run(h.UserPromptSubmit[0].hooks[0].command, 'UserPromptSubmit'); put(d, '.github/workflows/x.yml', 'on: push\n'); assert.ok(blocked(run(h.Stop[0].hooks[0].command, 'Stop'))); });
 test('claim: detach --all takes sawbuck out of every repo, and doctor --all lists them first', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home }; const run = (d, ...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env }); return (r.stdout || '') + (r.stderr || ''); }; const a = repo(true), b = repo(true); run(a, 'attach'); run(b, 'attach', '--git'); const list = run(a, 'doctor', '--all'); assert.ok(list.includes(a) && list.includes(b), list); assert.match(run(a, 'detach', '--all'), /detached everywhere/); assert.ok(!existsSync(join(a, '.claude/settings.local.json')) && !existsSync(join(b, '.git/hooks/post-commit'))); assert.match(run(a, 'doctor', '--all'), /not attached anywhere/); });
@@ -227,7 +233,7 @@ test('claim: debt refuses a --fail-on it does not know', () => { const r = sb(de
 test('claim: with no test command, inconclusive says so, and does not blame isolation or send a signed repo to init', () => { const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q'); put(d, 'a', '1'); save(d, 'a'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'a', '2'); save(d, 'b'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /no test command/); assert.doesNotMatch(r.out, /isolation|sawbuck init/); });
 test('claim: when the tests fail before and after, inconclusive says that, not isolation', () => { const d = repo(false); put(d, 'NOTES.md', 'x\n'); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /failed before and after/); assert.doesNotMatch(r.out, /did not run in isolation/); });
 test('limit: auto-detect finds npm, pytest, cargo and go tests; a Makefile test target is not one of them', () => { const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q'); put(d, 'Makefile', 'test:\n\ttrue\n'); put(d, 'a', '1'); save(d, 'a'); put(d, 'a', '2'); save(d, 'b'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /no test command/); });
-test('claim: a check that cannot run says why, in the engine\'s words, exit 64', () => { const d = repo(true); edit(d, 'src/add.js', (s) => s + '//\n'); save(d, 'x'); let r = sb(d, 'check', '--base', 'nope'); assert.equal(r.code, 64); assert.match(r.out, /base ref "nope"/); r = sb(d, 'check', '--bogus-flag'); assert.equal(r.code, 64); assert.match(r.out, /unknown flag --bogus-flag/); put(d, 'promptwheel.config.json', '{bad'); save(d, 'j'); r = sb(d, 'check'); assert.equal(r.code, 64); assert.match(r.out, /invalid config/); });
+test('claim: a check that cannot run says why, in the engine\'s words, exit 64', () => { const d = repo(true); edit(d, 'src/add.js', (s) => s + '//\n'); save(d, 'x'); let r = sb(d, 'check', '--base', 'nope'); assert.equal(r.code, 64); assert.match(r.out, /base ref "nope"/); r = sb(d, 'check', '--bogus-flag'); assert.equal(r.code, 64); assert.match(r.out, /unknown flag --bogus-flag/); r = sb(d, 'check', '--repeat', 'abc'); assert.equal(r.code, 64, `a bad value: ${r.out}`); assert.match(r.out, /--repeat/); r = sb(d, 'check', '--repeat'); assert.equal(r.code, 64, `a missing value: ${r.out}`); assert.match(r.out, /--repeat needs a value/); put(d, 'promptwheel.config.json', '{bad'); save(d, 'j'); r = sb(d, 'check'); assert.equal(r.code, 64); assert.match(r.out, /invalid config/); });
 test('limit: contract keeps an existing config as it is and adds no tests to it', () => { const d = repo(true); put(d, 'promptwheel.config.json', '{"repeat":1,"metrics":[]}\n'); save(d, 'c'); assert.equal(sb(d, 'contract').code, 0); assert.deepEqual(JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8')).metrics, []); });
 test('limit: init proposes the detected tests and the tripwires, not coverage, latency or cost', () => { const d = repo(true); const r = sb(d, 'init', '--yes', '--no-investigate'); assert.equal(r.code, 0); const names = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8')).metrics.map((m) => m.name).join(' '); assert.doesNotMatch(names, /coverage|latency|cost/); });
 test('claim: a Sawbuck-Allow trailer clears nothing, in check or in the Stop hook, signed or not', () => { const d = gamedRepo('cheat\n\nSawbuck-Allow: because'); const r = sb(d, 'check'); assert.equal(r.code, 2); assert.match(r.out, /trailer/); const e = repo(); const w = wired(e); w.prompt(); edit(e, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(e, 'cheat\n\nSawbuck-Allow: because'); assert.ok(blocked(w.stop())); });
@@ -236,3 +242,192 @@ const flat = (s) => s.replace(/\s+/g, ' ');
 const README = readFileSync(join(HERE, '..', 'README.md'), 'utf8');
 test('claim: the README shows the verified line and the agent rule as sawbuck prints them', () => { const d = repo(); edit(d, 'src/add.js', fixAdd); const v = sb(d, 'check').out.split('\n')[0].replace(/ \(it survives.*$/, ''); assert.ok(flat(README).includes(flat(v.replace(/^🐴 /, ''))), v); const e = repo(true); sb(e, 'contract'); const block = readFileSync(join(e, 'AGENTS.md'), 'utf8').match(/## Sawbuck rules\n\n([^\n]+)/)[1]; assert.ok(flat(README).includes(flat(block)), 'the AGENTS block'); });
 test('claim: promptwheel exports conformsToContract, the validator the contract names', async () => { const { PW } = await import(join(HERE, '..', 'bins.mjs')); const m = await import(PW); assert.equal(typeof m.conformsToContract, 'function'); assert.doesNotMatch(README + readFileSync(join(HERE, '..', 'CONTRACT.md'), 'utf8'), /promptwheel conformance/); });
+
+// ------------------------------------------------------------ the git hook, through real commits
+for (const t of ['Sawbuck-Allow', 'Promptwheel-Allow']) {
+  test(`claim: a ${t} trailer clears nothing through the git hook either`, () => {
+    const d = hookRepo(); sb(d, 'attach', '--git');
+    edit(d, 'test/add.test.js', cheat); commit(d, `make it green\n\n${t}: because`);
+    assert.ok((record(d).gamed || 0) >= 1, 'gamed, trailer or not');
+    assert.doesNotMatch(readFileSync(join(d, '.sawbuck/activity.jsonl'), 'utf8'), /"allowed"/);
+  });
+}
+test('claim: attach --git runs even when the hook already there ends in exit 0, and detach puts that hook back byte for byte', () => {
+  const mine = '#!/bin/sh\necho mine\n\n\n\nexit 0\n';
+  const d = hookRepo(); const pc = join(d, '.git/hooks/post-commit'); writeFileSync(pc, mine, { mode: 0o755 });
+  assert.equal(sb(d, 'attach', '--git').code, 0);
+  edit(d, 'test/add.test.js', cheat); const o = commit(d, 'make it green');
+  assert.match(o, /mine/, 'their hook still runs'); assert.ok((record(d).gamed || 0) >= 1, 'and ours runs before their exit');
+  assert.equal(sb(d, 'detach').code, 0); assert.equal(readFileSync(pc, 'utf8'), mine);
+  for (const other of ['#!/bin/sh\necho mine', 'echo mine\n', '#!/bin/sh', '']) {
+    writeFileSync(pc, other); sb(d, 'attach', '--git'); assert.match(readFileSync(pc, 'utf8'), /sawbuck/); sb(d, 'detach');
+    assert.equal(readFileSync(pc, 'utf8'), other, JSON.stringify(other));
+  }
+});
+test('claim: attach --git refuses a hooks folder inside the work tree, writes nothing, and the line it gives works when added by hand', () => {
+  const d = hookRepo(); put(d, '.husky/post-commit', '#!/bin/sh\n'); chmodSync(join(d, '.husky/post-commit'), 0o755); git(d, 'config', 'core.hooksPath', '.husky'); save(d, 'husky');
+  for (const a of [['attach', '--git'], ['attach', '--git', '--dry-run']]) {
+    const r = sb(d, ...a); assert.equal(r.code, 64, r.out); assert.equal(r.out.trim().split('\n').length, 1, 'one line'); assert.match(r.out, /`sawbuck attach`/);
+    assert.equal(git(d, 'status', '--porcelain'), ''); assert.ok(!existsSync(join(d, '.git/sawbuck')) && !existsSync(join(d, '.sawbuck')), 'nothing written');
+  }
+  const line = sb(d, 'attach', '--git').out.match(/by hand .*?: (\(unset .*\|\| true)$/m)[1];
+  // the line names the published package; here npx is a stand-in that runs the sawbuck under test
+  const bin = mkdtempSync(join(tmpdir(), 'claims-bin-')); writeFileSync(join(bin, 'npx'), `#!/bin/sh\nshift; shift\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"\n`, { mode: 0o755 });
+  const path = `${bin}:/usr/bin:/bin`;
+  edit(d, '.husky/post-commit', (s) => s + line + '\n'); commit(d, 'add the hook line', path);
+  edit(d, 'test/add.test.js', cheat); commit(d, 'make it green', path);
+  assert.ok((record(d).gamed || 0) >= 1, 'the commit after the line went in was caught');
+  // the stated limit: a line added by hand is not an attachment sawbuck knows about
+  assert.match(sb(d, 'status').out, /ready \(checkable, not wired yet\)/); assert.match(sb(d, 'doctor').out, /no attachment/); assert.match(sb(d, 'detach').out, /nothing to detach/); assert.ok(readFileSync(join(d, '.husky/post-commit'), 'utf8').includes(line));
+});
+test('claim: the git hook names a protected path that a commit changed', () => {
+  const d = hookRepo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');
+  put(d, '.npmrc', 'x\n'); const o = commit(d, 'registry');
+  const L = record(d).latest || {};
+  assert.match(String(L.reason), /protected path/); assert.match(String(L.reason), /\.npmrc/); assert.doesNotMatch(String(L.reason), /regressed/); assert.equal(L.file, '.npmrc');
+  assert.match(o, /protected path.*\.npmrc/, 'the hook prints it'); assert.match(readFileSync(join(d, '.sawbuck/activity.jsonl'), 'utf8'), /protected path/);
+});
+test('limit: a commit made in a linked git worktree is not checked by the git hook', () => {
+  const d = hookRepo(); sb(d, 'attach', '--git');
+  const w = join(mkdtempSync(join(tmpdir(), 'claims-')), 'wt'); git(d, 'worktree', 'add', '-q', w, '-b', 'side');
+  edit(w, 'test/add.test.js', cheat); commit(w, 'make it green');
+  assert.ok(record(d, 'state.json').turns >= 1, 'the hook ran, on the checkout it was attached from');
+  assert.ok(!record(d).gamed && !existsSync(join(w, '.sawbuck')), 'so the commit in the worktree was not checked');
+});
+
+test('claim: attach --git checks from the commit it was attached at, not from where an earlier attachment stopped', () => {
+  const d = hookRepo(); sb(d, 'attach', '--git'); put(d, 'NOTES.md', '1\n'); commit(d, 'notes'); sb(d, 'detach');
+  edit(d, 'test/add.test.js', cheat); commit(d, 'made while detached, so no hook saw it');
+  sb(d, 'attach', '--git'); put(d, 'NOTES.md', '2\n'); commit(d, 'more notes');
+  assert.ok(!record(d).gamed, 'a commit from before this attach is not laid on the first commit after it');
+  assert.equal(sb(d, 'check', '--base', 'HEAD~2').code, 2, 'the range is still there to check by hand');
+});
+test('limit: the very first commit of a repo has nothing to be checked against', () => {
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main'); assert.equal(sb(d, 'attach', '--git').code, 0);
+  put(d, 'promptwheel.config.json', NODE_TESTS); put(d, 'src/add.js', 'exports.add=(a,b)=>a+b\nexports.mul=(a,b)=>a*b\n'); put(d, 'test/add.test.js', TEST); commit(d, 'first');
+  assert.ok(record(d, 'state.json').turns >= 1, 'the hook ran'); assert.equal(record(d).latest, undefined, 'and had no earlier commit to check from');
+  edit(d, 'src/add.js', breakAdd); commit(d, 'second'); assert.equal((record(d).latest || {}).kind, 'regression', 'the next commit is checked');
+});
+
+// ------------------------------------------------------------ doctor, status and check say what is true
+test('claim: doctor says a git hook that is gone is gone', () => {
+  const d = repo(true); sb(d, 'attach', '--git'); assert.equal(sb(d, 'doctor').code, 0);
+  const pc = join(d, '.git/hooks/post-commit'); writeFileSync(pc, '#!/bin/sh\n');
+  let r = sb(d, 'doctor'); assert.equal(r.code, 1, r.out); assert.match(r.out, /GONE\s+git/);
+  rmSync(pc); r = sb(d, 'doctor'); assert.equal(r.code, 1, r.out); assert.match(r.out, /GONE\s+git/); assert.doesNotMatch(r.out, /nothing to check/);
+});
+test('claim: doctor reports an incomplete hook set as not OK', () => {
+  const d = repo(true);
+  const broken = (what, fn) => { sb(d, 'detach'); sb(d, 'attach'); assert.equal(sb(d, 'doctor').code, 0); json(d, '.claude/settings.local.json', fn); const r = sb(d, 'doctor'); assert.equal(r.code, 1, `${what}: ${r.out}`); assert.doesNotMatch(r.out, /\bOK\b/, what); };
+  broken('the Stop hook removed', (o) => { delete o.hooks.Stop; });
+  broken('--stop dropped', (o) => { const h = o.hooks.Stop[0].hooks[0]; h.command = h.command.replace(' --stop', ''); });
+  broken('the Stop hook moved under another event', (o) => { o.hooks.PostToolUse = o.hooks.Stop; delete o.hooks.Stop; });
+  broken('the prompt hook removed', (o) => { delete o.hooks.UserPromptSubmit; });
+});
+test('claim: watching means the hooks are wired: after detach, status and the status line read ready', () => {
+  const d = signed(true); const w = wired(d); w.prompt(); w.stop(); assert.match(sb(d, 'statusline').out, /· watching/);
+  assert.equal(sb(d, 'detach').code, 0); assert.ok(existsSync(join(d, '.sawbuck/state.json')), 'the record stays');
+  assert.match(sb(d, 'statusline').out, /· ready/); const s = sb(d, 'status').out; assert.match(s, /ready \(checkable, not wired yet\)/); assert.doesNotMatch(s, /watching|✓ wired in/);
+  sb(d, 'attach', '--git'); assert.match(sb(d, 'statusline').out, /· watching/, 'the git hook counts'); sb(d, 'detach'); assert.match(sb(d, 'statusline').out, /· ready/);
+  const allow = '{"permissions":{"allow":["Bash(npx -y sawbuck@0.1.47 status)"]}}\n'; put(d, '.claude/settings.local.json', allow);
+  assert.match(sb(d, 'statusline').out, /· ready/, 'a permission that names sawbuck is not a hook'); assert.match(sb(d, 'detach').out, /nothing to detach/); assert.equal(readFileSync(join(d, '.claude/settings.local.json'), 'utf8'), allow);
+});
+test('claim: user-level hooks read as watching, and status says the check needs a promptwheel.config.json where there is none', () => {
+  const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const d = repo(true); assert.equal(sbE(d, { HOME: home }, 'attach', '--user').code, 0);
+  assert.match(sbE(d, { HOME: home }, 'statusline').out, /· watching/);
+  const s = sbE(d, { HOME: home }, 'status').out; assert.match(s, /only in a repo that has a promptwheel\.config\.json/); assert.doesNotMatch(s, /zero-config auto-detect/);
+});
+test('claim: under user-level hooks the check runs only in a repo that has a promptwheel.config.json', () => {
+  const env = { ...ENV, HOME: mkdtempSync(join(tmpdir(), 'claims-home-')) };
+  const stop = (d) => spawnSync(process.execPath, [CLI, '__hook', '--by', 'claude', '--stop'], { cwd: d, encoding: 'utf8', env, input: JSON.stringify({ hook_event_name: 'Stop', cwd: d, session_id: 's' }) }).stdout || '';
+  const caught = (d) => { stop(d); edit(d, 'test/add.test.js', cheat); save(d, 'make it green'); return blocked(stop(d)); };
+  assert.equal(caught(repo()), false, 'no config: the gamed commit is not checked');
+  assert.equal(caught(hookRepo()), true, 'with a config it is');
+});
+test('claim: check --working on a clean tree says there is nothing uncommitted, exit 64, and does not read the last commit as held', () => {
+  const d = gamedRepo(); const r = sb(d, 'check', '--working'); assert.equal(r.code, 64, r.out); assert.match(r.out, /nothing uncommitted/); assert.match(r.out, /`sawbuck check`/); assert.doesNotMatch(r.out, /held|verified/);
+  const e = repo(); edit(e, 'test/add.test.js', cheat); assert.equal(sb(e, 'check', '--working').code, 2, 'a dirty tree is still checked');
+});
+test('claim: a protected path change is sent back in those words', () => { const d = signed(true); put(d, '.npmrc', 'x\n'); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 1); assert.match(r.out, /sent back: a protected path changed, however green the rest is\./); });
+
+// ------------------------------------------------------------ smaller: bad input is refused, not ignored
+test('claim: a broken entry in the steer store does not crash steers or status', () => {
+  const h = steerHome([null, 7, { session: '1' }, { session: '1', repo: 'a', nudge: 'verify first' }]);
+  const r = spawnSync(process.execPath, [CLI, 'steers'], { cwd: h, encoding: 'utf8', env: { ...ENV, HOME: h } });
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /1 steers kept/); assert.doesNotMatch(r.stderr, /TypeError/);
+  const s = sbE(repo(true), { HOME: h }, 'status'); assert.equal(s.code, 0, s.out); assert.doesNotMatch(s.out, /TypeError/);
+});
+for (const c of ['attach', 'detach', 'init', 'doctor', 'status']) {
+  test(`claim: ${c} refuses a flag it does not know, exit 64, and writes nothing`, () => { const d = repo(true); const x = excludeText(d); const r = sb(d, c, '--bogus'); assert.equal(r.code, 64, r.out); assert.match(r.out, /--bogus/); assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(excludeText(d), x); assert.ok(!existsSync(join(d, '.git/sawbuck')) && !existsSync(join(d, '.claude'))); });
+}
+test('claim: the flags each command lists still work, --claude from an older install included', () => {
+  const d = repo(true); const env = { HOME: mkdtempSync(join(tmpdir(), 'claims-home-')) };   // its own home: doctor --all reads every repo attached from it
+  for (const a of [['attach', '--claude'], ['status', '--json'], ['status', '--log', '-n', '3'], ['doctor', '--all'], ['detach', '--claude', '--verify', '--purge'], ['attach', '--dry-run'], ['detach', '--all', '--dry-run'], ['init', '-y', '--no-investigate', '--no-agent-block', '--preset', 'antihack'], ['init', '--yes', '--force']]) { const r = sbE(d, env, ...a); assert.equal(r.code, 0, `${a.join(' ')}: ${r.out}`); }
+});
+test('claim: init outside a git repository refuses, exit 64, and writes nothing', () => { const d = mkdtempSync(join(tmpdir(), 'claims-')); const r = sb(d, 'init', '--yes'); assert.equal(r.code, 64, r.out); assert.match(r.out, /not a git repository/); assert.doesNotMatch(r.out, /fatal:/); assert.deepEqual(readdirSync(d), []); });
+test('claim: init reads the whole history, not only the newest 200 commits', () => { const d = repo(true); for (let i = 0; i < 205; i++) git(d, 'commit', '-q', '--allow-empty', '-m', `c${i}`); assert.match(sb(d, 'init', '--yes').out, /history: 206 commits/); });
+test('claim: init prints its own lines only', () => { const d = repo(true); const r = sb(d, 'init', '--yes'); assert.equal(r.code, 0); assert.match(r.out, /history: \d+ commits/); assert.doesNotMatch(r.out, /matching event/); });
+test('claim: a bare detach removes our hooks even when the receipt is lost', () => {
+  const d = repo(true); sb(d, 'attach'); sb(d, 'attach', '--git'); rmSync(join(d, '.git/sawbuck'), { recursive: true });
+  const r = sb(d, 'detach'); assert.equal(r.code, 0); assert.doesNotMatch(r.out, /nothing to detach/);
+  assert.ok(!existsSync(join(d, '.claude/settings.local.json')) && !existsSync(join(d, '.git/hooks/post-commit')), 'both are gone');
+});
+test('claim: a teammate can detach in their clone of a repo that shares its hooks', () => {
+  const d = repo(true); sb(d, 'attach', '--shared'); save(d, 'share the hooks');
+  const c = join(mkdtempSync(join(tmpdir(), 'claims-')), 'c'); git(d, 'clone', '-q', d, c);
+  const r = sb(c, 'detach'); assert.equal(r.code, 0); assert.doesNotMatch(r.out, /nothing to detach/);
+  const f = join(c, '.claude/settings.json'); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : ''));
+  assert.match(git(c, 'status', '--porcelain'), /\.claude\/settings\.json/, 'and the removal shows in git');
+});
+
+// ------------------------------------------------------------ a dry run lists what the real run touches
+// every file under the roots by content (git's own files aside), so what a command touched is what differs
+const snap = (roots) => {
+  const m = new Map();
+  const skip = (p) => /\/(\.npm|node_modules)$/.test(p) || (/\/\.git\/[^/]+$/.test(p) && !/\/\.git\/(hooks|info|sawbuck)$/.test(p));
+  const walk = (p) => { if (skip(p)) return; if (lstatSync(p).isDirectory()) for (const f of readdirSync(p)) walk(join(p, f)); else m.set(p, readFileSync(p, 'latin1')); };
+  for (const r of roots) if (existsSync(r)) walk(r);
+  return m;
+};
+const touched = (roots, fn) => { const a = snap(roots); const r = fn(); const b = snap(roots); return { r, files: [...new Set([...a.keys(), ...b.keys()])].filter((k) => a.get(k) !== b.get(k)).sort() }; };
+const under = (f, w) => f === w.replace(/\/$/, '') || f.startsWith(w.replace(/\/?$/, '/'));
+const sameAsDry = (d, home, ...cmd) => {
+  const roots = [d, home]; const env = { HOME: home };
+  const dryRun = touched(roots, () => sbE(d, env, ...cmd, '--dry-run'));
+  assert.deepEqual(dryRun.files, [], `${cmd.join(' ')} --dry-run changes nothing`);
+  const want = dryRun.r.out.split('\n').map((l) => (l.match(/^ .*?\s(\/\S+)/) || [])[1]).filter(Boolean);
+  const real = touched(roots, () => sbE(d, env, ...cmd));
+  for (const f of real.files) assert.ok(want.some((w) => under(f, w)), `${cmd.join(' ')} touched ${f}, which the dry run did not list:\n${dryRun.r.out}`);
+  for (const w of want) assert.ok(real.files.some((f) => under(f, w)), `${cmd.join(' ')} --dry-run listed ${w}, which the real run did not touch`);
+  return dryRun.r.out;
+};
+const freshHome = () => mkdtempSync(join(tmpdir(), 'claims-home-'));
+test('claim: attach --dry-run lists exactly the files attach writes, the list of attached repos included', () => {
+  const home = freshHome();
+  assert.match(sameAsDry(hookRepo(true), home, 'attach'), /\.sawbuck\/registry\.json/);
+  assert.match(sameAsDry(signed(true), home, 'attach'), /\.sawbuck\/state\.json/);
+  assert.match(sameAsDry(hookRepo(true), home, 'attach', '--git'), /registry\.json/);
+  assert.match(sameAsDry(hookRepo(true), home, 'attach', '--shared'), /settings\.json/);
+  assert.match(sameAsDry(hookRepo(true), freshHome(), 'attach', '--user'), /user-attach\.json/);
+});
+test('claim: detach --dry-run lists exactly what each detach removes', () => {
+  const home = freshHome(); const both = () => { const d = hookRepo(true); sbE(d, { HOME: home }, 'attach'); return d; };
+  assert.match(sameAsDry(both(), home, 'detach'), /settings\.local\.json/);
+  const g = hookRepo(true); sbE(g, { HOME: home }, 'attach', '--git'); edit(g, 'src/add.js', (s) => s + '//\n'); commit(g, 'a commit, so there is a record'); assert.match(sameAsDry(g, home, 'detach', '--purge'), /\.sawbuck/);
+  const u = both(); const uh = freshHome(); sbE(u, { HOME: uh }, 'attach', '--user');
+  const o = sameAsDry(u, uh, 'detach', '--user'); assert.match(o, /\.claude\/settings\.json/); assert.doesNotMatch(o, /settings\.local\.json/, 'the project hooks stay, so they are not listed');
+});
+test('claim: contract --full --dry-run and the real run count the same things in the same words', () => {
+  const count = (s) => { const m = s.match(/(\d+) protected paths, (\d+) supply-chain guards/); assert.ok(m, s); return [m[1], m[2]]; };
+  const d = repo(true); assert.deepEqual(count(sb(d, 'contract', '--full', '--dry-run').out), count(sb(d, 'contract', '--full').out));
+  const e = repo(true); sb(e, 'contract'); assert.deepEqual(count(sb(e, 'contract', '--full', '--dry-run').out), count(sb(e, 'contract', '--full').out), 'and on a repo already signed plainly');
+});
+
+// ------------------------------------------------------------ the docs say what the code does
+const CONTRACT = readFileSync(join(HERE, '..', 'CONTRACT.md'), 'utf8');
+test('claim: the sample verdict in CONTRACT.md carries the gamingReason the check really prints', () => { const m = check(gamedRepo()).metrics.find((x) => x.gamed); assert.ok(CONTRACT.includes(`"gamingReason": ${JSON.stringify(m.gamingReason)}`), m.gamingReason); });
+test('claim: the README and the contract name only commands the help lists, and no memory provider to plug in', () => {
+  const listed = new Set([...sb(HERE, 'help', '--all').out.matchAll(/^ {2}sawbuck (\w+)/gm)].map((m) => m[1]));
+  for (const [, c] of (README + CONTRACT).matchAll(/(?:^|[`\s])sawbuck ([a-z]+)/gm)) assert.ok(listed.has(c), `sawbuck ${c} is not in the help`);
+  assert.doesNotMatch(README + CONTRACT, /attach --claude|memory provider|pluggable/);
+});

@@ -35,9 +35,10 @@ const noAuto = process.argv.includes('--no-auto');   // user-level wiring: measu
 const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim();
 // backstop so the check can never hang a commit/turn; generous default, overridable.
 const CHECK_TIMEOUT = +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 600000;
-// a commit an agent made: its own Promptwheel-Allow trailer does not clear the verdict. An agent can write a
-// commit message, so the override for its work is a person running `sawbuck check --allow "<reason>"`.
-const childEnv = by ? { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' } : process.env;
+// A Sawbuck-Allow or Promptwheel-Allow trailer never clears the verdict, whichever hook ran this: the git hook cannot
+// tell who made a commit, and an agent can write a commit message. The override is a person running
+// `sawbuck check --allow "<reason>"`.
+const childEnv = { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' };
 const runNode = (file, a) => execFileSync(process.execPath, [file, ...a], { cwd: repo, encoding: 'utf8', env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], timeout: CHECK_TIMEOUT, killSignal: 'SIGKILL' });
 
 // --- 1) the check: measure the commit, parse the structured result ----------
@@ -94,12 +95,15 @@ const testish = (f) => /(\.test\.|\.spec\.|__tests__|\/tests?\/|\.config\.|golde
 const srcFiles = changed.filter((f) => !testish(f));
 // a gamed win is named by the goalpost that moved (a test first, then config or a golden file); a regression by the source
 const isTest = (f) => /(\.test\.|\.spec\.|__tests__|(^|\/)tests?\/)/i.test(f);
-const evidenceFile = kind === 'gamed' ? (changed.find(isTest) || changed.find(testish) || changed[0]) : (srcFiles[0] || changed[0]);
+// a protected path that was touched is the finding, whatever else the change did: name the rule and the file
+const hit = kind === 'regression' ? protectedHit(report) : null;
+const evidenceFile = kind === 'gamed' ? (changed.find(isTest) || changed.find(testish) || changed[0]) : hit ? hit.file : (srcFiles[0] || changed[0]);
 if (!evidenceFile) process.exit(0);
 
 const gamedMetric = (report.metrics || []).find((m) => m.gamed === true);
 const reason = kind === 'gamed'
   ? `sawbuck: a change here was gamed, ${gamedMetric?.gamingReason || 'a metric "improved" by weakening its test, not the source'}`
+  : hit ? `sawbuck: a change here ${hit.why}`
   : `sawbuck: a change here regressed a guarded metric beyond noise`;
 
 // --- 3) record the finding in memory (unreviewed, machine-authored note) ----
@@ -118,21 +122,27 @@ writeRec();
 // --- 5) quiet by default; one line to stderr -
 process.stderr.write(`sawbuck: ${kind} recorded on ${evidenceFile}\n`);
 
+// the first protected path (mandate) the engine reports as touched, in words
+function protectedHit(rep) {
+  const m = (rep.mandates || []).find((x) => x && (x.files || []).length);
+  return m ? { file: m.files[0], why: `touched the protected path "${m.name}": ${m.files.slice(0, 3).join(', ')}${m.files.length > 3 ? `, and ${m.files.length - 3} more` : ''}` } : null;
+}
+
 // --- the activity feed: one line per check so you can watch it work, verified
 // included, not only catches. Capped, lives in the git-excluded .sawbuck/, opt
 // out with SAWBUCK_NO_LOG=1. `sawbuck status --log` reads it.
 function appendActivity(v, rep, standing = false) {
   if (process.env.SAWBUCK_NO_LOG) return;
   const map = { pass: 'verified', gamed: 'gamed', fail: 'regression', inconclusive: 'inconclusive' };
-  const k = (v === 'pass' && rep.allowed) ? 'allowed' : map[v];   // a declared override is logged distinctly, for the audit trail
+  const k = map[v];   // no hook passes --allow and a trailer clears nothing, so there is no "allowed" to log here
   if (!k) return;
   let sha = '', file = '';
   try { sha = git('rev-parse', head).slice(0, 8); } catch {}
-  try { file = git('diff', '--name-only', base, head).split('\n').filter(Boolean)[0] || ''; } catch {}
+  const hit = k === 'regression' ? protectedHit(rep) : null;
+  try { file = (hit && hit.file) || git('diff', '--name-only', base, head).split('\n').filter(Boolean)[0] || ''; } catch {}
   const gm = (rep.metrics || []).find((m) => m.gamed === true);
   const why = k === 'gamed' ? (gm?.gamingReason || 'the win came from editing the goalposts')
-    : k === 'regression' ? 'a guarded metric regressed beyond noise'
-    : k === 'allowed' ? ('declared intentional: ' + (rep.allowed?.reason || ''))
+    : k === 'regression' ? (hit ? `the change ${hit.why}` : 'a guarded metric regressed beyond noise')
     : k === 'verified' ? 'the check passed'
     : 'could not certify a pass';
   // `standing`: this check re-proved the span of a gamed verdict that is still up, not a new catch

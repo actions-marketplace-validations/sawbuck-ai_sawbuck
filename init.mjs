@@ -21,12 +21,15 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { PW, LB } from './bins.mjs';
+import { PW } from './bins.mjs';
+import { events as history } from './memory.mjs';
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
 const out = (s) => process.stdout.write(s.endsWith('\n') ? s : s + '\n');
-const repo = (() => { try { return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8' }).trim(); } catch { return process.cwd(); } })();
+const repo = (() => { try { return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } })();
+// the contract is checked against git history, so outside a repository there is nothing to write it for
+if (!repo) { process.stderr.write(`sawbuck: ${process.cwd()} is not a git repository (run init inside your project)\n`); process.exit(64); }
 
 const yes = has('--yes') || has('-y');
 const forceWizard = has('--wizard');
@@ -63,10 +66,7 @@ else { writeCfg(); report(); }
 
 // ---------------------------------------------------------------------------
 function investigateHistory() {
-  let record = '';
-  try { record = execFileSync(process.execPath, [LB, 'query', '--json'], { cwd: repo, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }); }
-  catch (e) { record = (e.stdout || '').toString(); }
-  const events = record.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const events = history(repo);   // every event, through the one adapter: not the newest 200, and none of Logbook's own count lines
   const codeish = (p) => /\.(m?[jt]sx?|cjs|py|go|rs|rb|java|kt|c|cc|cpp|h|hpp|php|swift|scala|clj|ex|exs)$/i.test(p);
   let reverts = 0, suppressions = 0, weakenings = 0;
   const freq = new Map();
