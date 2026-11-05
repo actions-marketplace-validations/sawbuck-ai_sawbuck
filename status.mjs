@@ -13,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repoState } from './repo-state.mjs';
+import { readSteers, groupSteers } from './steers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
@@ -29,6 +30,7 @@ const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: 
 // results.json holds the all-time catch tally (gamed + regression, never trimmed); activity.jsonl is
 // the recent per-check feed (verified included, capped ~200). We read both and keep each honest.
 const { results, caught: catchesAllTime, state: kind, steer, armed, hasConfig } = repoState(repo);
+const repeated = groupSteers(readSteers().steers).filter((g) => g.n >= 3 && g.sessions >= 2);
 const feed = readLines(join(repo, '.sawbuck', 'activity.jsonl')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 0, mandate: 0 };
 for (const e of feed) if (e && tally[e.kind] != null) tally[e.kind]++;
@@ -64,6 +66,7 @@ if (asJson) {
     config: hasConfig,
     outcomes: { seen, caughtAllTime: catchesAllTime, gamedAllTime: results.gamed || 0, regressionsAllTime: results.regressions || 0, recent: tally, latest, since },
     steer,
+    repeated: repeated.slice(0, 3).map((g) => ({ nudge: g.nudge, n: g.n })),
     debt: debt ? { total: debt.total, testSkips: debt.testSkips, undocumented: debt.undocumented, filesOnFragileCode: debt.filesOnFragileCode, top: (debt.files || []).slice(0, 5) } : null,
     debtError: debtErr,
   }, null, 2));
@@ -109,6 +112,12 @@ if (seen || catchesAllTime) {
 if (steer) {
   out.push('');
   out.push(`   Steer rate  ·  ${steer.rate}% of your recent turns redirected the agent (${steer.scored} scored, recent-window average)`);
+}
+// what you keep saying, across repos: a steer the judge kept 3 times in 2 sessions is a rule waiting to be written
+if (repeated.length) {
+  out.push('');
+  out.push('   You keep saying  ·  write one down if it is a rule (/sawbuck-reins:rules can help)');
+  for (const g of repeated.slice(0, 3)) out.push(`     ${g.n}x  ${g.nudge}`);
 }
 
 // Debt

@@ -24,7 +24,7 @@ npx sawbuck check
 # 2 · give this repo its rules: the written rule, protected paths, and your tests if it has no config yet
 npm i -g sawbuck
 sawbuck contract          # --full adds supply-chain guards, a repo lock and, on a GitHub repo, a CI check
-sawbuck attach            # check every Claude Code turn
+sawbuck attach            # check every Claude Code turn (--shared for a team file, --git for any other agent)
 ```
 
 **Zero-config:** it finds npm, pytest, cargo and go tests on its own, so in those repos there is nothing to write to start. Anything else (a Makefile target, say) reads inconclusive until you set the command in `promptwheel.config.json`.
@@ -56,7 +56,7 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 - **Shows you everything.** `status` is the inventory: what it has caught for you over time, the debt accruing now, and whether it is armed here, in one view. On-demand, so it is quiet until you go looking.
 - **Rides on, does not replace.** Sawbuck is the verify + memory layer. Your agent and your loop stay yours.
 - **Clean on and off.** `attach` writes a git-excluded `.claude/settings.local.json`, the lines in `.git/info/exclude` that keep its files out of `git status`, a receipt under `.git/sawbuck/`, and in a signed repo `.sawbuck/state.json`; `attach --dry-run` lists all of it. `detach` removes the hooks and the receipt. Signed contract files stay because they are yours to review. The record (`.sawbuck/`, the logbook files) stays too, still out of `git status`, until `detach --purge` deletes it and the exclude lines. `detach --verify` proves the wiring is gone and names what is left.
-- **A limit of the hooks file.** `.claude/settings.local.json` is kept out of git, so taking the hooks out of it shows in no diff, and the check cannot see it. `sawbuck doctor` can: it reads the receipt and says the hooks are gone.
+- **A limit of the hooks file.** `.claude/settings.local.json` is kept out of git, so taking the hooks out of it shows in no diff, and the check cannot see it. `sawbuck doctor` can: it reads the receipt and says the hooks are gone. `sawbuck attach --shared` avoids it: the hooks go in a tracked file, and a removal shows in git.
 
 ## Commands
 
@@ -64,15 +64,15 @@ Exit codes: `0` verified · `1` regression · `2` gamed · `3` inconclusive · `
 |---|---|
 | `sawbuck contract` | gives a repo its rules: protected paths and the written rule. With no config yet it writes one with your detected tests; an existing config is kept as it is, and gets no tests added. `--full` adds supply-chain guards, a repo lock and a CI check (only with a github.com origin and a real test command; it says when it skips it). `--strict` makes them block, also after an earlier `--full`. `--dry-run` previews |
 | `sawbuck check [--base R --head R] [--repeat N] [--allow "reason"] [--json]` | verify your latest change (working tree if dirty, else the last commit, or a range); zero-config, no attach, no record. Every `promptwheel run` flag passes through: this is the engine with a plain-spoken verdict |
-| `sawbuck attach [--user]` | check every Claude Code turn, here or in every repo |
-| `sawbuck detach [--user] [--verify] [--purge]` | remove the hooks; no flag reverses whatever is attached here. `--purge` also deletes the record |
+| `sawbuck attach [--user \| --shared \| --git]` | check every Claude Code turn here. `--user`: in every repo. `--shared`: a tracked `.claude/settings.json` a team commits, with no path from your machine in it. `--git`: a post-commit hook, so every commit is checked whatever made it |
+| `sawbuck detach [--user] [--all] [--verify] [--purge] [--dry-run]` | remove the hooks; no flag reverses whatever is attached here, `--all` does every repo. `--purge` also deletes the record, `--dry-run` only shows |
 | `/sawbuck-reins:audit` | finds rules in your agent files that can pull against each other, and proposes which wins. No history needed |
 | `/sawbuck-reins:rules` | proposes the rules you keep enforcing, from your own messages, each with quotes; you pick what to keep. Tested on one person so far |
-| `/sawbuck-reins:shape` | what you push on, from a sample of your own messages, as a card |
-| `sawbuck status` | the inventory (caught over time + debt now + armed state), in one view; `--log` for the recent per-check feed |
+| `/sawbuck-reins:shape` | what you push on, from a sample of your own messages, as a card. It also reads up to 120 past turns and names habits the agent has that you never push on, each with the agent's own words. Leads from one read, tested on one person |
+| `sawbuck status` | the inventory (caught over time, debt now, armed state, what you keep saying), in one view; `--log` for the recent per-check feed |
 | `sawbuck debt [repo]` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
-| `sawbuck doctor` · `detach --verify` | run what each hook runs (project and user level) and say if it still works; prove the wiring is gone |
+| `sawbuck doctor [--all]` · `detach --verify` | run what each hook runs (project and user level) and say if it still works, `--all` for every repo it is attached to; prove the wiring is gone |
 | `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught) |
 
 ## Give your agent the rule
