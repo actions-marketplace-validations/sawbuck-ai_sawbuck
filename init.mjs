@@ -15,6 +15,7 @@
 //   --force           overwrite an existing promptwheel.config.json
 //   --preset <name>   pass through to `promptwheel init`
 
+import './pipe.mjs';
 import { writeAgentBlock } from './agent-block.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';

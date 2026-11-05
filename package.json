@@ -45,6 +45,7 @@
     "shape.mjs",
     "agent-block.mjs",
     "exclude.mjs",
+    "pipe.mjs",
     "repo-state.mjs",
     "contract-cmd.mjs",
     "bins.mjs",

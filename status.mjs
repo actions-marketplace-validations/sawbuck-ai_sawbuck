@@ -8,6 +8,7 @@
 // Read-only, zero-dep, bounded. The debt scan is best-effort (a pointer if it cannot run in time).
 // Usage: node status.mjs [--repo P] [--json]
 
+import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';

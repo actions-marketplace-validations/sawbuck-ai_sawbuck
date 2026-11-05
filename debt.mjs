@@ -7,6 +7,7 @@
 // complete lens for CURRENT debt; the historical diff scan under-counts it.
 // Zero-dep. Usage: node debt.mjs [repo] [--repo P] [--top N] [--since REF] [--fail-on undocumented|test|any|N] [--json]
 
+import './pipe.mjs';
 import { basename, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { events as memEvents, debt as memDebt } from './memory.mjs';

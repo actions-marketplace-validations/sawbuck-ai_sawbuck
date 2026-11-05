@@ -92,7 +92,9 @@ const sha = git('rev-parse', head);
 const changed = git('diff', '--name-only', base, head).split('\n').filter(Boolean);
 const testish = (f) => /(\.test\.|\.spec\.|__tests__|\/tests?\/|\.config\.|golden|fixture|snapshot)/i.test(f);
 const srcFiles = changed.filter((f) => !testish(f));
-const evidenceFile = srcFiles[0] || changed[0];
+// a gamed win is named by the goalpost that moved (a test first, then config or a golden file); a regression by the source
+const isTest = (f) => /(\.test\.|\.spec\.|__tests__|(^|\/)tests?\/)/i.test(f);
+const evidenceFile = kind === 'gamed' ? (changed.find(isTest) || changed.find(testish) || changed[0]) : (srcFiles[0] || changed[0]);
 if (!evidenceFile) process.exit(0);
 
 const gamedMetric = (report.metrics || []).find((m) => m.gamed === true);

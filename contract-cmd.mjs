@@ -3,6 +3,7 @@
 // tests to it); with no config it writes one with your detected tests. Adds the protected paths and the written rule, which is what changes the agent (the pressure bench: 11 of
 // 20 to 0 of 20). --full adds the supply-chain guards, the repo lock and a CI check (github.com origin, real test command). Zero-LLM. Re-running changes
 // nothing. Protected product code (auth, billing) is suggested, never added: freezing those is a person's decision.
+import './pipe.mjs';
 import { ensureExcluded } from './exclude.mjs';
 import { writeAgentBlock } from './agent-block.mjs';
 import { execFileSync } from 'node:child_process';

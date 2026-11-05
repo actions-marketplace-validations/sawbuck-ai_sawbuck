@@ -6,6 +6,7 @@
 // attach writes a receipt to .git/sawbuck/attach.json recording every file it created or modified. detach reads it and
 // reverses exactly that; `detach --verify` proves the wiring is gone and names what is left; `doctor` runs what each hook runs.
 
+import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { steersReport } from './steers.mjs';
