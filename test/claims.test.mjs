@@ -507,6 +507,19 @@ test('claim: an inconclusive check names the cause: a failed setup, a missing de
   const setup = repo(true); put(setup, 'promptwheel.config.json', JSON.stringify({ repeat: 1, setup: 'echo "boom: no compiler" >&2; exit 7', metrics: [{ name: 'tests_pass', cmd: 'false', extract: 'exit', direction: 'pass', guard: true }] }) + '\n'); save(setup, 'cfg'); edit(setup, 'src/add.js', (s) => s + '// x\n');
   assert.match(sb(setup, 'check').out, /inconclusive: the setup command failed \(exit 7\)[^\n]*boom: no compiler/);
 });
+// found by running real repos (proof-bench/field): eslint/rewrite's tests import a sibling package's built output
+test('claim: when the tests need a build first, the inconclusive message points at sawbuck init, and following it works', () => {
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test', build: 'mkdir -p build && cp src/add.js build/add.js' } }) + '\n'); put(d, '.gitignore', 'build\n');
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a+b\n');
+  put(d, 'test/add.test.js', "require('node:test').test('add',()=>require('node:assert').equal(require('../build/add.js').add(2,2),4))\n"); save(d, 'base');
+  put(d, 'NOTES.md', 'x\n'); save(d, 'a note');
+  const r = sb(d, 'check'); assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /is missing something your tests need[^\n]*build[^\n]*`sawbuck init` writes a config that runs it/);
+  assert.equal(sb(d, 'init', '--yes', '--no-investigate', '--no-agent-block').code, 0); save(d, 'config');
+  put(d, 'NOTES.md', 'y\n'); save(d, 'another note');
+  const ok = sb(d, 'check'); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /held/);
+});
 test('claim: a setup command that fails is said even when the tests still pass', () => {
   const d = repo(true); put(d, 'promptwheel.config.json', JSON.stringify({ repeat: 1, setup: 'echo "boom: no compiler" >&2; exit 7', metrics: [{ name: 'tests_pass', cmd: 'npm test --silent', extract: 'exit', direction: 'pass', guard: true }] }) + '\n'); save(d, 'cfg'); edit(d, 'src/add.js', (s) => s + '// x\n');
   const o = sb(d, 'check').out; assert.match(o, /held: nothing got worse/); assert.match(o, /setup command failed \(exit 7\)[^\n]*boom: no compiler/);

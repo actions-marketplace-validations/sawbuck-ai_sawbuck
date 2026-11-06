@@ -52,8 +52,12 @@ function inconclusiveWhy(rep, repo) {
   const placeholder = /set your test command/.test(cmd) || (!hasCfg && !detectedTests(repo));
   const where = hasCfg ? 'in promptwheel.config.json' : 'with `sawbuck init`, then in promptwheel.config.json';
   if (placeholder) return `there is no test command here, so nothing was measured. It finds npm, pytest, cargo and go tests on its own. Set yours ${where} (the cmd of "${(m && m.name) || 'tests_pass'}").`;
-  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${m.detail}. Link it with linkDirs, or install it with setup, ${where}.`;
-  return `your tests fail before and after this change, so there was no win or loss to measure ("${(m && m.name) || 'tests_pass'}"). Fix the failing tests first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.`;
+  // tests that import a built folder (dist, build) or a sibling package's built output need the build to run first
+  let build = false; try { build = !!JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).scripts?.build; } catch {}
+  const needsBuild = !build ? '' : hasCfg ? ' This repo has a build script: if your tests need it, set "setup" to it in promptwheel.config.json.' : ' This repo has a build script, and tests often need it first: `sawbuck init` writes a config that runs it.';
+  if (m && m.cause === 'too-much-output') return `your test command was stopped: ${m.detail}. Make it quieter, or point the check at a smaller command ${where}.`;
+  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${m.detail}. Link it with linkDirs, or install it with setup, ${where}.${needsBuild}`;
+  return `your tests fail before and after this change, so there was no win or loss to measure ("${(m && m.name) || 'tests_pass'}"). Fix the failing tests first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.${needsBuild}`;
 }
 // the test commands the engine finds with no config (promptwheel's detectTestCmd)
 function detectedTests(repo) {
