@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -249,7 +249,7 @@ test('claim: debt reads the repo you name', () => { const d = debtRepo(); const 
 test('claim: debt --fail-on any fails on live debt without --since', () => { assert.equal(sb(debtRepo(), 'debt', '--fail-on', 'any').code, 1); assert.equal(sb(repo(true), 'debt', '--fail-on', 'any').code, 0); });
 test('claim: debt refuses a --fail-on it does not know', () => { const r = sb(debtRepo(), 'debt', '--fail-on', 'bogus'); assert.equal(r.code, 64); assert.match(r.out, /undocumented\|test\|any/); });
 test('claim: with no test command, inconclusive says so, and does not blame isolation or send a signed repo to init', () => { const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q'); put(d, 'a', '1'); save(d, 'a'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'a', '2'); save(d, 'b'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /no test command/); assert.doesNotMatch(r.out, /isolation|sawbuck init/); });
-test('claim: when the tests fail before and after, inconclusive says that, not isolation', () => { const d = repo(false); put(d, 'NOTES.md', 'x\n'); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /failed before and after/); assert.doesNotMatch(r.out, /did not run in isolation/); });
+test('claim: when the tests fail before and after, inconclusive says that, not isolation', () => { const d = repo(false); put(d, 'NOTES.md', 'x\n'); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /your tests fail before and after/); assert.doesNotMatch(r.out, /did not run in isolation/); });
 test('limit: auto-detect finds npm, pytest, cargo and go tests; a Makefile test target is not one of them', () => { const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q'); put(d, 'Makefile', 'test:\n\ttrue\n'); put(d, 'a', '1'); save(d, 'a'); put(d, 'a', '2'); save(d, 'b'); const r = sb(d, 'check'); assert.equal(r.code, 3); assert.match(r.out, /no test command/); });
 test('claim: a check that cannot run says why, in the engine\'s words, exit 64', () => { const d = repo(true); edit(d, 'src/add.js', (s) => s + '//\n'); save(d, 'x'); let r = sb(d, 'check', '--base', 'nope'); assert.equal(r.code, 64); assert.match(r.out, /base ref "nope"/); r = sb(d, 'check', '--bogus-flag'); assert.equal(r.code, 64); assert.match(r.out, /unknown flag --bogus-flag/); r = sb(d, 'check', '--repeat', 'abc'); assert.equal(r.code, 64, `a bad value: ${r.out}`); assert.match(r.out, /--repeat/); r = sb(d, 'check', '--repeat'); assert.equal(r.code, 64, `a missing value: ${r.out}`); assert.match(r.out, /--repeat needs a value/); put(d, 'promptwheel.config.json', '{bad'); save(d, 'j'); r = sb(d, 'check'); assert.equal(r.code, 64); assert.match(r.out, /invalid config/); });
 test('limit: contract keeps an existing config as it is and adds no tests to it', () => { const d = repo(true); put(d, 'promptwheel.config.json', '{"repeat":1,"metrics":[]}\n'); save(d, 'c'); assert.equal(sb(d, 'contract').code, 0); assert.deepEqual(JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8')).metrics, []); });
@@ -441,6 +441,26 @@ test('claim: contract --full --dry-run and the real run count the same things in
   const e = repo(true); sb(e, 'contract'); assert.deepEqual(count(sb(e, 'contract', '--full', '--dry-run').out), count(sb(e, 'contract', '--full').out), 'and on a repo already signed plainly');
 });
 
+// An outside report found the preview left out AGENTS.md, the CI workflow and five of the checks. The test above only
+// compared two counts in a sentence, so this one compares what lands on disk.
+test('claim: contract --dry-run lists exactly the files a real run writes, and the same checks', () => {
+  const listed = (o) => [...o.matchAll(/^  (\S+)\s+(?:new|changed)\b/gm)].map((m) => m[1]).sort();
+  const wrote = (d) => [...new Set(git(d, 'status', '--porcelain', '-uall').split('\n').filter(Boolean).map((l) => l.replace(/^\s*\S+\s+/, '').replace(/^(\.promptwheel\/packs\/supply-chain\/).*/, '$1')))].sort();   // git() trims, so the first line has lost its leading space
+  const checks = (o) => (o.match(/(\d+) checks/) || [])[1];
+  for (const [name, setup, flags] of [['plain', () => {}, []], ['--full', () => {}, ['--full']], ['--full after plain', (d) => { sb(d, 'contract'); save(d, 'signed plainly'); }, ['--full']], ['--strict after --full', (d) => { sb(d, 'contract', '--full'); save(d, 'signed'); }, ['--strict']]]) {
+    const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); setup(d);
+    const dry = sb(d, 'contract', ...flags, '--dry-run').out;
+    assert.equal(git(d, 'status', '--porcelain'), '', `${name}: the dry run wrote nothing`);
+    assert.equal(sb(d, 'contract', ...flags).code, 0);
+    assert.deepEqual(listed(dry), wrote(d), `${name}: the files`);
+    assert.equal(+checks(dry), JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8')).metrics.length, `${name}: the checks`);
+  }
+});
+test('claim: contract --dry-run on a repo that is already signed says nothing would change', () => {
+  const d = repo(true); sb(d, 'contract'); save(d, 'signed');
+  assert.match(sb(d, 'contract', '--dry-run').out, /already signed, nothing would change/);
+});
+
 // ------------------------------------------------------------ the docs say what the code does
 const CONTRACT = readFileSync(join(HERE, '..', 'CONTRACT.md'), 'utf8');
 test('claim: the sample verdict in CONTRACT.md carries the gamingReason the check really prints', () => { const m = check(gamedRepo()).metrics.find((x) => x.gamed); assert.ok(CONTRACT.includes(`"gamingReason": ${JSON.stringify(m.gamingReason)}`), m.gamingReason); });
@@ -454,4 +474,132 @@ test('claim: the README and the contract name only commands the help lists, and 
   const listed = new Set([...sb(HERE, 'help', '--all').out.matchAll(/^ {2}sawbuck (\w+)/gm)].map((m) => m[1]));
   for (const [, c] of (README + CONTRACT).matchAll(/(?:^|[`\s])sawbuck ([a-z]+)/gm)) assert.ok(listed.has(c), `sawbuck ${c} is not in the help`);
   assert.doesNotMatch(README + CONTRACT, /attach --claude|memory provider|pluggable/);
+});
+
+// ------------------------------------------------------------ an outside field report on 0.1.44 (2026-11-05)
+// A private npm-workspaces monorepo, 15 defects. Each one still open on 0.1.49 is a test here, written before its fix.
+function monoRepo() {
+  const d = mkdtempSync(join(tmpdir(), 'claims-mono-'));
+  git(d, 'init', '-q', '-b', 'main');
+  put(d, '.gitignore', 'node_modules\n');
+  put(d, 'package.json', JSON.stringify({ name: 'mono', private: true, version: '1.0.0', workspaces: ['apps/*', 'packages/*'], scripts: { test: 'node --test' } }) + '\n');
+  put(d, 'apps/web/package.json', '{"name":"web","version":"1.0.0"}\n');
+  put(d, 'packages/util/package.json', '{"name":"@x/util","version":"1.0.0","main":"index.js"}\n');
+  put(d, 'packages/util/index.js', 'exports.add=(a,b)=>a-b\n');
+  put(d, 'apps/web/node_modules/localdep/package.json', '{"name":"localdep","version":"1.0.0","main":"index.js"}\n'); put(d, 'apps/web/node_modules/localdep/index.js', 'module.exports=(x)=>x\n');
+  mkdirSync(join(d, 'node_modules/@x'), { recursive: true }); symlinkSync('../../packages/util', join(d, 'node_modules/@x/util'));
+  put(d, 'apps/web/src/sum.js', "const id=require('localdep');const {add}=require('@x/util');exports.sum=(a,b)=>id(add(a,b))\n");
+  put(d, 'apps/web/test/sum.test.js', "require('node:test').test('sum',()=>require('node:assert').equal(require('../src/sum.js').sum(2,3),5))\n");
+  save(d, 'base');
+  return d;
+}
+test('claim: a workspaces monorepo is measured with nothing to write: a workspace\'s own dependencies and its sibling packages resolve', () => {
+  const d = monoRepo(); put(d, 'packages/util/index.js', 'exports.add=(a,b)=>a+b\n');
+  const r = sb(d, 'check'); assert.equal(r.code, 0, r.out); assert.match(r.out, /verified: your working change earned it/);
+  const e = monoRepo(); put(e, 'apps/web/test/sum.test.js', "require('node:test').test('sum',()=>require('node:assert').equal(require('../src/sum.js').sum(2,3),-1))\n");
+  assert.equal(sb(e, 'check').code, 2, 'and a test edited to go green there reads gamed');
+});
+test('claim: an inconclusive check names the cause: a failed setup, a missing dependency, or tests that fail', () => {
+  const red = repo(false); edit(red, 'src/add.js', (s) => s + '// x\n');
+  assert.match(sb(red, 'check').out, /inconclusive: your tests fail before and after this change/);
+  const dep = repo(true); put(dep, 'test/add.test.js', "require('a-package-nobody-installed');\n" + TEST); save(dep, 'needs a package'); edit(dep, 'src/add.js', (s) => s + '// x\n');
+  const o = sb(dep, 'check').out; assert.match(o, /inconclusive: the clean copy the check runs in is missing something your tests need/); assert.match(o, /a-package-nobody-installed/);
+  const setup = repo(true); put(setup, 'promptwheel.config.json', JSON.stringify({ repeat: 1, setup: 'echo "boom: no compiler" >&2; exit 7', metrics: [{ name: 'tests_pass', cmd: 'false', extract: 'exit', direction: 'pass', guard: true }] }) + '\n'); save(setup, 'cfg'); edit(setup, 'src/add.js', (s) => s + '// x\n');
+  assert.match(sb(setup, 'check').out, /inconclusive: the setup command failed \(exit 7\)[^\n]*boom: no compiler/);
+});
+// found by running real repos (proof-bench/field): eslint/rewrite's tests import a sibling package's built output
+test('claim: when the tests need a build first, the inconclusive message points at sawbuck init, and following it works', () => {
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test', build: 'mkdir -p build && cp src/add.js build/add.js' } }) + '\n'); put(d, '.gitignore', 'build\n');
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a+b\n');
+  put(d, 'test/add.test.js', "require('node:test').test('add',()=>require('node:assert').equal(require('../build/add.js').add(2,2),4))\n"); save(d, 'base');
+  put(d, 'NOTES.md', 'x\n'); save(d, 'a note');
+  const r = sb(d, 'check'); assert.equal(r.code, 3, r.out);
+  assert.match(r.out, /is missing something your tests need[^\n]*build[^\n]*`sawbuck init` writes a config that runs it/);
+  assert.equal(sb(d, 'init', '--yes', '--no-investigate', '--no-agent-block').code, 0); save(d, 'config');
+  put(d, 'NOTES.md', 'y\n'); save(d, 'another note');
+  const ok = sb(d, 'check'); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /held/);
+});
+test('claim: a setup command that fails is said even when the tests still pass', () => {
+  const d = repo(true); put(d, 'promptwheel.config.json', JSON.stringify({ repeat: 1, setup: 'echo "boom: no compiler" >&2; exit 7', metrics: [{ name: 'tests_pass', cmd: 'npm test --silent', extract: 'exit', direction: 'pass', guard: true }] }) + '\n'); save(d, 'cfg'); edit(d, 'src/add.js', (s) => s + '// x\n');
+  const o = sb(d, 'check').out; assert.match(o, /held: nothing got worse/); assert.match(o, /setup command failed \(exit 7\)[^\n]*boom: no compiler/);
+});
+test('claim: a gamed verdict in a change that also edits how the check measures says to commit that edit on its own first', () => {
+  // the tests need a build step. With no config nothing can be measured. A person adds the setup and fixes the bug in one change.
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test' } }) + '\n'); put(d, '.gitignore', 'build\n');
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a-b\n');
+  put(d, 'test/add.test.js', "require('node:test').test('add',()=>require('node:assert').equal(require('../build/add.js').add(2,2),4))\n"); save(d, 'base');
+  const cfg = JSON.stringify({ repeat: 1, setup: 'mkdir -p build && cp src/add.js build/add.js', metrics: [{ name: 'tests_pass', cmd: 'npm test --silent', extract: 'exit', direction: 'pass', guard: true }] }) + '\n';
+  edit(d, 'src/add.js', fixAdd); put(d, 'promptwheel.config.json', cfg);
+  const r = sb(d, 'check'); assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /this change also edits how the check measures[^\n]*Commit that edit on its own first/);
+  // and doing what it says works: the setup on its own, then the fix
+  git(d, 'checkout', '-q', '--', 'src/add.js'); save(d, 'measure with a build step'); edit(d, 'src/add.js', fixAdd);
+  const ok = sb(d, 'check'); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /verified/);
+});
+test('claim: signing does not move any of the repo\'s own counts: the tool\'s copied scanners are left out of every tripwire', () => {
+  const d = repo(true); assert.equal(sb(d, 'contract', '--full').code, 0); save(d, 'sign');
+  const rep = check(d);
+  for (const n of ['test_count', 'skipped_tests', 'suppressions', 'assertions']) { const m = rep.metrics.find((x) => x.name === n); assert.equal(m.before, m.after, `${n} moved from ${m.before} to ${m.after} by signing`); }
+});
+test('claim: the CI workflow --full writes pins every action by commit, the check\'s own included, at the engine version this release pins', () => {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0);
+  const wf = readFileSync(join(d, '.github/workflows/sawbuck.yml'), 'utf8');
+  const uses = [...wf.matchAll(/uses: (\S+)(?: # (\S+))?/g)]; assert.ok(uses.length >= 2, wf);
+  for (const [, u] of uses) assert.match(u, /@[0-9a-f]{40}$/, `${u} is not pinned by commit`);
+  const own = uses.find(([, u]) => u.startsWith('promptwheel-ai/promptwheel@')); assert.ok(own, wf);
+  assert.equal(own[2], `v${JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).dependencies.promptwheel}`, 'the comment names the pinned engine version');
+  save(d, 'sign'); assert.equal(check(d).metrics.find((m) => m.name === 'unpinned_execution').after, 0, 'and the repo\'s own unpinned_execution guard counts nothing in it');
+});
+test('claim: doctor --all says user-level hooks cover every repo, not one folder', () => {
+  const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const d = repo(true); assert.equal(sbE(d, { HOME: home }, 'attach', '--user').code, 0);
+  const o = sbE(d, { HOME: home }, 'doctor', '--all').out;
+  assert.match(o, /user\s+every repo you open in Claude Code/); assert.doesNotMatch(o.split('\n').find((l) => /^\s+user\s/.test(l)) || '', new RegExp(d.split('/').pop()));
+});
+test('claim: context with nothing to show prints nothing to stdout, so an old hook stays quiet, and says why on stderr', () => {
+  const d = repo(true); put(d, 'x.txt', 'x\n'); save(d, 'second');
+  const r = spawnSync(process.execPath, [CLI, 'context'], { cwd: d, encoding: 'utf8', env: ENV });
+  assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.match(r.stderr, /sawbuck: (no notable history|nothing changed)/);
+});
+// The printed verdict and the JSON are two views of one run. The report's worst finding was the two disagreeing
+// (the terminal said "verified" while the JSON said the source carried none of the win), so they are checked together.
+test('claim: the printed verdict and the JSON say the same thing, for every kind of result', () => {
+  const word = (o) => (o.match(/^🐴 \S+ (verified|held|allowed with --allow|passed|gamed|sent back|inconclusive)/m) || [])[1];
+  const expect = (rep) => rep.verdict === 'gamed' ? 'gamed' : rep.verdict === 'fail' ? 'sent back' : rep.verdict === 'inconclusive' ? 'inconclusive'
+    : rep.allowed ? 'allowed with --allow' : rep.metrics.some((m) => m.status === 'improved' && !m.tripwire) ? 'verified' : 'held';
+  const cases = {
+    'an honest fix': [() => { const d = repo(false); edit(d, 'src/add.js', fixAdd); return d; }, []],
+    'a test edited to go green': [() => { const d = repo(false); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); return d; }, []],
+    'the same, waived': [() => { const d = repo(false); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); return d; }, ['--allow', 'the spec changed']],
+    'nothing to measure': [() => { const d = repo(false); edit(d, 'src/add.js', (s) => s + '// x\n'); return d; }, []],
+    'nothing to measure, waived': [() => { const d = repo(false); edit(d, 'src/add.js', (s) => s + '// x\n'); return d; }, ['--allow', 'ship it']],
+    'a harmless change': [() => { const d = repo(true); edit(d, 'src/add.js', (s) => s + '// x\n'); return d; }, []],
+    'a regression': [() => { const d = repo(true); edit(d, 'src/add.js', breakAdd); return d; }, []],
+    'a protected path': [() => { const d = repo(true); sb(d, 'contract'); save(d, 'sign'); put(d, 'Dockerfile', 'FROM node:22\n'); return d; }, []],
+    'the rules file, waived': [() => { const d = repo(true); sb(d, 'contract'); save(d, 'sign'); json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); return d; }, ['--allow', 'more repeats']],
+  };
+  for (const [name, [make, flags]] of Object.entries(cases)) {
+    const d = make(); const text = sb(d, 'check', ...flags); const rep = check(d, ...flags);
+    assert.equal(word(text.out), expect(rep), `${name}: the terminal said "${word(text.out)}" for a JSON verdict of ${rep.verdict}${rep.allowed ? ' (allowed)' : ''}\n${text.out}`);
+    assert.equal(text.code, rep.code, `${name}: the exit codes`);
+    if (rep.allowed || rep.verdict !== 'pass') assert.doesNotMatch(text.out, /verified|the source carried the win/, `${name}: never "verified" on a waived or failed run`);
+    if (rep.verdict === 'inconclusive') assert.equal(text.code, 3, `${name}: inconclusive is never exit 0`);
+  }
+});
+// The report could not tell whether the tool was armed: status, doctor and the attachment list each told a different
+// story under user-level hooks. Every way of attaching is checked against every command that reports it.
+test('claim: however it is attached, status, the status line and doctor all say it is watching', () => {
+  for (const mode of [[], ['--shared'], ['--git'], ['--user']]) {
+    const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { HOME: home };
+    const d = repo(true); assert.equal(sbE(d, env, 'contract').code, 0); save(d, 'sign');
+    assert.equal(sbE(d, env, 'attach', ...mode).code, 0, mode.join(' '));
+    const name = mode[0] || 'project';
+    assert.match(sbE(d, env, 'status').out, /watching/, `${name}: status`);
+    assert.match(sbE(d, env, 'statusline').out, /watching/, `${name}: status line`);
+    // doctor runs what each hook runs. The shared hooks run this version through npx, which exists only once it is
+    // published, so that one is checked by the release script's cold test, not here.
+    if (name !== '--shared') { const doc = sbE(d, env, 'doctor'); assert.equal(doc.code, 0, `${name}: doctor\n${doc.out}`); assert.match(doc.out, /OK/, `${name}: doctor`); }
+    assert.match(sbE(d, env, 'doctor', '--all').out, /attached to/, `${name}: the list`);
+  }
 });

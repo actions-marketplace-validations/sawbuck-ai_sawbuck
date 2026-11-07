@@ -39,17 +39,25 @@ function gateReport(repo, a) {
 }
 // why nothing could be measured, in words that match the case: no test command, tests red on both sides, or a
 // win the source-only re-run could not apply. `sawbuck init` only where there is no config to edit yet.
+// a setup command that failed, in words: "(exit 7) at the base and head refs: <its last line>". '' when setup worked.
+const setupFailure = (rep) => { const s = rep && rep.setup; if (!s) return ''; const at = Object.keys(s), f = s[at[0]]; return `(exit ${f.exit}) at the ${at.join(' and ')} ref${at.length > 1 ? 's' : ''}${f.lastLine ? ': ' + f.lastLine : ''}`; };
 function inconclusiveWhy(rep, repo) {
   const ms = (rep && rep.metrics) || [];
   const m = ms.find((x) => x.inert) || ms[0];
   if (ms.some((x) => x.unprovable)) return 'a win here could not be re-proved, because the source-only re-run did not apply. Do not trust this green on its own.';
+  if (setupFailure(rep)) return `the setup command failed ${setupFailure(rep)}. Fix "setup" in promptwheel.config.json, then check again.`;
   const hasCfg = existsSync(join(repo, 'promptwheel.config.json'));
   let cmd = '';
   try { cmd = String((JSON.parse(readFileSync(join(repo, 'promptwheel.config.json'), 'utf8')).metrics || []).find((x) => x && x.name === (m && m.name))?.cmd || ''); } catch {}
   const placeholder = /set your test command/.test(cmd) || (!hasCfg && !detectedTests(repo));
   const where = hasCfg ? 'in promptwheel.config.json' : 'with `sawbuck init`, then in promptwheel.config.json';
   if (placeholder) return `there is no test command here, so nothing was measured. It finds npm, pytest, cargo and go tests on its own. Set yours ${where} (the cmd of "${(m && m.name) || 'tests_pass'}").`;
-  return `"${(m && m.name) || 'tests_pass'}" failed before and after this change, so there was no win or loss to measure. If your tests are red, fix them first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.`;
+  // tests that import a built folder (dist, build) or a sibling package's built output need the build to run first
+  let build = false; try { build = !!JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).scripts?.build; } catch {}
+  const needsBuild = !build ? '' : hasCfg ? ' This repo has a build script: if your tests need it, set "setup" to it in promptwheel.config.json.' : ' This repo has a build script, and tests often need it first: `sawbuck init` writes a config that runs it.';
+  if (m && m.cause === 'too-much-output') return `your test command was stopped: ${m.detail}. Make it quieter, or point the check at a smaller command ${where}.`;
+  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${m.detail}. Link it with linkDirs, or install it with setup, ${where}.${needsBuild}`;
+  return `your tests fail before and after this change, so there was no win or loss to measure ("${(m && m.name) || 'tests_pass'}"). Fix the failing tests first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.${needsBuild}`;
 }
 // the test commands the engine finds with no config (promptwheel's detectTestCmd)
 function detectedTests(repo) {
@@ -238,6 +246,7 @@ switch (cmd) {
     else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') {
       out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
+      if (((rep.gate && rep.gate.weakened) || []).some((w) => w.change === 'measurement-edited')) out('🐴 this change also edits how the check measures (setup, env or linkDirs in promptwheel.config.json), and a change is judged by the settings in force before it. Commit that edit on its own first, then check your fix again.');
       if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('🐴 note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
     }
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
@@ -250,6 +259,7 @@ switch (cmd) {
     }
     else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
     else out(`🐴 ≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
+    if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`🐴 ⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
     for (const x of rep.explained || []) out(`🐴 ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
     if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
@@ -266,7 +276,13 @@ switch (cmd) {
     catch (e) { process.exit(e.status || 1); }
     break;
   }
-  case 'context': { const o = contextBlock(repoRoot(), flags.has('--speak')); if (o) out(o); break; }
+  case 'context': {
+    // Nothing to show stays off stdout: an older attach runs this on every prompt and adds its stdout to the prompt.
+    // A person or an agent who ran it still learns why, on stderr.
+    const root = repoRoot(); const o = contextBlock(root, flags.has('--speak'));
+    if (o) out(o); else process.stderr.write(contextBlock(root, true) + '\n');
+    break;
+  }
   case 'frame': {
     // the prompt face of the contract: re-impress the hard rules (mandates, resolved through `extends`)
     // as one compact block at the live end of the context, so a deep or freshly compacted session
@@ -811,7 +827,7 @@ function doctorAll() {
   const r = regRead();
   if (!r.repos.length) { out('sawbuck: not attached anywhere.'); return; }
   out('sawbuck is attached to:');
-  for (const x of r.repos) out(`  ${x.mode.padEnd(14)} ${x.repo}`);
+  for (const x of r.repos) out(`  ${x.mode.padEnd(14)} ${x.mode === 'user' ? 'every repo you open in Claude Code (hooks in ~/.claude/settings.json; the check runs where a promptwheel.config.json exists)' : x.repo}`);
   for (const repo of new Set(r.repos.map((x) => x.repo))) doctorRepo(repo);
 }
 

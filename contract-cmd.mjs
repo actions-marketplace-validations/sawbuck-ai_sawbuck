@@ -7,13 +7,17 @@ import './pipe.mjs';
 import { ensureExcluded } from './exclude.mjs';
 import { writeAgentBlock } from './agent-block.mjs';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, cpSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync, cpSync, mkdirSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { PW } from './bins.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// The check's own action is pinned by commit, like GitHub's: the commit the engine's release tag points at. A moving
+// tag with write access to pull requests is the kind of thing the unpinned_execution guard exists to flag.
+const PKG = JSON.parse(readFileSync(join(HERE, 'package.json'), 'utf8'));
+const ACTION = `promptwheel-ai/promptwheel@${PKG.promptwheelAction} # v${PKG.dependencies.promptwheel}`;
 const repo = process.argv[2] || process.cwd();
 const dry = process.argv.includes('--dry-run');
 const strict = process.argv.includes('--strict');
@@ -36,7 +40,7 @@ jobs:
 ${npm ? `      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22 }
       - run: npm ci --ignore-scripts
-` : ''}      - uses: promptwheel-ai/promptwheel@v0
+` : ''}      - uses: ${ACTION}
         with: { inconclusive: pass }
 `;
 const cfgPath = join(repo, 'promptwheel.config.json');
@@ -57,9 +61,46 @@ try {
   const names = (l) => new Set((l || []).map((x) => x && x.name));
   const counts = (c) => `${new Set([...names(c.mandates), ...names(mandates)]).size} protected paths${full ? `, ${preset.metrics.length} supply-chain guards` : ''}`;
   if (dry) {
-    let now = {}; try { if (had) now = JSON.parse(readFileSync(cfgPath, 'utf8')); } catch {}
-    const notes = strict ? (now.metrics || []).filter((m) => m && m.report && REPORT.has(m.name)).length : 0;
-    process.stdout.write(`sawbuck contract would ${had ? 'update' : 'write'} ${cfgPath}: ${counts(now)}${full ? ', the scanners under .promptwheel/packs/, and promptwheel.lock.json' : ''}${notes ? `, and make ${notes} guards that are notes block` : ''}.\n`);
+    // The preview is the real run, done in a throwaway copy of what signing reads, so the two cannot drift apart:
+    // the files in the repo's top folder, an existing workflow, the scanners, the remote and the exclude file.
+    const shadow = mkdtempSync(join(tmpdir(), 'sawbuck-preview-'));
+    try {
+      const g = (...a) => execFileSync('git', ['-c', 'user.name=sawbuck', '-c', 'user.email=sawbuck@local', ...a], { cwd: shadow, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      g('init', '-q');
+      for (const e of readdirSync(repo, { withFileTypes: true })) if (e.isFile() && statSync(join(repo, e.name)).size < 32 * 1024 * 1024) cpSync(join(repo, e.name), join(shadow, e.name));
+      for (const rel of [join('.github', 'workflows', 'sawbuck.yml'), join('.promptwheel', 'packs')]) if (existsSync(join(repo, rel))) cpSync(join(repo, rel), join(shadow, rel), { recursive: true });
+      if (existsSync(join(repo, 'node_modules'))) { try { symlinkSync(join(repo, 'node_modules'), join(shadow, 'node_modules')); } catch { /* the lint check may not be offered in the preview */ } }
+      const exclude = (root) => resolve(root, execFileSync('git', ['-C', root, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim());
+      let remote = ''; try { remote = execFileSync('git', ['-C', repo, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
+      if (remote) g('remote', 'add', 'origin', remote);
+      try { if (existsSync(exclude(repo))) { mkdirSync(dirname(exclude(shadow)), { recursive: true }); cpSync(exclude(repo), exclude(shadow)); } } catch {}
+      const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
+      const exWas = read(exclude(shadow));
+      g('add', '-A'); g('commit', '-q', '--allow-empty', '-m', 'as it is now');
+      run([fileURLToPath(import.meta.url), shadow, ...process.argv.slice(3).filter((a) => a !== '--dry-run')], shadow);
+      const rows = new Map();
+      for (const l of g('status', '--porcelain', '-uall').split('\n').filter(Boolean)) {
+        const f = l.slice(3).replace(/^(\.promptwheel\/packs\/supply-chain\/).*/, '$1');
+        if (f !== 'node_modules') rows.set(f, l.startsWith('??') ? 'new' : 'changed');
+      }
+      const after = existsSync(join(shadow, 'promptwheel.config.json')) ? JSON.parse(read(join(shadow, 'promptwheel.config.json'))) : { metrics: [], mandates: [] };
+      let now = {}; try { if (had) now = JSON.parse(readFileSync(cfgPath, 'utf8')); } catch {}
+      const notes = strict ? (now.metrics || []).filter((m) => m && m.report && REPORT.has(m.name)).length : 0;
+      const what = {
+        'promptwheel.config.json': `${counts(now)}, ${(after.metrics || []).length} checks in all (${(after.metrics || []).map((m) => m.name).join(', ')})${notes ? `, and ${notes} guards that are notes would block` : ''}`,
+        'AGENTS.md': 'the written rule', 'CLAUDE.md': 'the written rule', '.cursorrules': 'the written rule',
+        '.github/workflows/sawbuck.yml': 'a CI check on pull requests',
+        'promptwheel.lock.json': 'the shape of this repo',
+        '.promptwheel/packs/supply-chain/': 'the two scanners the supply-chain guards run',
+        '.gitignore': 'so the scanners reach git',
+      };
+      if (!rows.size) process.stdout.write('sawbuck contract --dry-run: already signed, nothing would change.\n');
+      else {
+        process.stdout.write('sawbuck contract --dry-run: nothing was written. A real run would write:\n');
+        for (const [f, how] of rows) process.stdout.write(`  ${f.padEnd(34)} ${how}${what[f] ? ': ' + what[f] : ''}\n`);
+        if (read(exclude(shadow)) !== exWas) process.stdout.write('  and lines in .git/info/exclude that keep Sawbuck\'s record out of git status (local, never committed)\n');
+      }
+    } finally { rmSync(shadow, { recursive: true, force: true }); }
   } else {
     if (!had) run([join(HERE, 'init.mjs'), '-y', '--no-investigate'], repo);
     const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : { repeat: 1, metrics: [] };
