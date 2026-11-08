@@ -58,16 +58,16 @@ export function checkRules(file, { home = homedir() } = {}) {
 export function rulesCli(args, { home = homedir() } = {}) {
   if (args.includes('--prepare')) {
     const r = prepareRules({ home });
-    return `🐴 ${r.lines} of your messages are ready in ${r.input}, copies removed${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}. Stays on this machine until an agent reads it.`;
+    return `sawbuck: ${r.lines} of your messages are ready in ${r.input}, copies removed${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}. Stays on this machine until an agent reads it.`;
   }
   const i = args.indexOf('--check');
   if (i > -1) {
     const file = args[i + 1];
-    if (!file || !existsSync(file) || !statSync(file).isFile()) return '🐴 sawbuck: --check needs the candidates file.';
-    if (!existsSync(paths(home).input)) return '🐴 sawbuck: run sawbuck rules --prepare first.';
+    if (!file || !existsSync(file) || !statSync(file).isFile()) return 'sawbuck: --check needs the candidates file.';
+    if (!existsSync(paths(home).input)) return 'sawbuck: run sawbuck rules --prepare first.';
     const { kept, dropped } = checkRules(file, { home });
     forget(home, paths(home).input, file);
-    const out = [`🐴 ${kept.length} rules have at least 2 quotes that are really yours${dropped.length ? `, ${dropped.length} dropped` : ''}.`];
+    const out = [`sawbuck: ${kept.length} rules have at least 2 quotes that are really yours${dropped.length ? `, ${dropped.length} dropped` : ''}.`];
     kept.forEach((r, n) => { out.push('', `${n + 1}. ${r.rule}`); for (const q of r.quotes.slice(0, 3)) out.push(`     "${q.slice(0, 110)}"`); });
     return out.join('\n');
   }

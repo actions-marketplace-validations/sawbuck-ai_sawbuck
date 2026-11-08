@@ -146,24 +146,24 @@ function pngCard(svg) {
 }
 
 export function shapeCli(args, { home = homedir() } = {}) {
-  if (args.includes('--prepare')) { const r = prepareShape({ home }); return `🐴 ${r.lines} of your messages are ready in ${r.input}${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}.${r.turns ? `\n🐴 ${r.turns} past turns are ready in ${r.turnsFile}. They are deleted after the check.` : ''}`; }
+  if (args.includes('--prepare')) { const r = prepareShape({ home }); return `sawbuck: ${r.lines} of your messages are ready in ${r.input}${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}.${r.turns ? `\nsawbuck: ${r.turns} past turns are ready in ${r.turnsFile}. They are deleted after the check.` : ''}`; }
   const i = args.indexOf('--check');
   if (i === -1) return 'sawbuck shape --prepare | --check <labels.json>';
   const file = args[i + 1];
   const p = paths(home);
   // a check that cannot run still clears the excerpts: they are only for this one read
   const stop = (msg) => { rmSync(p.turns, { force: true }); rmSync(p.notsaid, { force: true }); return msg; };
-  if (!file || !existsSync(file)) return stop('🐴 sawbuck: --check needs the labels file.');
+  if (!file || !existsSync(file)) return stop('sawbuck: --check needs the labels file.');
   let labels = {};
   try { const m = readFileSync(file, 'utf8').match(/\{[\s\S]*\}/); labels = m ? JSON.parse(m[0]) : {}; } catch {}
   const t = tally(labels && typeof labels === 'object' ? labels : {});
-  if (!t.n) return stop('🐴 sawbuck: no usable labels in that file.');
+  if (!t.n) return stop('sawbuck: no usable labels in that file.');
   mkdirSync(p.dir, { recursive: true });
   let prev = null;
   try { const l = readFileSync(p.hist, 'utf8').trim().split('\n').filter(Boolean); if (l.length) prev = JSON.parse(l[l.length - 1]); } catch {}
   if (!prev || typeof prev !== 'object' || !prev.groups) prev = null;
   writeFileSync(p.svg, shapeSvg(t));
-  const out = [`🐴 your steering shape, from ${t.n} messages that pushed on something (${t.none} did not). What you push on, not a score.`, ''];
+  const out = [`sawbuck: your steering shape, from ${t.n} messages that pushed on something (${t.none} did not). What you push on, not a score.`, ''];
   for (const [g, ss] of Object.entries(GROUPS)) {
     const was = prev && prev.groups[g] != null ? `  (was ${prev.groups[g]}%)` : '';
     out.push(`  ${g.padEnd(8)} ${String(t.groups[g]).padStart(3)}%${was}`);

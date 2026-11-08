@@ -178,7 +178,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
 // 4) otherwise, say a fresh catch once (a flag; never blocks). The band and statusline carry the rest.
 if (total > (st.shownTotal || 0)) {
   const L = rec && rec.latest;
-  process.stdout.write(`🐴 Sawbuck caught a ${L && L.kind === 'gamed' ? 'gamed change' : 'problem'}${L && L.file ? ` in ${L.file}` : ''}${L && L.reason ? `: ${L.reason}` : ''}\n`);
+  process.stdout.write(`Sawbuck caught a ${L && L.kind === 'gamed' ? 'gamed change' : 'problem'}${L && L.file ? ` in ${L.file}` : ''}${L && L.reason ? `: ${L.reason}` : ''}\n`);
   st.shownTotal = total;
 }
 saveState();
