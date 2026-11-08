@@ -6,7 +6,7 @@ import { join } from 'node:path';
 // touched. `--no-agent-block` skips it.
 export function writeAgentBlock(repo) {
   const START = '<!-- sawbuck:contract -->', END = '<!-- /sawbuck:contract -->';
-  const block = `${START}\n## Sawbuck rules\n\nIn this repo a change is done only when the win survives verification from the source alone. Before finishing, run \`npx -y sawbuck check\`. If it reads \`gamed\`, the green came from editing a test, config, or grader, not the source, so undo that and earn it in the source. Run \`npx -y sawbuck context\` after your first edit to see what broke in these files before (reverts, weakened tests, fragile spots). Never skip, weaken, or delete a test to go green.\n${END}\n`;
+  const block = `${START}\n## Sawbuck rules\n\nIn this repo a change is done only when the win survives verification from the source alone. Before finishing, run \`npx -y sawbuck check\`. If it reads \`gamed\`, the green came from editing a test, config, or grader, not the source, so undo that and earn it in the source. Run \`npx -y sawbuck context\` after your first edit to each file, to see what broke there before (reverts, weakened tests, fragile spots). Never skip, weaken, or delete a test to go green.\n${END}\n`;
   const targets = ['AGENTS.md', ...['CLAUDE.md', '.cursorrules'].filter((f) => existsSync(join(repo, f)))];
   const done = [];
   for (const f of targets) {

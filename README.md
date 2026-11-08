@@ -102,9 +102,9 @@ To remove a rule, delete its entry under `mandates` in `promptwheel.config.json`
     In this repo a change is done only when the win survives verification from the source
     alone. Before finishing, run `npx -y sawbuck check`. If it reads `gamed`, the green came
     from editing a test, config, or grader, not the source, so undo that and earn it in the
-    source. Run `npx -y sawbuck context` after your first edit to see what broke in these
-    files before (reverts, weakened tests, fragile spots). Never skip, weaken, or delete a
-    test to go green.
+    source. Run `npx -y sawbuck context` after your first edit to each file, to see what
+    broke there before (reverts, weakened tests, fragile spots). Never skip, weaken, or
+    delete a test to go green.
 
 **With `--full`.** `pins_changed` is a fingerprint of the resolved dependency tree, not a count, so its value is a long number that only means changed or unchanged. The supply-chain guards read `unmeasurable` on the commit that adds them, because their scanners did not exist before it, and count from the next change. It starts by watching: protected paths, new install scripts and sources outside the registry block from day one, and new dependencies and structure changes show as notes. `sawbuck contract --strict` blocks them all. When something fails, the check says what changed in words. If your tests can't run in CI, the check says so and doesn't fail the job, and protected paths are still enforced. To accept it on a pull request, someone with write access comments `sawbuck-allow: <reason>` and re-runs the check; the reason stays on the record. An agent signed in as that person could post the same comment, so branch protection and review still matter. Locally, use `--allow "<reason>"`. A commit trailer is not a person, so Sawbuck does not read one.
 
@@ -135,7 +135,7 @@ jobs:
 
 `--fail-on` takes `undocumented` (a bare `# type: ignore` / `# noqa` with no code), `test` (a newly disabled test), `any`, or a number of new suppressions; anything else is an error (exit 64). Without `--since` it gates everything live in HEAD, not only what a branch adds. Exit 1 fails the check; add `--json` for the machine-readable delta. This repo is also a composite action: `uses: sawbuck-ai/sawbuck@v0` with `base` and `fail-on` inputs.
 
-Debt is on demand: `sawbuck debt`, and `sawbuck context` for the files in hand. To have history added to every turn, set `{"turn":{"context":true}}` in `sawbuck.config.json`. It is off by default because a written rule did the work in every bench, and context spent on each prompt is context lost.
+Debt is on demand: `sawbuck debt`, and `sawbuck context` for the files in hand. One thing is not on demand: when a prompt names a file (`src/cache.js`, or a bare `cache.js` that matches one tracked file), the hook shows what a rewrite erased there, a revert and its reason, with the prompt, before any edit. In our twin-repo bench that timing was the whole difference: shown with the prompt, 0 of 27 agents redid a reverted change and 27 of 27 asked first; left for the agent to ask after its first edit, it checked once per session and redid it 27 of 27. To have the rest of the history (hot spots, weakened tests) added to every turn as well, set `{"turn":{"context":true}}` in `sawbuck.config.json`. That is off by default because a written rule did the work in every bench, and context spent on each prompt is context lost.
 
 ## The engines
 

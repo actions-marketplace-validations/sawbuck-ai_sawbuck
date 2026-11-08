@@ -311,8 +311,8 @@ switch (cmd) {
     // a file still carrying the content the last violation flagged is never baselined; and the
     // baseline's commit does not advance past a flagged commit until a clean stop or a commit the
     // person made between turns that no longer carries the flagged content.
-    let hookEvent = '', session = '', framed = false;
-    if (flags.has('--hook') && !process.stdin.isTTY) { try { const h = JSON.parse(readFileSync(0, 'utf8') || '{}'); hookEvent = String(h.hook_event_name || ''); session = String(h.session_id || ''); } catch {} }
+    let hookEvent = '', session = '', framed = false, promptText = '';
+    if (flags.has('--hook') && !process.stdin.isTTY) { try { const h = JSON.parse(readFileSync(0, 'utf8') || '{}'); hookEvent = String(h.hook_event_name || ''); session = String(h.session_id || ''); promptText = String(h.prompt || ''); } catch {} }
     if (hookEvent === 'UserPromptSubmit' && top) {
       try {
         ensureExcluded(repo);   // before the first write: under user-level hooks nothing else has done it yet
@@ -354,7 +354,12 @@ switch (cmd) {
     let history = false;
     try { history = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')).turn?.context === true; } catch {}
     if (!history && top) erasedCommits(repo);   // the ledger outlives the reflog whether or not it is printed
-    const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false) : ''].filter(Boolean).join('\n');
+    // The files a prompt names get the history a rewrite erased (a revert and its reason) WITH the prompt, before any
+    // edit, whether or not per-turn history is on. Measured (proof-bench/twin, 2026-11-08): shown this way, 0 of 27
+    // redid a reverted change and 27 of 27 asked first; on demand after the first edit, the agent checked once per
+    // session and redid it 27 of 27; shown after the edit, 0 blind but only 19 of 27 held. Timing is the product.
+    const named = hookEvent === 'UserPromptSubmit' && top ? namedFiles(repo, promptText) : [];
+    const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false, named) : (named.length ? erasedBlock(repo, named) : '')].filter(Boolean).join('\n');
     if (o) out(o);
     break;
   }
@@ -460,11 +465,30 @@ function logReport(repo, rest) {
 // the read face: ranked relevant history for what you're working on right now. Silent when there is
 // nothing to say, so it is safe on every UserPromptSubmit (that hook's stdout is injected into context;
 // "nothing notable" every turn would be noise). `speak` forces a reply for the explicit command.
-function contextBlock(repo, speak) {
+// the files a prompt names: "src/cache.js" as written, or a bare "cache.js" when exactly one file has that name. A file
+// counts when it is tracked, on disk, or in the ledger of erased commits (a reverted file is gone from the tree, and
+// re-creating it is the case the history is for). Quotes and backticks around a path are not part of it. At most 8.
+function namedFiles(repo, text) {
+  if (!text) return [];
+  const toks = [...new Set((text.match(/[\w./-]+\.[A-Za-z0-9]{1,8}/g) || []).map((t) => t.replace(/^\.\//, '').replace(/[.,;:]+$/, '')))];
+  if (!toks.length) return [];
+  let known = []; try { known = execFileSync('git', ['-C', repo, 'ls-files'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean); } catch {}
+  try { for (const e of erasedCommits(repo)) for (const f of e.files || []) if (!known.includes(f)) known.push(f); } catch {}
+  const out = [];
+  for (const t of toks) {
+    if (out.length === 8) break;
+    if (known.includes(t) || (existsSync(join(repo, t)) && !relative(repo, join(repo, t)).startsWith('..'))) { if (!out.includes(t)) out.push(t); continue; }
+    if (!t.includes('/')) { const m = known.filter((f) => f === t || f.endsWith('/' + t)); if (m.length === 1 && !out.includes(m[0])) out.push(m[0]); }
+  }
+  return out;
+}
+
+function contextBlock(repo, speak, extra = []) {
   const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
   // new files count: re-creating what was reverted is the case the history is for
   let changed = [...new Set([...g('diff', '--name-only', 'HEAD').split('\n'), ...g('ls-files', '--others', '--exclude-standard').split('\n')])].filter(Boolean);
   if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
+  changed = [...new Set([...changed, ...extra])];   // and the files the prompt names, so their past arrives before the edit
   if (!changed.length) return speak ? 'sawbuck: nothing changed to look up (no working edits, and no previous commit to read).' : '';
   const fileArgs = changed.flatMap((f) => ['--file', f]);
   let o = '';
