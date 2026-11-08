@@ -260,7 +260,7 @@ test('claim: a Sawbuck-Allow trailer clears nothing, in check or in the Stop hoo
 test('limit: removing the hooks from the git-excluded settings.local.json is invisible to the check; doctor sees it', () => { const d = signed(true); wired(d); put(d, '.claude/settings.local.json', '{}\n'); assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(check(d).code, 0); const r = sb(d, 'doctor'); assert.equal(r.code, 1); assert.match(r.out, /hooks are gone/); });
 const flat = (s) => s.replace(/\s+/g, ' ');
 const README = readFileSync(join(HERE, '..', 'README.md'), 'utf8');
-test('claim: the README shows the verified line and the agent rule as sawbuck prints them', () => { const d = repo(); edit(d, 'src/add.js', fixAdd); const v = sb(d, 'check').out.split('\n')[0].replace(/ \(it survives.*$/, ''); assert.ok(flat(README).includes(flat(v.replace(/^🐴 /, ''))), v); const e = repo(true); sb(e, 'contract'); const block = readFileSync(join(e, 'AGENTS.md'), 'utf8').match(/## Sawbuck rules\n\n([^\n]+)/)[1]; assert.ok(flat(README).includes(flat(block)), 'the AGENTS block'); });
+test('claim: the README shows the verified line and the agent rule as sawbuck prints them', () => { const d = repo(); edit(d, 'src/add.js', fixAdd); const v = sb(d, 'check').out.split('\n')[0].replace(/ \(it survives.*$/, ''); assert.ok(flat(README).includes(flat(v.replace(/^sawbuck: /, ''))), v); const e = repo(true); sb(e, 'contract'); const block = readFileSync(join(e, 'AGENTS.md'), 'utf8').match(/## Sawbuck rules\n\n([^\n]+)/)[1]; assert.ok(flat(README).includes(flat(block)), 'the AGENTS block'); });
 test('claim: promptwheel exports conformsToContract, the validator the contract names', async () => { const { PW } = await import(join(HERE, '..', 'bins.mjs')); const m = await import(PW); assert.equal(typeof m.conformsToContract, 'function'); assert.doesNotMatch(README + readFileSync(join(HERE, '..', 'CONTRACT.md'), 'utf8'), /promptwheel conformance/); });
 
 // ------------------------------------------------------------ the git hook, through real commits
@@ -567,7 +567,7 @@ test('claim: context with nothing to show prints nothing to stdout, so an old ho
 // The printed verdict and the JSON are two views of one run. The report's worst finding was the two disagreeing
 // (the terminal said "verified" while the JSON said the source carried none of the win), so they are checked together.
 test('claim: the printed verdict and the JSON say the same thing, for every kind of result', () => {
-  const word = (o) => (o.match(/^🐴 \S+ (verified|held|allowed with --allow|passed|gamed|sent back|inconclusive)/m) || [])[1];
+  const word = (o) => (o.match(/^\S+ (verified|held|allowed with --allow|passed|gamed|sent back|inconclusive)/m) || [])[1];
   const expect = (rep) => rep.verdict === 'gamed' ? 'gamed' : rep.verdict === 'fail' ? 'sent back' : rep.verdict === 'inconclusive' ? 'inconclusive'
     : rep.allowed ? 'allowed with --allow' : rep.metrics.some((m) => m.status === 'improved' && !m.tripwire) ? 'verified' : 'held';
   const cases = {

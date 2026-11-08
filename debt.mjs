@@ -59,8 +59,8 @@ if (since && typeof since === 'string') {
   // the gate: fail (exit 1) when the branch adds the kind of debt --fail-on names.
   const fail = gateFails(added);
   if (asJson) { console.log(JSON.stringify({ since, added: added.length, testSkips: skips, undocumented: undoc, failOn: failMode, fail, items: added.map((it) => ({ file: it.file, line: it.line, kind: String(it.kind).trim(), documented: it.documented })) }, null, 2)); process.exit(fail ? 1 : 0); }
-  if (!added.length) { console.log(`🐴 sawbuck: no new suppression debt since ${since} (clean).`); process.exit(0); }
-  const o = [`🐴 sawbuck: ${added.length} new suppression${added.length === 1 ? '' : 's'} since ${since}  ·  ${skips} disabled test${skips === 1 ? '' : 's'}  ·  ${undoc} undocumented (no code/reason)`];
+  if (!added.length) { console.log(`sawbuck: no new suppression debt since ${since} (clean).`); process.exit(0); }
+  const o = [`sawbuck: ${added.length} new suppression${added.length === 1 ? '' : 's'} since ${since}  ·  ${skips} disabled test${skips === 1 ? '' : 's'}  ·  ${undoc} undocumented (no code/reason)`];
   for (const it of added.slice(0, Math.max(top, 20))) o.push(`     ${it.testSkip ? '🔴' : (it.documented ? '  ' : '✎ ')} ${it.file}:${it.line}  ${String(it.kind).trim()}${it.documented ? '' : '   (bare - no code/reason)'}`);
   o.push(`\n   ✎ = bare/undocumented (the suspect kind); declare intent (a rule code or reason) or remove it.`);
   if (failMode) o.push(fail ? `\n   ❌ debt gate FAILED (--fail-on ${failMode}): this branch adds debt that must be declared or removed.` : `\n   ✓ debt gate passed (--fail-on ${failMode}).`);
@@ -69,7 +69,7 @@ if (since && typeof since === 'string') {
 }
 
 const liveFail = gateFails(live);
-if (!live.length) { console.log(asJson ? '{"total":0,"testSkips":0,"codeSuppressions":0,"undocumented":0,"files":[]}' : '🐴 sawbuck: no live suppression debt in HEAD (nothing silenced in src/test/config). A clean tree.'); process.exit(0); }
+if (!live.length) { console.log(asJson ? '{"total":0,"testSkips":0,"codeSuppressions":0,"undocumented":0,"files":[]}' : 'sawbuck: no live suppression debt in HEAD (nothing silenced in src/test/config). A clean tree.'); process.exit(0); }
 
 // Fragility: debt on code that keeps breaking (reverts, fix-bursts) is the debt that matters; debt
 // on stable code is mostly noise. One pass over the events builds per-file history; a file's debt
@@ -123,7 +123,7 @@ if (asJson) {
 }
 
 const out = [];
-out.push(`🐴 sawbuck: live suppression debt in ${basename(repo)}`);
+out.push(`sawbuck: live suppression debt in ${basename(repo)}`);
 out.push(`   ${live.length} still silenced in HEAD  ·  ${testSkips} disabled/weakened test${testSkips === 1 ? '' : 's'} (hidden-failure risk)  ·  ${codeSup} lint/type suppression${codeSup === 1 ? '' : 's'}  ·  ${bare} undocumented (no code/reason)`);
 if (onFragile) out.push(`   ${onFragile} of ${files.length} debt-carrying files sit on fragile code (reverts/hotspots); look there first`);
 out.push(`\n   highest-risk debt (severity x how fragile the file is):`);

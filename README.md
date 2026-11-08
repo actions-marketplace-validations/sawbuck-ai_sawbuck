@@ -38,11 +38,11 @@ What a check looks like:
 
 ```
 $ sawbuck check
-🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source.
+🚩 gamed: a win here came from editing the test, config, or grader, not the source.
    It does NOT survive a source-only re-run, so it does not count.
 
 $ sawbuck check        # after fixing the source and restoring the test
-🐴 ✓ verified: your working change earned it. "tests_pass" improved, and the source carried the win
+✓ verified: your working change earned it. "tests_pass" improved, and the source carried the win
    (it survives a source-only re-run).
 ```
 
@@ -77,7 +77,7 @@ Exit codes: `0` pass (verified, held, or allowed) · `1` sent back (a regression
 | `sawbuck debt [repo]` | the whole-repo live suppression debt: what is still silenced in HEAD now, disabled tests first, heaviest files ranked |
 | `sawbuck context` | the ranked relevant history for the current change |
 | `sawbuck doctor [--all]` · `detach --verify` | run what each hook runs (project and user level) and say if it still works, if the set is incomplete, or if it is gone (exit 1), `--all` for every repo it is attached to; prove the wiring is gone |
-| `sawbuck statusline` | a one-line status-line segment (🐴 watching / N caught) |
+| `sawbuck statusline` | a one-line status-line segment (watching / N caught) |
 
 ## Protected paths
 

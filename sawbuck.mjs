@@ -126,7 +126,7 @@ Usage:
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
   sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
   sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
-  sawbuck statusline        One-line segment for your status line (🐴 watching | N caught)
+  sawbuck statusline        One-line segment for your status line (watching | N caught)
 
   sawbuck --help | --version
 
@@ -222,47 +222,47 @@ switch (cmd) {
     // leak a scary "fatal:" line before sawbuck's own message.
     const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
     // 64 (EX_USAGE) for every "could not run" below, never a verdict code: a script or CI must not read it as gamed (2).
-    if (!g('rev-parse', '--git-dir')) { out(`🐴 sawbuck: ${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`); process.exit(64); }
-    if (!g('rev-parse', '--verify', 'HEAD')) { out('🐴 sawbuck: no commit yet. Make one, then `sawbuck check` verifies your next change against it.'); process.exit(64); }
+    if (!g('rev-parse', '--git-dir')) { out(`sawbuck: ${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`); process.exit(64); }
+    if (!g('rev-parse', '--verify', 'HEAD')) { out('sawbuck: no commit yet. Make one, then `sawbuck check` verifies your next change against it.'); process.exit(64); }
     const uncommitted = g('status', '--porcelain').length > 0;
     const dirty = !base && !head && uncommitted;
     // --working on a clean tree would read the tree against the commit it already is, and call that held
-    if (pass.includes('--working') && !uncommitted) { out('🐴 sawbuck: nothing uncommitted to check, the working tree is clean. `sawbuck check` verifies the last commit.'); process.exit(64); }
+    if (pass.includes('--working') && !uncommitted) { out('sawbuck: nothing uncommitted to check, the working tree is clean. `sawbuck check` verifies the last commit.'); process.exit(64); }
     // nothing to verify yet: a clean tree with no previous commit to diff against (a fresh repo). Say so
     // plainly instead of the generic "could not run" below, so the first run is not a dead end.
-    if (!dirty && !base && !g('rev-parse', '--verify', 'HEAD~1')) { out('🐴 sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
+    if (!dirty && !base && !g('rev-parse', '--verify', 'HEAD~1')) { out('sawbuck: nothing to verify yet, the working tree is clean and this is the only commit. Make a change (or add one more commit), then `sawbuck check` re-proves the win from your source edits alone.'); process.exit(64); }
     const where = dirty ? 'working' : (base || head) ? `${base || 'HEAD~1'}..${head || 'HEAD'}` : 'last';
     const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
     const { rep, code, why } = gateReport(repo, [...args, ...pass]);
-    if (!rep || !rep.verdict) { out(`🐴 sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
+    if (!rep || !rep.verdict) { out(`sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
-    for (const md of rep.mandates || []) out(`🐴 ⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
+    for (const md of rep.mandates || []) out(`⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
     const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
     const noDetect = pass.includes('--no-detect-gaming');
-    if (rep.verdict === 'pass' && rep.allowed) out(`🐴 ✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).join(', ') || 'the change'} was let through without a source-only re-proof.`);
-    else if (rep.verdict === 'pass' && win && noDetect) out(`🐴 ✓ passed: "${win.name}" improved, but gaming detection is off (--no-detect-gaming), so the win was not re-proved from the source.`);
-    else if (rep.verdict === 'pass' && win) out(`🐴 ✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
-    else if (rep.verdict === 'pass') out(`🐴 ✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
+    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).join(', ') || 'the change'} was let through without a source-only re-proof.`);
+    else if (rep.verdict === 'pass' && win && noDetect) out(`✓ passed: "${win.name}" improved, but gaming detection is off (--no-detect-gaming), so the win was not re-proved from the source.`);
+    else if (rep.verdict === 'pass' && win) out(`✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
+    else if (rep.verdict === 'pass') out(`✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') {
-      out('🐴 🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
-      if (((rep.gate && rep.gate.weakened) || []).some((w) => w.change === 'measurement-edited')) out('🐴 this change also edits how the check measures (setup, env or linkDirs in promptwheel.config.json), and a change is judged by the settings in force before it. Commit that edit on its own first, then check your fix again.');
-      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('🐴 note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
+      out('🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
+      if (((rep.gate && rep.gate.weakened) || []).some((w) => w.change === 'measurement-edited')) out('sawbuck: this change also edits how the check measures (setup, env or linkDirs in promptwheel.config.json), and a change is judged by the settings in force before it. Commit that edit on its own first, then check your fix again.');
+      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('sawbuck: note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
     }
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
-      out('🐴 ✗ sent back: a protected path changed, however green the rest is.');
+      out('✗ sent back: a protected path changed, however green the rest is.');
       // the way through, for a person who meant it: two of the default rules take a reason, the rest are lifted first
       const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
       const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
-      if (soft.length) out(`🐴 if a person meant this: sawbuck check --allow "<reason>" accepts ${names(soft)}, and the result shows the reason.`);
-      if (hard.length) out(`🐴 ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
+      if (soft.length) out(`sawbuck: if a person meant this: sawbuck check --allow "<reason>" accepts ${names(soft)}, and the result shows the reason.`);
+      if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
     }
-    else if (rep.verdict === 'fail') out('🐴 ✗ sent back: this change made something worse.');
-    else out(`🐴 ≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
-    if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`🐴 ⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
-    if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('🐴 ⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
-    for (const x of rep.explained || []) out(`🐴 ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
-    if (rep.gate && rep.gate.changed) out(`🐴 ⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
+    else if (rep.verdict === 'fail') out('✗ sent back: this change made something worse.');
+    else out(`≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
+    if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
+    if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
+    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
+    if (rep.gate && rep.gate.changed) out(`⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
   case 'rank': {
@@ -289,7 +289,7 @@ switch (cmd) {
     // cannot forget them. Silent without a contract; --speak explains instead.
     const o = frameBlock(repoRoot());
     if (o) out(o);
-    else if (flags.has('--speak')) out('🐴 sawbuck frame: no protected paths in promptwheel.config.json yet. Add one (a protected path) and this re-asserts it every turn and after every compaction, so a deep context cannot forget it.');
+    else if (flags.has('--speak')) out('sawbuck frame: no protected paths in promptwheel.config.json yet. Add one (a protected path) and this re-asserts it every turn and after every compaction, so a deep context cannot forget it.');
     break;
   }
   case 'turn': {
@@ -405,7 +405,7 @@ switch (cmd) {
     // compact status-line segment for the cwd repo. Never throws; fast.
     try {
       const repo = gitTop(process.cwd());
-      if (!repo) process.stdout.write('🐴 sawbuck · no repo here');
+      if (!repo) process.stdout.write('sawbuck · no repo here');
       if (repo) {
         const name = basename(repo);
         const { caught, state, steer } = repoState(repo);
@@ -413,11 +413,11 @@ switch (cmd) {
         let last = '';
         try { const L = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').trim().split('\n'); const e = JSON.parse(L[L.length - 1]); last = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: '≈', allowed: '✎' }[e.kind] || ''; } catch {}
         const label = caught > 0 ? `${caught} caught` : state;
-        const seg = label ? `🐴 sawbuck · ${label}` : '';
-        const named = label ? `🐴 sawbuck · ${name} · ${label}` : '';   // which repo it detected, in the default line
+        const seg = label ? `sawbuck · ${label}` : '';
+        const named = label ? `sawbuck · ${name} · ${label}` : '';   // which repo it detected, in the default line
         const base = named ? (last ? `${named} · ${last}` : named) : '';
         // live steering % from the reins engine's file (OFFLINE read; reins does the LLM work, never sawbuck)
-        const st = steer ? `${steer.rate >= 50 ? '✊' : '🐎'} steer ${steer.rate}%` : '';
+        const st = steer ? `steer ${steer.rate}%` : '';
         // configurable template: SAWBUCK_STATUSLINE picks which segments show and in what order
         // (tokens {status} {sawbuck} {repo} {verdict} {steer} plus any literal text); empty tokens collapse
         // so you never get a dangling separator. Unset = the default composition. Mix in other
@@ -465,7 +465,7 @@ function contextBlock(repo, speak) {
   // new files count: re-creating what was reverted is the case the history is for
   let changed = [...new Set([...g('diff', '--name-only', 'HEAD').split('\n'), ...g('ls-files', '--others', '--exclude-standard').split('\n')])].filter(Boolean);
   if (!changed.length) changed = g('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').filter(Boolean);
-  if (!changed.length) return speak ? '🐴 sawbuck: nothing changed to look up (no working edits, and no previous commit to read).' : '';
+  if (!changed.length) return speak ? 'sawbuck: nothing changed to look up (no working edits, and no previous commit to read).' : '';
   const fileArgs = changed.flatMap((f) => ['--file', f]);
   let o = '';
   try { o = execFileSync(process.execPath, [join(HERE, 'rank.mjs'), '--repo', repo, ...fileArgs, '--top', '3'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
@@ -473,7 +473,7 @@ function contextBlock(repo, speak) {
   const erased = erasedBlock(repo, changed);
   if (/relevant history/.test(o)) return [o.trimEnd(), erased].filter(Boolean).join('\n');
   if (erased) return erased;
-  return speak ? '🐴 sawbuck: no notable history for the files you are touching (a clean trail).' : '';
+  return speak ? 'sawbuck: no notable history for the files you are touching (a clean trail).' : '';
 }
 
 // after attach, prove the check can actually measure something here (the inert-metric trap):

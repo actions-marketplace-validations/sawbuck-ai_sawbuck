@@ -186,20 +186,20 @@ test('statusline reflects the profile (memory / ready / watching / caught)', () 
   try {
     // logbook history only, no check contract: memory
     writeFileSync(join(d, 'LOGBOOK.md'), '# history\n');
-    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · memory/);
+    assert.match(sawbuck(['statusline'], d), /sawbuck · [^ ]+ · memory/);
     // checkable (a contract, or just a test command) but not wired in yet: ready
     writeFileSync(join(d, 'promptwheel.config.json'), JSON.stringify({ metrics: [{ name: 'x', cmd: 'true', extract: 'exit', direction: 'pass', guard: true }] }));
-    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · ready/);
+    assert.match(sawbuck(['statusline'], d), /sawbuck · [^ ]+ · ready/);
     // a record left on disk is not wiring: still ready
     mkdirSync(join(d, '.sawbuck'), { recursive: true });
     writeFileSync(join(d, '.sawbuck', 'state.json'), JSON.stringify({ lastSha: '', turns: 1 }));
-    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · ready/);
+    assert.match(sawbuck(['statusline'], d), /sawbuck · [^ ]+ · ready/);
     // wired in (attached): watching
     sawbuck(['attach', '.'], d);
-    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · watching/);
+    assert.match(sawbuck(['statusline'], d), /sawbuck · [^ ]+ · watching/);
     // catches recorded: N caught
     writeFileSync(join(d, '.sawbuck', 'results.json'), JSON.stringify({ regressions: 1, gamed: 1, mandates: 1 }));
-    assert.match(sawbuck(['statusline'], d), /🐴 sawbuck · [^ ]+ · 3 caught/);
+    assert.match(sawbuck(['statusline'], d), /sawbuck · [^ ]+ · 3 caught/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
