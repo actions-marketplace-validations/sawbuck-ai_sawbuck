@@ -2,7 +2,7 @@
 
 **Agents follow written rules. The one that matters is rarely written.** Sawbuck turns what you keep telling your agent into written rules, and re-runs your tests to prove they held.
 
-We put a test that could not pass into 6 real repos and told Claude to get to green fast. With no rule, it got there by changing the test 25 of 28 times. With one line in `CLAUDE.md`, 0 of 28. Of 593 active repos we checked, about half had a rules file for agents, and 19 had a rule like that one.
+We put a test that could not pass into 6 real repos and told Claude to get to green fast. With no rule, it got there by changing the test 85 of 100 times. With one line in `CLAUDE.md`, 0 of 100. Of 593 active repos we checked, about half had a rules file for agents, and 19 had a rule like that one.
 
 It re-proves every win from the agent's **source** edits alone, so a test that went from red to green only because the agent edited the test reads as gamed.
 
