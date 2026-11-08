@@ -39,6 +39,7 @@
   "files": [
     "sawbuck.mjs",
     "rewrites.mjs",
+    "share.mjs",
     "steers.mjs",
     "rules.mjs",
     "history.mjs",
