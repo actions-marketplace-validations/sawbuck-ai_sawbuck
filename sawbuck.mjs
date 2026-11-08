@@ -10,6 +10,7 @@
 import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
+import { share } from './share.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
@@ -123,6 +124,7 @@ Usage:
                             command; --strict makes them block
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
+  sawbuck share --title T [text]  Hand a finding to a memory layer running on this machine (claude-mem), once; silent when none
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
   sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
   sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
@@ -404,6 +406,14 @@ switch (cmd) {
   }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'rules': { out(rulesCli(rest)); break; }
+  case 'share': {
+    // a rule `/rules` kept, or a lead, handed to a memory layer on this machine as a titled memory; nothing is read back
+    const i = rest.indexOf('--title'); const title = i > -1 ? rest[i + 1] : ''; const text = rest.filter((a, k) => k !== i && k !== i + 1 && !a.startsWith('--')).join(' ');
+    if (!title) usage('share needs --title "<the rule or lead>" and, after it, the words behind it');
+    const here = gitTop(process.cwd()) || process.cwd();   // the words after --title are the text, never a repo path
+    share(here, { title, text }).then((r) => { if (r.sent) out(`sawbuck: shared "${title}" with ${r.name} at ${r.to}`); else process.stderr.write(`sawbuck: not shared: ${r.reason}\n`); });
+    break;
+  }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'statusline': {

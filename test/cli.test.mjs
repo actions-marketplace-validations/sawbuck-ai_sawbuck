@@ -3,6 +3,8 @@
 // invariant (attach leaves the worktree clean; detach is a true inverse),
 // verify/dry-run, rank's per-path filtering, and context.
 
+import { createServer } from 'node:http';
+import { execFile } from 'node:child_process';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -1071,4 +1073,32 @@ test('detach takes back the exclude block in a repo that was never attached', ()
     assert.equal(readFileSync(xf, 'utf8'), before, 'exact inverse, byte for byte');
     assert.match(sawbuck(['detach', '.'], d), /nothing to detach/, 'and nothing left the second time');
   } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('share: a finding goes once to a memory layer on this machine, as a titled memory; nothing without one', async () => {
+  const { d } = tmpRepo();
+  const home = mkdtempSync(join(tmpdir(), 'share-home-'));
+  const got = [];
+  const srv = createServer((req, res) => {
+    let b = ''; req.on('data', (c) => { b += c; });
+    req.on('end', () => { got.push({ url: req.url, body: b }); res.setHeader('content-type', 'application/json'); res.end(req.url === '/api/health' ? '{"status":"ok"}' : '{"id":1}'); });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  // the fake worker lives in this process, so the command runs asynchronously (a synchronous spawn would block it)
+  const run = (h, title, text) => new Promise((res) => execFile(process.execPath, [CLI, 'share', '--title', title, text], { cwd: d, encoding: 'utf8', env: { ...process.env, HOME: h } }, (err, stdout, stderr) => res({ code: err ? err.code : 0, stdout, stderr })));
+  try {
+    // no memory layer on this machine: nothing sent, nothing written
+    const none = await run(home, 'x', 'y');
+    assert.equal(none.code, 0); assert.match(none.stderr, /no memory layer/); assert.equal(got.length, 0);
+    // claude-mem present: its port file names the worker
+    mkdirSync(join(home, '.claude-mem'), { recursive: true }); writeFileSync(join(home, '.claude-mem', '.worker.port'), String(srv.address().port));
+    const first = await run(home, 'Reply in at most 3 lines.', 'keep your reply to three lines | three lines max');
+    assert.match(first.stdout, /shared "Reply in at most 3 lines\." with claude-mem at http:\/\/127\.0\.0\.1:/, first.stderr);
+    const save = got.find((g) => g.url === '/api/memory/save'); assert.ok(save, 'the save route was called');
+    const body = JSON.parse(save.body); assert.equal(body.title, 'Reply in at most 3 lines.'); assert.match(body.text, /three lines max/); assert.equal(body.cwd, d);
+    assert.equal(readFileSync(join(d, '.sawbuck', 'shared.jsonl'), 'utf8').trim().split('\n').length, 1);
+    // the same finding again: not sent twice
+    const again = await run(home, 'Reply in at most 3 lines.', 'keep your reply to three lines | three lines max');
+    assert.match(again.stderr, /already shared/); assert.equal(got.filter((g) => g.url === '/api/memory/save').length, 1);
+  } finally { srv.close(); rmSync(d, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
 });

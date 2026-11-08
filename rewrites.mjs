@@ -7,6 +7,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { share } from './share.mjs';
 
 const MAX = 300;
 const g = (repo, ...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 }); } catch { return ''; } };
@@ -42,6 +43,8 @@ export function erasedCommits(repo) {
   const fresh = fromReflog(repo).filter((e) => !seen.has(e.sha));
   if (fresh.length && existsSync(join(repo, '.sawbuck', 'state.json'))) {
     try { appendFileSync(join(repo, '.sawbuck', 'rewritten.jsonl'), fresh.map((e) => JSON.stringify(e)).join('\n') + '\n'); } catch {}
+    // a reverted attempt with its reason is also handed to a memory layer on this machine, once, if one is running
+    for (const e of fresh) if (e.revert && e.why) share(repo, { title: `reverted: ${e.subject}`, text: e.why }).catch(() => {});
   }
   return [...known, ...fresh];
 }
