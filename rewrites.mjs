@@ -16,20 +16,24 @@ function ledger(repo) {
 }
 
 // commits the reflog remembers and no ref reaches. An amend or a rebase replays the same subject, so a commit
-// whose subject is still reachable was not lost, only rewritten.
+// whose subject is still reachable was not lost, only rewritten, and a replayed one that is lost is listed once.
+// The body comes along as the why: a revert's reason lives there, and it is the part a squash takes.
 function fromReflog(repo) {
-  const raw = g(repo, 'log', '--reflog', '--not', '--all', '-n', String(MAX), '--format=%x00%H%x09%cI%x09%s', '--name-only', '--no-renames');
+  const raw = g(repo, 'log', '--reflog', '--not', '--all', '-n', String(MAX), '--format=%x00%H%x09%cI%x09%s%x1f%b%x1f', '--name-only', '--no-renames');
   if (!raw.trim()) return [];
   const kept = new Set(g(repo, 'log', '--all', '-n', '5000', '--format=%s').split('\n'));
-  const out = [];
+  const bySubject = new Map();
   for (const chunk of raw.split('\0').slice(1)) {
-    const [head, ...rest] = chunk.split('\n');
+    const [head, body = '', tail = ''] = chunk.split('\x1f');
     const [sha, at, ...s] = head.split('\t');
     const subject = s.join('\t');
     if (!sha || kept.has(subject)) continue;
-    out.push({ sha, at, subject, revert: /^revert\b/i.test(subject), files: rest.filter(Boolean).slice(0, 50) });
+    const why = body.replace(/This reverts commit [0-9a-f]+\.?/g, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    const had = bySubject.get(subject);
+    if (had && (had.why || !why)) continue;   // one copy per subject; an amend that added the reason wins
+    bySubject.set(subject, { sha, at, subject, revert: /^revert\b/i.test(subject), ...(why ? { why } : {}), files: tail.split('\n').filter(Boolean).slice(0, 50) });
   }
-  return out;
+  return [...bySubject.values()];
 }
 
 export function erasedCommits(repo) {
@@ -45,8 +49,12 @@ export function erasedCommits(repo) {
 // the lines `context` adds for the paths in hand: reverts first, then the checks that caught something here
 export function erasedBlock(repo, changed) {
   const touched = new Set(changed);
-  const hits = erasedCommits(repo).filter((e) => (e.files || []).some((f) => touched.has(f)))
-    .sort((a, b) => (b.revert - a.revert) || String(b.at).localeCompare(String(a.at))).slice(0, 3);
+  const hits = [], subjects = new Set();
+  for (const e of erasedCommits(repo).filter((e) => (e.files || []).some((f) => touched.has(f)))
+    .sort((a, b) => (b.revert - a.revert) || String(b.at).localeCompare(String(a.at)))) {
+    if (subjects.has(e.subject)) continue;   // the ledger may hold a commit from before and after a rebase
+    subjects.add(e.subject); hits.push(e); if (hits.length === 3) break;
+  }
   let caught = [];
   try {
     caught = readFileSync(join(repo, '.sawbuck', 'activity.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
@@ -54,7 +62,7 @@ export function erasedBlock(repo, changed) {
   } catch {}
   if (!hits.length && !caught.length) return '';
   const lines = ['not in git history any more (recovered locally, leads):'];
-  for (const e of hits) lines.push(`    - ${e.revert ? 'reverted' : 'erased by a rewrite'}: ${e.subject} (${e.sha.slice(0, 12)}, ${String(e.at).slice(0, 10)})`);
+  for (const e of hits) lines.push(`    - ${e.revert ? 'reverted' : 'erased by a rewrite'}: ${e.subject} (${e.sha.slice(0, 12)}, ${String(e.at).slice(0, 10)})${e.why ? `: ${e.why}` : ''}`);
   for (const e of caught) lines.push(`    - caught as gamed on ${e.file} (${e.sha}, ${String(e.at).slice(0, 10)})`);
   return lines.join('\n');
 }
