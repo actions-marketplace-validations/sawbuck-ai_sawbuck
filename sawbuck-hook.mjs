@@ -49,8 +49,12 @@ const writeRec = (r) => { try { mkdirSync(stDir, { recursive: true }); writeFile
 const logActivity = (ev) => { try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...ev }) + '\n'); } catch {} };
 const hasCommit = (ref) => { try { execFileSync('git', ['-C', repo, 'cat-file', '-e', `${ref}^{commit}`], { stdio: 'ignore' }); return true; } catch { return false; } };
 let rec = readRec();
-// the first turn after attach has no lastSha yet: its baseline is what that turn started from
-const from = st.lastSha || (st.turnBaseline && st.turnBaseline.sha) || '';
+// the span re-proved is the TURN's: from the commit HEAD was at when the prompt began (the turn baseline) to HEAD now. Commits
+// the person made between turns (a red test first, a merge, a pull) are theirs, not the agent's, and are not scored; a
+// standing gamed verdict keeps its own base below. The first turn after attach has no baseline yet and starts from lastSha.
+const isAncestor = (a, b) => { try { execFileSync('git', ['-C', repo, 'merge-base', '--is-ancestor', a, b], { stdio: 'ignore' }); return true; } catch { return false; } };
+const tb = (st.turnBaseline && st.turnBaseline.sha) || '';
+const from = (tb && st.lastSha && tb !== st.lastSha && isAncestor(st.lastSha, tb)) ? tb : (st.lastSha || tb || '');
 if (head && from && head !== from) {
   let standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
   if (standing && !hasCommit(rec.latest.base)) {

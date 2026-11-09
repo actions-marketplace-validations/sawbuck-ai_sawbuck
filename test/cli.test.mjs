@@ -815,8 +815,8 @@ test('the gamed wall\'s block budget is per prompt without prompt_id even in a r
   const { d, g, honest, hook, turn } = gamedRepo(false);
   try {
     hook({});                                                                // arm on the base commit
+    turn();                                                                  // the prompt begins; what the agent commits from here is the turn's
     writeFileSync(join(d, 'calc.test.mjs'), honest.replace('2));', '8));')); g('commit', '-q', '-am', 'make it green');
-    turn();
     for (let i = 0; i < 3; i++) assert.equal(JSON.parse(hook({})).decision, 'block');
     assert.match(JSON.parse(hook({})).systemMessage || '', /stopped blocking/, 'the budget for this prompt is spent');
     turn();                                                                  // the next prompt writes a new key, mandates or not
