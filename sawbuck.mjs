@@ -11,6 +11,7 @@ import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
+import { ledgerCli } from './ledger.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -116,6 +117,10 @@ Usage:
                             shows only what a branch adds; --fail-on exits 1 when that debt (or, without
                             --since, any live debt of that kind) is there (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
+  sawbuck ledger [push|pull] [remote]
+                            What git threw away, shared: push puts the erased attempts and their reasons on
+                            refs/sawbuck/ledger for the team and CI; pull takes them into this clone; no
+                            argument shows the counts
   sawbuck doctor [repo]     Run what each hook runs (project and user level) and say if it still works,
                             is incomplete, or is gone. --all lists every repo it is attached to and checks each
   sawbuck contract [--dry-run] [--full] [--strict]
@@ -431,6 +436,10 @@ switch (cmd) {
     break;
   }
 
+  case 'ledger': {
+    // push | pull | nothing, then an optional remote: the words are subcommands, never a repo path; the repo is where you stand
+    const r = ledgerCli(rest, gitTop(process.cwd()) || process.cwd()); out(r.text); if (r.code) process.exitCode = r.code; break;
+  }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'statusline': {

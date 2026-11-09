@@ -11,6 +11,7 @@ import './pipe.mjs';
 import { basename, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { events as memEvents, debt as memDebt } from './memory.mjs';
+import { erasedBlock } from './rewrites.mjs';
 
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
 // the repo is --repo, or the first plain argument (`sawbuck debt <path>`), at its root
@@ -46,6 +47,15 @@ if (live === null) { console.error('sawbuck debt: could not read the suppression
 const bare = live.filter((it) => !it.documented && it.content).length;
 
 // --since REF: the DELTA. Suppressions in HEAD but not at REF = debt this branch/PR adds.
+// what git threw away on the paths this branch touches (reverted attempts with their reasons), from the local ledger or
+// the shared ref a teammate pushed (sawbuck ledger push); the Action fetches that ref. Information, never the gate.
+const erasedOnBranch = (ref) => {
+  try {
+    const changed = execFileSync('git', ['-C', repo, 'diff', '--name-only', `${ref}...HEAD`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean);
+    const block = changed.length ? erasedBlock(repo, changed) : '';
+    return block ? ['', '   ' + block.replace('(recovered locally, leads)', '(from the ledger, leads)').split('\n').join('\n   ')] : [];
+  } catch { return []; }
+};
 if (since && typeof since === 'string') {
   const norm = (s) => String(s).trim().replace(/\s+/g, ' ');
   // the delta base: the raw suppression set at REF (the adapter's ref mode), subtracted from HEAD.
@@ -59,11 +69,12 @@ if (since && typeof since === 'string') {
   // the gate: fail (exit 1) when the branch adds the kind of debt --fail-on names.
   const fail = gateFails(added);
   if (asJson) { console.log(JSON.stringify({ since, added: added.length, testSkips: skips, undocumented: undoc, failOn: failMode, fail, items: added.map((it) => ({ file: it.file, line: it.line, kind: String(it.kind).trim(), documented: it.documented })) }, null, 2)); process.exit(fail ? 1 : 0); }
-  if (!added.length) { console.log(`sawbuck: no new suppression debt since ${since} (clean).`); process.exit(0); }
+  if (!added.length) { console.log([`sawbuck: no new suppression debt since ${since} (clean).`, ...erasedOnBranch(since)].join('\n')); process.exit(0); }
   const o = [`sawbuck: ${added.length} new suppression${added.length === 1 ? '' : 's'} since ${since}  ·  ${skips} disabled test${skips === 1 ? '' : 's'}  ·  ${undoc} undocumented (no code/reason)`];
   for (const it of added.slice(0, Math.max(top, 20))) o.push(`     ${it.testSkip ? '🔴' : (it.documented ? '  ' : '✎ ')} ${it.file}:${it.line}  ${String(it.kind).trim()}${it.documented ? '' : '   (bare - no code/reason)'}`);
   o.push(`\n   ✎ = bare/undocumented (the suspect kind); declare intent (a rule code or reason) or remove it.`);
   if (failMode) o.push(fail ? `\n   ❌ debt gate FAILED (--fail-on ${failMode}): this branch adds debt that must be declared or removed.` : `\n   ✓ debt gate passed (--fail-on ${failMode}).`);
+  o.push(...erasedOnBranch(since));
   console.log(o.join('\n'));
   process.exit(fail ? 1 : 0);
 }
