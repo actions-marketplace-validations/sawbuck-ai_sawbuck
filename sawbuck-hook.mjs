@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { ensureExcluded } from './exclude.mjs';
+import { shareFinding } from './share.mjs';
 // sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry.
 // Each turn: if a new commit landed, run reflect on it; then say so once on a fresh catch. State in .sawbuck/state.json.
 // Zero-dep. Usage (wired as a Stop hook): node sawbuck-hook.mjs --repo <path>
@@ -153,6 +154,8 @@ const gamedThisTurn = rec && rec.latest && rec.latest.kind === 'gamed' && rec.la
 if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   st.shownTotal = total;
   const where = rec.latest.file;
+  // the catch is a finding too: handed once to whatever memory runs here, beside the rules and the reverted attempts
+  shareFinding(repo, { kind: 'gamed', title: `gamed: ${where} edited to pass`, text: rec.latest.reason || `A green on ${where} came from editing the test, config or grader, not the source.`, files: [where] }).catch(() => {});
   sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the metric passes on its own, then finish.`, `the win on ${where} is still gamed and needs a real source fix.`);
 }
 
