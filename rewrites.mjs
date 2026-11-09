@@ -37,6 +37,9 @@ function fromReflog(repo) {
   return [...bySubject.values()];
 }
 
+// `Revert "cache: cap at 100 entries"` names the attempt as `cache: cap at 100 entries`, so a memory index does not read "reverted: Revert"
+export const revertedSubject = (subject) => { const m = /^revert:?\s*"?(.+?)"?\s*$/i.exec(subject || ''); return m ? m[1] : subject; };
+
 export function erasedCommits(repo) {
   const known = ledger(repo);
   const seen = new Set(known.map((e) => e.sha));
@@ -44,7 +47,7 @@ export function erasedCommits(repo) {
   if (fresh.length && existsSync(join(repo, '.sawbuck', 'state.json'))) {
     try { appendFileSync(join(repo, '.sawbuck', 'rewritten.jsonl'), fresh.map((e) => JSON.stringify(e)).join('\n') + '\n'); } catch {}
     // a reverted attempt with its reason is also handed to a memory layer on this machine, once, if one is running
-    for (const e of fresh) if (e.revert && e.why) shareFinding(repo, { kind: 'revert', title: `reverted: ${e.subject}`, text: e.why, files: e.files || [] }).catch(() => {});
+    for (const e of fresh) if (e.revert && e.why) shareFinding(repo, { kind: 'revert', title: `reverted: ${revertedSubject(e.subject)}`, text: e.why, files: e.files || [] }).catch(() => {});
   }
   return [...known, ...fresh];
 }

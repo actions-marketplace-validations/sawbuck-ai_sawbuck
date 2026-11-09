@@ -4,7 +4,8 @@
 // Runs on a clean account on purpose: a developer's global gitignore hid a bug that blocked every turn.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, execFile } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -119,6 +120,22 @@ test('claim: attach --shared in a repo that already has its rules says the commi
 test('claim: it sends a turn back up to three times by default, then lets it end', () => { const d = signed(true); const w = wired(d); w.prompt(); put(d, '.npmrc', 'x\n'); const seen = []; for (let i = 0; i < 4; i++) seen.push(blocked(w.stop())); assert.deepEqual(seen, [true, true, true, false]); });
 
 test('claim: a blocked protected path counts as one catch, however many send-backs', () => { const d = signed(true); const w = wired(d); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); w.stop(); w.stop(); assert.match(sb(d, 'statusline').out, /1 caught/); assert.match(sb(d, 'status').out, /1 protected path/); assert.equal(readFileSync(join(d, '.sawbuck/activity.jsonl'), 'utf8').trim().split('\n').filter((l) => l.includes('"mandate"')).length, 1); });
+test('claim: a gamed catch is handed to the memory running on this machine before the hook exits', async () => {
+  // a fake claude-mem worker in this process; the hook must await the hand-off, since it exits the process to block the stop
+  const got = []; const srv = createServer((req, res) => { let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { got.push({ url: req.url, body: b }); res.setHeader('content-type', 'application/json'); res.end(req.url === '/api/health' ? '{"status":"ok"}' : '{"success":true,"id":1}'); }); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const home = mkdtempSync(join(tmpdir(), 'claims-mem-home-')); mkdirSync(join(home, '.claude-mem'), { recursive: true }); writeFileSync(join(home, '.claude-mem', '.worker.port'), String(srv.address().port));
+  try {
+    const d = signed(false); const w = wired(d); w.prompt();
+    edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+    const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.Stop[0].hooks[0].command;
+    const out = await new Promise((res) => { const p = execFile('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: home } }, (err, stdout) => res(stdout || '')); p.stdin.end(JSON.stringify({ hook_event_name: 'Stop', cwd: d, session_id: 'mem' })); });
+    assert.ok(blocked(out), out);
+    const save_ = got.find((g) => g.url === '/api/memory/save'); assert.ok(save_, 'the worker got the finding before the hook exited');
+    const body = JSON.parse(save_.body); assert.equal(body.title, 'gamed: test/add.test.js edited to pass'); assert.equal(body.cwd, d);
+    assert.match(readFileSync(join(d, '.sawbuck', 'shared.jsonl'), 'utf8'), /"kind":"gamed"/);
+  } finally { srv.close(); }
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
