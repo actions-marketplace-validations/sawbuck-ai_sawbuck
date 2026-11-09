@@ -164,6 +164,12 @@ test('limit: ledger push needs a remote and says so; pull from a remote with no 
   const d = signed(true); assert.match(sb(d, 'ledger', 'push').out, /no remote named origin/);
   const { d: e } = withRemote(); assert.match(sb(e, 'ledger', 'pull').out, /has no ledger yet/);
 });
+test('claim: after detach the record stays but says detached, so nothing reads it as watching; attach clears that', () => {
+  const d = signed(true); wired(d); assert.ok(existsSync(join(d, '.sawbuck', 'state.json')));
+  assert.equal(sb(d, 'detach').code, 0); const st = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')); assert.equal(st.detached, true, 'the record is kept and marked');
+  assert.equal(sb(d, 'attach', '--claude').code, 0); assert.ok(!JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).detached, 'attached again, the mark is gone');
+  assert.equal(sb(d, 'detach', '--purge').code, 0); assert.ok(!existsSync(join(d, '.sawbuck', 'state.json')), 'purge removes the record itself');
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
