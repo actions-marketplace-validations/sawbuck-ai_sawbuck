@@ -11,6 +11,7 @@ import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
+import { ledgerCli } from './ledger.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -116,6 +117,10 @@ Usage:
                             shows only what a branch adds; --fail-on exits 1 when that debt (or, without
                             --since, any live debt of that kind) is there (a CI gate)
   sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
+  sawbuck ledger [push|pull] [remote]
+                            What git threw away, shared: push puts the erased attempts and their reasons on
+                            refs/sawbuck/ledger for the team and CI; pull takes them into this clone; no
+                            argument shows the counts
   sawbuck doctor [repo]     Run what each hook runs (project and user level) and say if it still works,
                             is incomplete, or is gone. --all lists every repo it is attached to and checks each
   sawbuck contract [--dry-run] [--full] [--strict]
@@ -398,7 +403,7 @@ switch (cmd) {
         if (hasClaude) unwireClaude(repo, {});
         if (a.git || hasBlock(repo) || !hasClaude) unwireGit(repo);
       }
-      if (purge) purgeRecord(repo);
+      if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
       const left = recordLeft(repo);
       if (left.length) say(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
@@ -431,6 +436,10 @@ switch (cmd) {
     break;
   }
 
+  case 'ledger': {
+    // push | pull | nothing, then an optional remote: the words are subcommands, never a repo path; the repo is where you stand
+    const r = ledgerCli(rest, gitTop(process.cwd()) || process.cwd()); out(r.text); if (r.code) process.exitCode = r.code; break;
+  }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'statusline': {
@@ -720,6 +729,7 @@ function wireClaude(repo, opts) {
   const mp = user ? userManifestPath() : manifestPath(repo);
   const stPath = join(repo, '.sawbuck', 'state.json');
   let st = {}; try { st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+  if (st.detached && !dry) { delete st.detached; try { writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} }   // attached again: the record no longer says detached
   // attach often runs inside a turn (saying yes to the offer), and that turn's Stop hook then has no baseline, so the
   // files signing just wrote would read as the agent's violations. What is here now is the baseline; anything after it counts.
   const baseline = !user && existsSync(join(repo, 'promptwheel.config.json')) && !st.turnBaseline;
@@ -827,6 +837,13 @@ function verifyClean(repo) {
   const left = footprint(repo);
   if (!left.length) out('sawbuck: verified, the hooks and the receipt are gone.');
   else { out('sawbuck: NOT clean, these remain:'); for (const it of left) out(`  ${it.state.padEnd(22)} ${it.what}`); process.exitCode = 1; }
+}
+// detach keeps .sawbuck/state.json as the record; this flag is how the plugin band and status tell "detached" from "watching"
+function markDetached(repo, detached) {
+  const p = join(repo, '.sawbuck', 'state.json');
+  if (!there(p)) return;
+  if (dry) { if (detached) planned.lines.set(p, `modify  ${p}  (the record stays, marked detached so nothing reads it as watching)`); return; }
+  try { const st = JSON.parse(readFileSync(p, 'utf8')); if (detached) st.detached = true; else delete st.detached; writeFileSync(p, JSON.stringify(st, null, 2) + '\n'); } catch {}
 }
 function purgeRecord(repo) {
   let n = 0;

@@ -136,6 +136,40 @@ test('claim: a gamed catch is handed to the memory running on this machine befor
     assert.match(readFileSync(join(d, '.sawbuck', 'shared.jsonl'), 'utf8'), /"kind":"gamed"/);
   } finally { srv.close(); }
 });
+// ------------------------------------------------------------ "what git threw away, shared with the team and CI"
+const withRemote = () => { const d = signed(true); const bare = mkdtempSync(join(tmpdir(), 'claims-remote-')); git(bare, 'init', '-q', '--bare', '-b', 'main'); git(d, 'remote', 'add', 'origin', bare); git(d, 'push', '-q', 'origin', 'main'); return { d, bare }; };
+const eraseRevert = (d) => { const k = git(d, 'rev-parse', 'HEAD'); put(d, 'src/cache.js', 'exports.c={}\n'); save(d, 'cache: add an LRU limit'); git(d, 'revert', '--no-edit', 'HEAD'); git(d, 'commit', '-q', '--amend', '-m', 'Revert "cache: add an LRU limit"\n\nIt logged users out.'); git(d, 'reset', '-q', '--hard', k); };
+test('claim: an erased revert pushed to the shared ledger reaches a fresh clone, with its reason, before any edit there', () => {
+  const { d, bare } = withRemote(); const w = wired(d); eraseRevert(d); w.prompt();   // the hook records the erased revert here
+  assert.match(sb(d, 'ledger').out, /2 erased attempts kept here, 0 shared/, 'the attempt and its revert');
+  const p1 = sb(d, 'ledger', 'push'); assert.equal(p1.code, 0, p1.out); assert.match(p1.out, /pushed to origin .*2 erased attempts, 2 new/);
+  assert.match(sb(d, 'ledger', 'push').out, /nothing new to push/, 'a second push adds nothing');
+  const c = mkdtempSync(join(tmpdir(), 'claims-clone-')); git(c, 'clone', '-q', bare, '.');
+  assert.ok(!/logged users out/.test(sb(c, 'context').out), 'a plain clone has none of it');
+  const pull = sb(c, 'ledger', 'pull'); assert.equal(pull.code, 0, pull.out); assert.match(pull.out, /2 erased attempts shared/);
+  put(c, 'src/cache.js', 'exports.c={max:10}\n');   // context is scoped to the files in hand
+  assert.match(sb(c, 'context').out, /reverted: Revert "cache: add an LRU limit".*It logged users out/, 'context in the clone shows the revert and why, with no attach there');
+  const h = spawnSync(process.execPath, [CLI, 'turn', '--hook', c], { cwd: c, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', cwd: c, session_id: 'c', prompt: 'cap src/cache.js' }) }).stdout || '';
+  assert.match(h, /logged users out/, 'a prompt in the clone that names the file gets the erased history with the prompt');
+});
+test('claim: the debt gate names what git threw away on the paths a branch touches, from the shared ledger', () => {
+  const { d, bare } = withRemote(); const w = wired(d); eraseRevert(d); w.prompt(); assert.equal(sb(d, 'ledger', 'push').code, 0);
+  const c = mkdtempSync(join(tmpdir(), 'claims-ci-')); git(c, 'clone', '-q', bare, '.'); git(c, 'fetch', '-q', 'origin', '+refs/sawbuck/ledger:refs/sawbuck/ledger');   // what the Action step does
+  git(c, 'checkout', '-qb', 'feat'); put(c, 'src/cache.js', 'exports.c={max:10}\n'); save(c, 'cache again');
+  const r = sb(c, 'debt', '--since', 'main'); assert.equal(r.code, 0, r.out); assert.match(r.out, /no new suppression debt/); assert.match(r.out, /from the ledger.*\n.*reverted: Revert "cache: add an LRU limit".*It logged users out/s);
+  put(c, 'src/other.js', 'x\n'); save(c, 'unrelated'); git(c, 'checkout', '-q', 'main'); git(c, 'checkout', '-qb', 'feat2'); put(c, 'src/other.js', 'y\n'); save(c, 'other');
+  assert.ok(!/logged users out/.test(sb(c, 'debt', '--since', 'main').out), 'a branch that does not touch the file hears nothing');
+});
+test('limit: ledger push needs a remote and says so; pull from a remote with no ledger says so', () => {
+  const d = signed(true); assert.match(sb(d, 'ledger', 'push').out, /no remote named origin/);
+  const { d: e } = withRemote(); assert.match(sb(e, 'ledger', 'pull').out, /has no ledger yet/);
+});
+test('claim: after detach the record stays but says detached, so nothing reads it as watching; attach clears that', () => {
+  const d = signed(true); wired(d); assert.ok(existsSync(join(d, '.sawbuck', 'state.json')));
+  assert.equal(sb(d, 'detach').code, 0); const st = JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')); assert.equal(st.detached, true, 'the record is kept and marked');
+  assert.equal(sb(d, 'attach', '--claude').code, 0); assert.ok(!JSON.parse(readFileSync(join(d, '.sawbuck', 'state.json'), 'utf8')).detached, 'attached again, the mark is gone');
+  assert.equal(sb(d, 'detach', '--purge').code, 0); assert.ok(!existsSync(join(d, '.sawbuck', 'state.json')), 'purge removes the record itself');
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });

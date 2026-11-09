@@ -2,19 +2,19 @@
 // it: a reverted attempt stops being there to find. Git keeps those commits in the reflog for a while, so
 // the commits a branch no longer reaches are read from there, kept in .sawbuck/rewritten.jsonl once this repo
 // is attached (the reflog expires, the ledger does not), and surfaced by `context` for the paths in hand.
-// Reads git only, no model, no network. The ledger is local: a clone does not get it. Never writes in a repo
-// sawbuck is not attached to.
+// Reads git only, no model, no network. The ledger is local until `sawbuck ledger push` puts it on refs/sawbuck/ledger
+// for the team and CI (ledger.mjs). Never writes in a repo sawbuck is not attached to.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { shareFinding } from './share.mjs';
+import { readLocal, readShared, merge as mergeLedgers } from './ledger.mjs';
 
 const MAX = 300;
 const g = (repo, ...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 }); } catch { return ''; } };
 
-function ledger(repo) {
-  try { return readFileSync(join(repo, '.sawbuck', 'rewritten.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }
-}
+// the local ledger plus whatever the team shared on refs/sawbuck/ledger (ledger.mjs), one entry per subject and files
+function ledger(repo) { return mergeLedgers(readLocal(repo), readShared(repo)); }
 
 // commits the reflog remembers and no ref reaches. An amend or a rebase replays the same subject, so a commit
 // whose subject is still reachable was not lost, only rewritten, and a replayed one that is lost is listed once.
