@@ -40,6 +40,7 @@
     "sawbuck.mjs",
     "rewrites.mjs",
     "share.mjs",
+    "hold.mjs",
     "steers.mjs",
     "rules.mjs",
     "history.mjs",

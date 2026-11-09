@@ -11,6 +11,7 @@ import './pipe.mjs';
 import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
+import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
@@ -124,6 +125,7 @@ Usage:
                             command; --strict makes them block
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
+  sawbuck hold --hook       The PreToolUse hook attach wires: a publish, release, merge, public comment or force push asks a person first
   sawbuck share --title T [text]  Hand a finding to the memory you run (claude-mem, Claude Code's notes, a Markdown folder), once
   sawbuck rules --notes     The notes Claude Code's own memory holds for this repo, to promote into its CLAUDE.md
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
@@ -407,6 +409,14 @@ switch (cmd) {
   }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'rules': { out(rulesCli(rest, { repo: gitTop(process.cwd()) || process.cwd() })); break; }
+  case 'hold': {
+    // the PreToolUse hook attach wires on Bash: an outward command (publish, release, merge, public comment, force push)
+    // becomes a question to the person; everything else passes. Reads the hook's JSON on stdin only under --hook.
+    let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
+    const d = holdDecision(body, gitTop(repoArg()) || repoArg());
+    if (d) out(JSON.stringify(d));
+    break;
+  }
   case 'share': {
     // a finding (a rule you accepted, a reverted attempt, a gamed green) handed to whatever memory runs on this machine, once
     const take = (flag) => { const k = rest.indexOf(flag); return k > -1 ? rest[k + 1] : ''; };
@@ -697,12 +707,13 @@ function wireClaude(repo, opts) {
   const here = user || shared;   // no repo path in the command: the hook works out the repo from where it runs
   const ctx = run(here ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
   const chk = run(here ? '__hook --by claude --stop' : `__hook --repo ${JSON.stringify(repo)} --by claude --stop`);
+  const hold = run(here ? 'hold --hook' : `hold --hook ${JSON.stringify(repo)}`);
   // attached already? "already attached" only when every hook of THIS version is present; an older
   // attachment (say, without the SessionStart[compact] hook) is upgraded in place, never left stale.
   let upgrading = false;
   if (OURS.test(JSON.stringify(cfg))) {
     const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
-    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk)) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash')) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
     upgrading = true;
   }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
@@ -714,7 +725,7 @@ function wireClaude(repo, opts) {
   const baseline = !user && existsSync(join(repo, 'promptwheel.config.json')) && !st.turnBaseline;
   if (dry) {
     out(dryText([
-      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop hooks: the per-turn block, and the check)`,
+      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] hooks: the per-turn block, the check, and the hold on outward commands)`,
       !user && ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       baseline ? `write   ${stPath}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
@@ -732,6 +743,8 @@ function wireClaude(repo, opts) {
   // (SessionStart with the `compact` source injects stdout into context).
   put('SessionStart', ctx, 'compact');
   put('Stop', chk);
+  // the hold on outward commands: a publish, a release, a merge, a public comment, a force push ask a person first
+  put('PreToolUse', hold, 'Bash');
   mkdirSync(dir, { recursive: true });
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
   if (baseline) {
@@ -785,7 +798,7 @@ function unwireClaude(repo, { user }) {
 }
 function removeClaudeEntries(cfg) {
   if (!cfg.hooks) return;
-  for (const ev of ['UserPromptSubmit', 'SessionStart', 'Stop']) {
+  for (const ev of ['UserPromptSubmit', 'SessionStart', 'Stop', 'PreToolUse']) {
     if (!Array.isArray(cfg.hooks[ev])) continue;
     cfg.hooks[ev] = cfg.hooks[ev].filter((h) => !OURS.test(JSON.stringify(h)));
     if (!cfg.hooks[ev].length) delete cfg.hooks[ev];     // no empty [] residue
@@ -847,7 +860,7 @@ function doctorRepo(repo) {
     if (!cmds.length) continue;
     // the set attach writes, each under its own event: the rule on a prompt and after a compaction, the check on Stop
     const at = (event, re, matcher) => ours(((cfg.hooks || {})[event] || []).filter((h) => !matcher || (h && h.matcher === matcher))).some((c) => re.test(c));
-    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop'].filter(Boolean);
+    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold'].filter(Boolean);
     checks.push({ mode, file: f, ok: !missing.length && [...new Set(cmds)].every(hookRuns), missing });
   }
   // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded, or under .git)
