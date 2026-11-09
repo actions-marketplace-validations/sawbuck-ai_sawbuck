@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { ensureExcluded } from './exclude.mjs';
+import { shareFinding } from './share.mjs';
 // sawbuck-hook.mjs: the Sawbuck Claude Code Stop-hook entry.
 // Each turn: if a new commit landed, run reflect on it; then say so once on a fresh catch. State in .sawbuck/state.json.
 // Zero-dep. Usage (wired as a Stop hook): node sawbuck-hook.mjs --repo <path>
@@ -48,8 +49,12 @@ const writeRec = (r) => { try { mkdirSync(stDir, { recursive: true }); writeFile
 const logActivity = (ev) => { try { mkdirSync(stDir, { recursive: true }); appendFileSync(join(stDir, 'activity.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...ev }) + '\n'); } catch {} };
 const hasCommit = (ref) => { try { execFileSync('git', ['-C', repo, 'cat-file', '-e', `${ref}^{commit}`], { stdio: 'ignore' }); return true; } catch { return false; } };
 let rec = readRec();
-// the first turn after attach has no lastSha yet: its baseline is what that turn started from
-const from = st.lastSha || (st.turnBaseline && st.turnBaseline.sha) || '';
+// the span re-proved is the TURN's: from the commit HEAD was at when the prompt began (the turn baseline) to HEAD now. Commits
+// the person made between turns (a red test first, a merge, a pull) are theirs, not the agent's, and are not scored; a
+// standing gamed verdict keeps its own base below. The first turn after attach has no baseline yet and starts from lastSha.
+const isAncestor = (a, b) => { try { execFileSync('git', ['-C', repo, 'merge-base', '--is-ancestor', a, b], { stdio: 'ignore' }); return true; } catch { return false; } };
+const tb = (st.turnBaseline && st.turnBaseline.sha) || '';
+const from = (tb && st.lastSha && tb !== st.lastSha && isAncestor(st.lastSha, tb)) ? tb : (st.lastSha || tb || '');
 if (head && from && head !== from) {
   let standing = !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.base && rec.latest.sha !== head.slice(0, 8));
   if (standing && !hasCommit(rec.latest.base)) {
@@ -153,6 +158,9 @@ const gamedThisTurn = rec && rec.latest && rec.latest.kind === 'gamed' && rec.la
 if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   st.shownTotal = total;
   const where = rec.latest.file;
+  // the catch is a finding too: handed once to whatever memory runs here, beside the rules and the reverted attempts
+  // awaited: sendBack exits the process, and an unawaited hand-off died with it (found by hand against a live worker, 2026-11-08)
+  await shareFinding(repo, { kind: 'gamed', title: `gamed: ${where} edited to pass`, text: rec.latest.reason || `A green on ${where} came from editing the test, config or grader, not the source.`, files: [where] }).catch(() => {});
   sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the metric passes on its own, then finish.`, `the win on ${where} is still gamed and needs a real source fix.`);
 }
 

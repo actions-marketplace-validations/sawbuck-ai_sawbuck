@@ -1,7 +1,7 @@
 // The steer scratchpad, for the person: what you keep correcting, read from Claude Code's plugin store on this
 // machine. Reads only. Counts here are measured; nothing is projected. The grouping matches the plugin's.
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 
 const STOP = new Set(['the', 'a', 'an', 'to', 'of', 'and', 'or', 'it', 'this', 'that', 'do', 'not', 'dont', 'use', 'be', 'in', 'on', 'for', 'with', 'is', 'are', 'your', 'you']);
@@ -44,5 +44,12 @@ export function steersReport({ json = false, home } = {}) {
     for (const g of repeated.slice(0, 10)) out.push(`  ${String(g.n).padStart(3)}x  ${g.nudge}  (${g.repos.join(', ')})`);
     out.push('', 'If one of these is a rule, write it down: a protected path in promptwheel.config.json, or a line in CLAUDE.md.');
   } else out.push('', 'Nothing repeats yet: a steer shows here after 3 times across 2 sessions.');
+  // the hardest steer: the person stopped the agent mid-turn (the plugin keeps these as axis "stop")
+  const stops = steers.filter((e) => e.axis === 'stop');
+  if (stops.length) {
+    out.push('', `You stopped it ${stops.length} time${stops.length === 1 ? '' : 's'}. What it was doing (a lead to read, not a verdict: the most common reason to stop an agent is having something to add):`);
+    for (const e of stops.slice(-5).reverse()) out.push(`  ${String(e.nudge || '').replace(/^stopped: /, '')}  (${basename(e.repo || '') || 'no repo'})`);
+    out.push('  A thing you stop it on more than once is a hold: say it once in CLAUDE.md, or protect the path.');
+  }
   return out.join('\n');
 }

@@ -2,7 +2,7 @@
 // machine, with copies and likely secrets removed. The agent proposes rules from it, each with quotes. `check` proves
 // every quote is really yours: a rule with fewer than two real quotes is dropped. Nothing is added to any file here.
 // Once the check has run, the gathered messages and the candidates are deleted: they were for that one read.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync, rmSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { readHistory, typedText } from './history.mjs';
@@ -55,7 +55,26 @@ export function checkRules(file, { home = homedir() } = {}) {
   return { kept, dropped };
 }
 
-export function rulesCli(args, { home = homedir() } = {}) {
+// the notes Claude Code's own memory holds for this repo (~/.claude/projects/<repo>/memory/*.md): written by the agent, so not
+// quotes of the person's, but already explicit; /rules offers to promote them into the repo's CLAUDE.md as they stand
+export function memoryNotes({ home = homedir(), repo = process.cwd() } = {}) {
+  const dir = join(home, '.claude', 'projects', resolve(repo).replace(/\//g, '-'), 'memory');
+  let files = []; try { files = readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md'); } catch { return []; }
+  return files.map((f) => {
+    const t = readFileSync(join(dir, f), 'utf8'); const fm = t.match(/^---\n([\s\S]*?)\n---\n?/); const head = fm ? fm[1] : ''; const body = (fm ? t.slice(fm[0].length) : t).trim();
+    const get = (k) => (head.match(new RegExp(`^\\s*${k}:\\s*(.+)$`, 'm')) || [, ''])[1].trim().replace(/^"|"$/g, '');
+    return { file: join(dir, f), name: get('name') || f.replace(/\.md$/, ''), description: get('description'), type: get('type'), source: get('source'), body };
+  });
+}
+
+export function rulesCli(args, { home = homedir(), repo = process.cwd() } = {}) {
+  if (args.includes('--notes')) {
+    const notes = memoryNotes({ home, repo }).filter((n) => n.source !== 'sawbuck');
+    if (!notes.length) return `sawbuck: Claude Code's own memory holds no notes for this repo.`;
+    const out = [`sawbuck: ${notes.length} note${notes.length === 1 ? '' : 's'} in Claude Code's own memory for this repo (written by the agent for itself, so these are not your quotes):`];
+    notes.forEach((n, i) => { out.push('', `${i + 1}. ${n.description || n.name}${n.type ? ` [${n.type}]` : ''}`, `     ${n.body.split('\n').find((l) => l.trim() && !l.startsWith('**')) || ''}`.trimEnd()); });
+    return out.join('\n');
+  }
   if (args.includes('--prepare')) {
     const r = prepareRules({ home });
     return `sawbuck: ${r.lines} of your messages are ready in ${r.input}, copies removed${r.secrets ? `, ${r.secrets} that looked like secrets left out` : ''}. Stays on this machine until an agent reads it.`;
@@ -71,5 +90,5 @@ export function rulesCli(args, { home = homedir() } = {}) {
     kept.forEach((r, n) => { out.push('', `${n + 1}. ${r.rule}`); for (const q of r.quotes.slice(0, 3)) out.push(`     "${q.slice(0, 110)}"`); });
     return out.join('\n');
   }
-  return 'sawbuck rules --prepare | --check <candidates.json>';
+  return 'sawbuck rules --prepare | --check <candidates.json> | --notes';
 }

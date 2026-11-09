@@ -14,7 +14,10 @@ import { homedir } from 'node:os';
 import { prepareRules, SECRET, forget } from './rules.mjs';
 import { readHistory, typedText } from './history.mjs';
 
-export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['scope', 'autonomy'], Craft: ['voice', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
+// framing (how a thing is said to other people) joined Craft on 2026-11-08: with it as its own spoke two readers' shapes
+// correlated at r 0.92 against 0.86 with it folded into voice (proof-bench/spokes). approach (how the work gets done) and
+// order (what first) did not make it (r 0.71 and 0.84 as spokes), so they stay unplaced and are shown as such.
+export const GROUPS = { Truth: ['correctness', 'proof', 'honesty'], Intent: ['scope', 'autonomy'], Craft: ['voice', 'framing', 'naming', 'visual', 'simplicity'], Control: ['process', 'safety'] };
 const SPOKES = Object.values(GROUPS).flat();
 const MIN_SPOKES = 200;   // below this, spokes are noise: show the 4 groups
 const SAMPLE = 600;
@@ -105,16 +108,18 @@ function notSaid(p) {
 
 export function tally(labels) {
   const counts = Object.fromEntries(SPOKES.map((s) => [s, 0]));
-  let none = 0;
-  // two models split scope and direction at random (shape r 0.55 with both, 0.97 merged), so they count as one
-  for (const raw of Object.values(labels)) { const v = raw === 'direction' ? 'scope' : raw; if (v === 'none') none++; else if (v in counts) counts[v]++; }
+  let none = 0; const unplaced = {};
+  // two models split scope and direction at random (shape r 0.55 with both, 0.97 merged), so they count as one. A label
+  // that is none of the spokes is not dropped: it is counted as not placed and shown, because the gap is the finding
+  // (2026-11-08: the largest kind of steering one person did, "approach", fit no spoke).
+  for (const raw of Object.values(labels)) { const v = raw === 'direction' ? 'scope' : raw; if (v === 'none') none++; else if (v in counts) counts[v]++; else if (typeof v === 'string' && /^[a-z][a-z -]{1,24}$/.test(v)) unplaced[v] = (unplaced[v] || 0) + 1; }
   const total = SPOKES.reduce((a, s) => a + counts[s], 0);
   const groups = Object.fromEntries(Object.entries(GROUPS).map(([g, ss]) => [g, total ? Math.round(100 * ss.reduce((a, s) => a + counts[s], 0) / total) : 0]));
   const top = Math.max(1, ...SPOKES.map((s) => counts[s]));
   // the 0 to 99 scale is relative to your own top spoke and compressed so the shape reads: shares carry the real size
   const ratings = Object.fromEntries(SPOKES.map((s) => [s, Math.round(40 + 59 * Math.sqrt(counts[s] / top))]));
   const shares = Object.fromEntries(SPOKES.map((s) => [s, total ? Math.round(100 * counts[s] / total) : 0]));
-  return { n: total, none, groups, ratings, shares, spokes: total >= MIN_SPOKES };
+  return { n: total, none, groups, ratings, shares, spokes: total >= MIN_SPOKES, unplaced };
 }
 
 export function shapeSvg(t) {
@@ -169,7 +174,9 @@ export function shapeCli(args, { home = homedir() } = {}) {
     out.push(`  ${g.padEnd(8)} ${String(t.groups[g]).padStart(3)}%${was}`);
     if (t.spokes) out.push(`    ${ss.map((s) => `${title(s)} ${t.ratings[s]}`).join('  ')}`);
   }
-  if (!t.spokes) out.push('', `  Too few messages for the 11 spokes (${t.n} of ${MIN_SPOKES}), so this shows the 4 groups.`);
+  if (!t.spokes) out.push('', `  Too few messages for the ${SPOKES.length} spokes (${t.n} of ${MIN_SPOKES}), so this shows the 4 groups.`);
+  const up = Object.entries(t.unplaced || {}).sort((a, b) => b[1] - a[1]);
+  if (up.length) out.push('', `  Not placed: ${up.slice(0, 4).map(([k, v]) => `${k} ${v}`).join(', ')}. Pushes the reader saw that fit none of the spokes; the shape does not count them, and they are the first place to look for a kind of steering the spokes miss.`);
   appendFileSync(p.hist, JSON.stringify({ at: new Date().toISOString(), n: t.n, groups: t.groups, shares: t.shares }) + '\n');
   forget(home, p.input, p.rules, file);   // the sampled messages and their labels were for this one read; the totals above are what stays
   out.push(...notSaid(p));

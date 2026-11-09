@@ -29,7 +29,10 @@ const ICON = { verified: '✓', gamed: '🚩', regression: '✗', inconclusive: 
 // results.json holds the all-time catch tally (gamed + regression, never trimmed); activity.jsonl is
 // the recent per-check feed (verified included, capped ~200). We read both and keep each honest.
 const { results, caught: catchesAllTime, state: kind, steer, armed, hasConfig, wired } = repoState(repo);
-const repeated = groupSteers(readSteers().steers).filter((g) => g.n >= 3 && g.sessions >= 2);
+const repeatedAll = groupSteers(readSteers().steers).filter((g) => g.n >= 3 && g.sessions >= 2);
+// this repo's own first; one said elsewhere on this machine is listed with the repos it came from, so a fresh repo is not told it said it here
+const sameRepo = (r) => { try { return r === repo || resolve(r) === repo || basename(r) === basename(repo); } catch { return false; } };
+const repeated = [...repeatedAll.filter((g) => g.repos.some(sameRepo)), ...repeatedAll.filter((g) => !g.repos.some(sameRepo))];
 const feed = readLines(join(repo, '.sawbuck', 'activity.jsonl')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 0, mandate: 0 };
 for (const e of feed) if (e && tally[e.kind] != null) tally[e.kind]++;
@@ -114,7 +117,7 @@ if (steer) {
 if (repeated.length) {
   out.push('');
   out.push('   You keep saying  ·  write one down if it is a rule (/sawbuck-reins:rules can help)');
-  for (const g of repeated.slice(0, 3)) out.push(`     ${g.n}x  ${g.nudge}`);
+  for (const g of repeated.slice(0, 3)) out.push(`     ${g.n}x  ${g.nudge}${g.repos.some(sameRepo) ? '' : `  (in ${g.repos.map((r) => basename(r)).join(', ')})`}`);
 }
 
 // Debt

@@ -3,6 +3,8 @@
 // invariant (attach leaves the worktree clean; detach is a true inverse),
 // verify/dry-run, rank's per-path filtering, and context.
 
+import { createServer } from 'node:http';
+import { execFile } from 'node:child_process';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -813,8 +815,8 @@ test('the gamed wall\'s block budget is per prompt without prompt_id even in a r
   const { d, g, honest, hook, turn } = gamedRepo(false);
   try {
     hook({});                                                                // arm on the base commit
+    turn();                                                                  // the prompt begins; what the agent commits from here is the turn's
     writeFileSync(join(d, 'calc.test.mjs'), honest.replace('2));', '8));')); g('commit', '-q', '-am', 'make it green');
-    turn();
     for (let i = 0; i < 3; i++) assert.equal(JSON.parse(hook({})).decision, 'block');
     assert.match(JSON.parse(hook({})).systemMessage || '', /stopped blocking/, 'the budget for this prompt is spent');
     turn();                                                                  // the next prompt writes a new key, mandates or not
@@ -1071,4 +1073,49 @@ test('detach takes back the exclude block in a repo that was never attached', ()
     assert.equal(readFileSync(xf, 'utf8'), before, 'exact inverse, byte for byte');
     assert.match(sawbuck(['detach', '.'], d), /nothing to detach/, 'and nothing left the second time');
   } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('share: a finding goes once to each memory the person runs, as a titled memory or a note; nothing where none is', async () => {
+  const { d } = tmpRepo();
+  const home = mkdtempSync(join(tmpdir(), 'share-home-'));
+  const got = [];
+  const srv = createServer((req, res) => {
+    let b = ''; req.on('data', (c) => { b += c; });
+    req.on('end', () => { got.push({ url: req.url, body: b }); res.setHeader('content-type', 'application/json'); res.end(req.url === '/api/health' ? '{"status":"ok"}' : '{"id":1}'); });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  // the fake worker lives in this process, so the command runs asynchronously (a synchronous spawn would block it)
+  const run = (h, args) => new Promise((res) => execFile(process.execPath, [CLI, 'share', ...args], { cwd: d, encoding: 'utf8', env: { ...process.env, HOME: h } }, (err, stdout, stderr) => res({ code: err ? err.code : 0, stdout, stderr })));
+  try {
+    // nothing on this machine: every sink says why, nothing is written
+    const none = await run(home, ['--title', 'x', 'y']);
+    assert.equal(none.code, 0); assert.match(none.stderr, /claude-mem: no claude-mem/); assert.match(none.stderr, /auto-memory: Claude Code has no project directory/); assert.match(none.stderr, /markdown: no share\.markdown/); assert.equal(got.length, 0); assert.ok(!existsSync(join(d, '.sawbuck', 'shared.jsonl')));
+    // claude-mem present (its port file names the worker), Claude Code has a project directory here, a Markdown folder is configured
+    mkdirSync(join(home, '.claude-mem'), { recursive: true }); writeFileSync(join(home, '.claude-mem', '.worker.port'), String(srv.address().port));
+    const proj = join(home, '.claude', 'projects', d.replace(/\//g, '-')); mkdirSync(proj, { recursive: true });
+    writeFileSync(join(d, 'sawbuck.config.json'), JSON.stringify({ share: { markdown: 'notes/sawbuck' } }));
+    const first = await run(home, ['--title', 'Reply in at most 3 lines.', 'keep your reply to three lines | three lines max']);
+    assert.match(first.stdout, /shared "Reply in at most 3 lines\." with claude-mem \(http:\/\/127\.0\.0\.1:/, first.stderr);
+    assert.match(first.stdout, /with auto-memory \(/); assert.match(first.stdout, /with markdown \(/);
+    const save = got.find((g) => g.url === '/api/memory/save'); assert.ok(save, 'the save route was called');
+    const body = JSON.parse(save.body); assert.equal(body.title, 'Reply in at most 3 lines.'); assert.match(body.text, /three lines max/); assert.equal(body.cwd, d);
+    // the auto-memory note is in Claude Code's own form, with the index line it loads at session start
+    const note = readFileSync(join(proj, 'memory', 'rule-reply-in-at-most-3-lines.md'), 'utf8');
+    assert.match(note, /^---\nname: rule-reply-in-at-most-3-lines\ndescription: Reply in at most 3 lines\.\nmetadata:\n  type: feedback\n  source: sawbuck\n---/);
+    assert.match(note, /\*\*Why:\*\* keep your reply to three lines/); assert.match(note, /\*\*How to apply:\*\* Hold to this/);
+    assert.match(readFileSync(join(proj, 'memory', 'MEMORY.md'), 'utf8'), /- \[Reply in at most 3 lines\.\]\(rule-reply-in-at-most-3-lines\.md\) — rule, from Sawbuck/);
+    // the Markdown folder got one file with front matter
+    const md = readFileSync(join(d, 'notes', 'sawbuck', 'rule-reply-in-at-most-3-lines.md'), 'utf8'); assert.match(md, /^---\ntitle: Reply in at most 3 lines\.\nkind: rule\n/);
+    assert.equal(readFileSync(join(d, '.sawbuck', 'shared.jsonl'), 'utf8').trim().split('\n').length, 3);
+    // the same finding again: not sent anywhere twice; a revert names its files and lands with its own kind
+    const again = await run(home, ['--title', 'Reply in at most 3 lines.', 'keep your reply to three lines | three lines max']);
+    assert.match(again.stderr, /claude-mem: already shared/); assert.equal(got.filter((g) => g.url === '/api/memory/save').length, 1);
+    const rev = await run(home, ['--title', 'reverted: cache: add an LRU limit', '--kind', 'revert', '--files', 'src/cache.js', '--to', 'auto-memory', 'It logged users out.']);
+    assert.match(rev.stdout, /with auto-memory/); assert.ok(!/claude-mem/.test(rev.stdout));
+    const rn = readFileSync(join(proj, 'memory', 'revert-reverted-cache-add-an-lru-limit.md'), 'utf8'); assert.match(rn, /Do not redo this change/); assert.match(rn, /Files: src\/cache\.js/);
+    // rules --notes lists the notes Claude Code's own memory holds, leaving out the ones Sawbuck wrote
+    writeFileSync(join(proj, 'memory', 'short-replies.md'), '---\nname: short-replies\ndescription: User wants replies kept to about three lines\nmetadata:\n  type: feedback\n---\n\nKeep replies to three lines.\n\n**Why:** User asked twice.\n');
+    const notes = execFileSync(process.execPath, [CLI, 'rules', '--notes'], { cwd: d, encoding: 'utf8', env: { ...process.env, HOME: home } });
+    assert.match(notes, /1 note in Claude Code's own memory/); assert.match(notes, /User wants replies kept to about three lines \[feedback\]/); assert.match(notes, /Keep replies to three lines\./); assert.ok(!/from Sawbuck|rule-reply/.test(notes));
+  } finally { srv.close(); rmSync(d, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
 });
