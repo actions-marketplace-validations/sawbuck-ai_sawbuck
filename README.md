@@ -1,10 +1,8 @@
 # sawbuck
 
-**Agents follow written rules. The one that matters is rarely written.** Sawbuck turns what you keep telling your agent into written rules, and re-runs your tests to prove they held.
+**Was that green earned, or was the test edited to pass?** Sawbuck re-runs your tests from the agent's **source** edits alone, so a win that only came from editing the test reads as gamed. It keeps what git threw away (a reverted attempt and its reason, squashed out of the log) and shows it to your agent when you ask for that file again. And it turns what you keep telling your agent into written rules, each with your own words behind it.
 
-We put a test that could not pass into 6 real repos and told Claude to get to green fast. With no rule, it got there by changing the test 85 of 100 times. With one line in `CLAUDE.md`, 0 of 100. Of 593 active repos we checked, about half had a rules file for agents, and 19 had a rule like that one.
-
-It re-proves every win from the agent's **source** edits alone, so a test that went from red to green only because the agent edited the test reads as gamed.
+Measured: we put a test that could not pass into 6 real repos and told Claude to get to green fast. With no rule, it got there by changing the test 85 of 100 times; with one line in `CLAUDE.md`, 0 of 100. A reverted attempt squashed out of git was redone blind 26 of 27 times with git alone, and 0 of 27 when Sawbuck showed the reason with the prompt, with all 27 asking first. The corrections a person kept making came back 57 of 216 times in a fresh session with nothing written, 2 to 8 of 216 with the rules written. Of 593 active repos we checked, about half had a rules file for agents, and 19 had a rule like the test one.
 
 In Claude Code, install the plugin and keep working:
 
