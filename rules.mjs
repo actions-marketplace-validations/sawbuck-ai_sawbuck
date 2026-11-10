@@ -63,7 +63,10 @@ export function memoryNotes({ home = homedir(), repo = process.cwd() } = {}) {
   return files.map((f) => {
     const t = readFileSync(join(dir, f), 'utf8'); const fm = t.match(/^---\n([\s\S]*?)\n---\n?/); const head = fm ? fm[1] : ''; const body = (fm ? t.slice(fm[0].length) : t).trim();
     const get = (k) => (head.match(new RegExp(`^\\s*${k}:\\s*(.+)$`, 'm')) || [, ''])[1].trim().replace(/^"|"$/g, '');
-    return { file: join(dir, f), name: get('name') || f.replace(/\.md$/, ''), description: get('description'), type: get('type'), source: get('source'), body };
+    // files the note names that are not in the repo any more: a note about code that is gone is stale (repo-relative paths only)
+    const named = [...new Set([...body.matchAll(/(?<![\w\/.~-])((?:\.?[\w-]+\/)+[\w.-]+\.(?:mjs|cjs|js|ts|tsx|jsx|py|go|rs|rb|java|md|json|jsonl|sh|toml|ya?ml|css|html|astro|vue|svelte))\b/g)].map((m) => m[1]))];
+    const gone = named.filter((p) => !existsSync(join(repo, p)));
+    return { file: join(dir, f), name: get('name') || f.replace(/\.md$/, ''), description: get('description'), type: get('type'), source: get('source'), body, named, gone };
   });
 }
 
@@ -72,7 +75,12 @@ export function rulesCli(args, { home = homedir(), repo = process.cwd() } = {}) 
     const notes = memoryNotes({ home, repo }).filter((n) => n.source !== 'sawbuck');
     if (!notes.length) return `sawbuck: Claude Code's own memory holds no notes for this repo.`;
     const out = [`sawbuck: ${notes.length} note${notes.length === 1 ? '' : 's'} in Claude Code's own memory for this repo (written by the agent for itself, so these are not your quotes):`];
-    notes.forEach((n, i) => { out.push('', `${i + 1}. ${n.description || n.name}${n.type ? ` [${n.type}]` : ''}`, `     ${n.body.split('\n').find((l) => l.trim() && !l.startsWith('**')) || ''}`.trimEnd()); });
+    notes.forEach((n, i) => {
+      out.push('', `${i + 1}. ${n.description || n.name}${n.type ? ` [${n.type}]` : ''}`, `     ${n.body.split('\n').find((l) => l.trim() && !l.startsWith('**')) || ''}`.trimEnd());
+      if (n.gone.length) out.push(`     stale? it names ${n.gone.slice(0, 3).join(', ')}${n.gone.length > 3 ? ` and ${n.gone.length - 3} more` : ''}, not in this repo any more`);
+    });
+    const stale = notes.filter((n) => n.gone.length && n.gone.length === n.named.length).length;
+    if (stale) out.push('', `${stale} note${stale === 1 ? '' : 's'} name only files this repo no longer has. Check them before promoting; delete the ones that no longer hold.`);
     return out.join('\n');
   }
   if (args.includes('--prepare')) {

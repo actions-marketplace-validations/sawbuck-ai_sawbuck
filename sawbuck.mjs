@@ -101,12 +101,13 @@ Usage:
                             notes from what your git history shows actually breaks, plus a short guide in
                             AGENTS.md (--no-agent-block to skip). Wizard in a terminal, non-interactive in
                             a pipe/CI (or --yes). An existing config needs --force.
-  sawbuck attach [repo] [--user | --shared | --git] [--dry-run]
+  sawbuck attach [repo] [--user | --shared | --git | --codex] [--dry-run]
                             Watch every Claude Code turn in this repo: protected paths at the end of each
                             turn, a source-only re-run on each commit. --user: every repo that has a
                             promptwheel.config.json. --shared: a tracked settings file a team commits.
                             --git: a post-commit hook, for any other agent or none (commits in a linked
-                            worktree are not checked). --dry-run prints every file it would write
+                            worktree are not checked). --codex: the same hooks for Codex in
+                            .codex/hooks.json (trust them once in Codex's /hooks). --dry-run prints every file it would write
   sawbuck detach [repo] [--user] [--all] [--verify] [--purge] [--dry-run]
                             Remove the hooks (no flag: whatever is wired here; --all: every repo). The
                             record stays, kept out of git status; --purge deletes it. --verify proves the
@@ -185,8 +186,8 @@ if (rest.includes('--help') || rest.includes('-h')) {
 const KNOWN = {
   contract: ['--dry-run', '--full', '--strict'],
   init: ['--yes', '-y', '--wizard', '--no-investigate', '--no-agent-block', '--force', '--preset'],
-  attach: ['--user', '--shared', '--git', '--dry-run', '--claude'],
-  detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude'],
+  attach: ['--user', '--shared', '--git', '--dry-run', '--claude', '--codex'],
+  detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude', '--codex'],
   doctor: ['--all'],
   status: ['--json', '--log', '-n'],
 };
@@ -377,15 +378,22 @@ switch (cmd) {
     break;
   }
   case '__hook': {
+    if (rest.includes('codex')) {
+      // Codex reads Stop's stdout as JSON only; a plain line from the hook becomes a systemMessage
+      let o = ''; try { o = execFileSync(process.execPath, [HOOK, ...rest], { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] }); } catch (e) { o = String(e.stdout || ''); }
+      o = o.trim(); if (o) process.stdout.write(o.startsWith('{') ? o : JSON.stringify({ systemMessage: o }));
+      break;
+    }
     try { execFileSync(process.execPath, [HOOK, ...rest], { stdio: 'inherit' }); } catch (e) { process.exit(e.status || 0); }
     break;
   }
   case 'attach': {
-    const user = flags.has('--user'), shared = flags.has('--shared'), git = flags.has('--git');
-    if (user + shared + git > 1) usage('attach takes one of --user, --shared or --git');
+    const user = flags.has('--user'), shared = flags.has('--shared'), git = flags.has('--git'), codex = flags.has('--codex');
+    if (user + shared + git + codex > 1) usage('attach takes one of --user, --shared, --git or --codex');
     const top = gitTop(repoArg());
     if (!top && !user) usage(`${repoArg()} is not a git repository (attach wires one; run it inside your project, or name its path)`);
     const repo = top || repoArg();
+    if (codex) { wireCodex(repo); break; }
     if (git) wireGit(repo); else wireClaude(repo, { user, shared });
     if (!dry) verifyAttach(repo);
     break;
@@ -397,6 +405,7 @@ switch (cmd) {
       const repo = repoRoot();
       if (flags.has('--user')) unwireClaude(repo, { user: true });
       else if (flags.has('--claude')) unwireClaude(repo, {});
+      else if (flags.has('--codex')) unwireCodex(repo);
       else {
         // no flag: take out whatever is wired in this repo, older git hooks included. The receipt says what attach
         // wrote; our hooks in the project settings or the post-commit hook count without one, so a lost receipt or a
@@ -405,6 +414,7 @@ switch (cmd) {
         const hasClaude = !!(a.claude || a['claude-shared']) || [false, true].some((shared) => hooksIn(claudeFile(repo, { shared }).f));
         if (hasClaude) unwireClaude(repo, {});
         if (a.git || hasBlock(repo) || !hasClaude) unwireGit(repo);
+        unwireCodex(repo, { quiet: true });
       }
       if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
@@ -421,7 +431,10 @@ switch (cmd) {
     // the PreToolUse hook attach wires on Bash: an outward command (publish, release, merge, public comment, force push)
     // becomes a question to the person; everything else passes. Reads the hook's JSON on stdin only under --hook.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
-    const d = holdDecision(body, gitTop(repoArg()) || repoArg());
+    let d = holdDecision(body, gitTop(repoArg()) || repoArg());
+    // Codex parses "ask" but does not support it yet (the call would go through): under --codex the hold denies,
+    // and the reason tells the agent a person runs this one
+    if (d && flags.has('--codex') && d.hookSpecificOutput) d = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `${d.hookSpecificOutput.permissionDecisionReason} Codex cannot ask here, so the hold stops it: tell the person, and they run it themselves.` } };
     if (d) out(JSON.stringify(d));
     break;
   }
@@ -866,6 +879,41 @@ function markDetached(repo, detached) {
   if (!there(p)) return;
   if (dry) { if (detached) planned.lines.set(p, `modify  ${p}  (the record stays, marked detached so nothing reads it as watching)`); return; }
   try { const st = JSON.parse(readFileSync(p, 'utf8')); if (detached) st.detached = true; else delete st.detached; writeFileSync(p, JSON.stringify(st, null, 2) + '\n'); } catch {}
+}
+// --- Codex (attach --codex) -------------------------------------------------
+// Codex's hooks speak Claude Code's contract nearly field for field (developers.openai.com/codex/hooks): prompt-time
+// context, a Stop that sends the agent back, PreToolUse on Bash. <repo>/.codex/hooks.json, kept out of git status.
+// Codex runs a new or changed hook only after the person trusts it in /hooks. Not wired under Codex: the undo ledger
+// (Codex edits through apply_patch, a patch, not a file path).
+function codexFile(repo) { return join(repo, '.codex', 'hooks.json'); }
+function wireCodex(repo) {
+  const f = codexFile(repo); let cfg = {};
+  if (existsSync(f)) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it.`); } }
+  const run = (args) => `${nodeCmd()} ${JSON.stringify(SELF)} ${args}`;
+  const r = JSON.stringify(repo);
+  cfg.hooks = cfg.hooks || {};
+  const put = (event, command, matcher) => {
+    cfg.hooks[event] = (cfg.hooks[event] || []).filter((h) => !(OURS.test(JSON.stringify(h)) && String(h.matcher || '') === String(matcher || '')));
+    cfg.hooks[event].push({ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] });
+  };
+  put('UserPromptSubmit', run(`turn --hook ${r}`));
+  put('SessionStart', run(`turn --hook ${r}`), 'compact');
+  put('Stop', run(`__hook --repo ${r} --by codex --stop`));
+  put('PreToolUse', run(`hold --hook --codex ${r}`), 'Bash');
+  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] for Codex)`])); return; }
+  mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  ensureExcluded(repo);
+  try { const ex = join(gitDir(repo), 'info', 'exclude'); const t = existsSync(ex) ? readFileSync(ex, 'utf8') : ''; if (!/^\/?\.codex\/hooks\.json$/m.test(t)) { mkdirSync(dirname(ex), { recursive: true }); writeFileSync(ex, t + (t && !t.endsWith('\n') ? '\n' : '') + '.codex/hooks.json\n'); } } catch {}
+  out(`sawbuck: wired Codex hooks in ${f}. Open /hooks in Codex once and trust them; Codex skips a new hook until you do.`);
+}
+function unwireCodex(repo, { quiet } = {}) {
+  const f = codexFile(repo); if (!existsSync(f)) { if (!quiet) say('sawbuck: no Codex hooks found to detach'); return; }
+  let cfg; try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { return; }
+  if (!OURS.test(JSON.stringify(cfg))) { if (!quiet) say('sawbuck: no Codex hooks of ours in ' + f); return; }
+  removeClaudeEntries(cfg);
+  if (dry) { planned.lines.set(f, `modify  ${f}  (our Codex hooks)`); return; }
+  if (!Object.keys(cfg).length || (Object.keys(cfg).length === 1 && cfg.description)) rmSync(f); else writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  say(`sawbuck: removed the Codex hooks from ${f}`);
 }
 function purgeRecord(repo) {
   let n = 0;

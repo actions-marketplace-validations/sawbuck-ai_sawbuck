@@ -220,6 +220,34 @@ test('claim: a turn that rebases onto upstream re-proves only the agent\'s own c
   w.prompt('make the red test pass'); edit(d, 'test/red.test.js', (s) => s.replace('a.equal(1,2)', 'a.equal(1,1)')); save(d, 'make it pass');
   assert.ok(blocked(w.stop()), 'the agent\'s own test edit after the rebase still reads gamed');
 });
+// ------------------------------------------------------------ Codex: the same hooks, Codex's contract (developers.openai.com/codex/hooks)
+test('claim: attach --codex wires Codex: the rules reach the prompt, a gamed commit is sent back in JSON, an outward command is held, detach removes it', () => {
+  const d = signed(false); const r = sb(d, 'attach', '--codex'); assert.equal(r.code, 0, r.out); assert.match(r.out, /trust them/);
+  const h = JSON.parse(readFileSync(join(d, '.codex/hooks.json'), 'utf8')).hooks;
+  const run = (ev, extra = {}, matcher) => spawnSync('sh', ['-c', (h[ev].find((x) => String(x.matcher || '') === String(matcher || '')) || h[ev][0]).hooks[0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'cx', turn_id: 't1', model: 'gpt', permission_mode: 'default', ...extra }) }).stdout || '';
+  assert.match(run('UserPromptSubmit', { prompt: 'make add pass' }), /rules \(sawbuck\)/, 'plain text on the prompt hook is added as context in Codex');
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  const stop = run('Stop', { stop_hook_active: false, last_assistant_message: 'done' }); const j = JSON.parse(stop);
+  assert.equal(j.decision, 'block'); assert.match(j.reason, /gamed/);
+  const pre = JSON.parse(run('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'npm publish' }, tool_use_id: 'u1' }, 'Bash'));
+  assert.equal(pre.hookSpecificOutput.permissionDecision, 'deny', 'Codex does not support ask yet, so the hold denies'); assert.match(pre.hookSpecificOutput.permissionDecisionReason, /person/);
+  assert.equal(run('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'u2' }, 'Bash'), '');
+  assert.ok(!/\.codex/.test(git(d, 'status', '--porcelain')), 'kept out of git status');
+  assert.equal(sb(d, 'detach', '--codex').code, 0); assert.ok(!existsSync(join(d, '.codex/hooks.json')));
+});
+test('limit: under Codex a plain line from the Stop hook is wrapped as JSON, since Codex rejects plain text there', () => {
+  const d = signed(true); sb(d, 'attach', '--codex'); const h = JSON.parse(readFileSync(join(d, '.codex/hooks.json'), 'utf8')).hooks;
+  const run = (ev) => spawnSync('sh', ['-c', h[ev][0].hooks[0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'cx', prompt: 'x' }) }).stdout || '';
+  run('UserPromptSubmit'); edit(d, 'src/add.js', (s) => s.replace('a+b', 'a-b')); save(d, 'oops');
+  const o = run('Stop').trim(); if (o) assert.doesNotThrow(() => JSON.parse(o), `not JSON: ${o}`);
+});
+test('claim: rules --notes flags a memory note that names only files the repo no longer has', () => {
+  const d = signed(true); const home = mkdtempSync(join(tmpdir(), 'claims-notes-')); const md = join(home, '.claude', 'projects', d.replace(/\//g, '-'), 'memory'); mkdirSync(md, { recursive: true });
+  writeFileSync(join(md, 'a.md'), '---\nname: a\ndescription: add lives in src/add.js\nmetadata:\n  type: project\n---\n\nThe adder is src/add.js.\n');
+  writeFileSync(join(md, 'b.md'), '---\nname: b\ndescription: the cache is in src/cache.js\nmetadata:\n  type: project\n---\n\nCaching lives in src/cache.js and src/lru.js.\n');
+  const o = spawnSync(process.execPath, [CLI, 'rules', '--notes'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: home } }).stdout;
+  assert.match(o, /stale\? it names src\/cache\.js, src\/lru\.js/); assert.ok(!/stale\? it names src\/add\.js/.test(o)); assert.match(o, /1 note name only files this repo no longer has/);
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
