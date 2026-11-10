@@ -16,6 +16,10 @@ inputs:
     description: Path to the repo to check. Default the checkout.
     required: false
     default: .
+  comment:
+    description: "On a pull request, post what git threw away on the files it touches (a reverted attempt and its reason, from the shared ledger) as a PR comment. Needs `pull-requests: write` and GH_TOKEN. Default false."
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -24,4 +28,18 @@ runs:
       run: git fetch -q origin '+refs/sawbuck/ledger:refs/sawbuck/ledger' 2>/dev/null || true
     - name: sawbuck debt gate
       shell: bash
-      run: npx -y sawbuck@0.1.56 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}"
+      run: |
+        set -o pipefail
+        npx -y sawbuck@0.1.57 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}" | tee "$RUNNER_TEMP/sawbuck-debt.txt"
+    - name: the erased history, as a PR comment (opt-in)
+      if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        f="$RUNNER_TEMP/sawbuck-debt.txt"; [ -f "$f" ] || exit 0
+        block=$(sed -n '/not in git history any more/,$p' "$f")
+        [ -n "$block" ] || exit 0
+        printf 'Sawbuck: this pull request touches files with a reverted attempt on record.\n\n```\n%s\n```\n' "$block" > "$RUNNER_TEMP/sawbuck-comment.md"
+        gh pr comment "$PR" --body-file "$RUNNER_TEMP/sawbuck-comment.md" || echo "sawbuck: could not post the comment (needs pull-requests: write)"

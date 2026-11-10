@@ -66,7 +66,31 @@ if (head && from && head !== from) {
     writeRec(rec);
     standing = false;
   }
-  node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', standing ? rec.latest.base : from, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
+  // a rebase or a reset inside the turn: HEAD no longer descends from `from`, and the span from..head would blame
+  // upstream's commits on the agent (an upstream test edit read as the agent's gamed green). Re-prove only the commits
+  // that are new since the turn began and on no remote: the agent's own, replayed on top. Nothing new means the agent
+  // only rebased, and there is nothing of its own to re-prove.
+  // The agent's own commits = new since the turn began, not reachable from any ref tip that existed at the turn's start,
+  // and on no remote. In a plain turn that is exactly from..head. After a rebase or a merge of upstream inside the turn,
+  // it is the agent's commits replayed on top, and upstream's commits (an upstream test edit among them) stay upstream's.
+  // Merge commits themselves are not re-proved: the span starts at the agent's first own non-merge commit.
+  let base = standing ? rec.latest.base : from; let skip = false;
+  if (!standing) {
+    const tips = (st.turnBaseline && Array.isArray(st.turnBaseline.refs)) ? st.turnBaseline.refs : [];
+    let own = git('rev-list', '--no-merges', head, `^${from}`, ...tips.map((t) => `^${t}`), '--not', '--remotes').split('\n').filter(Boolean);
+    // a rebase replays commits that existed before the turn under new shas (the person's own branch commits among them);
+    // a replayed commit is patch-equivalent to one reachable from a recorded tip, and `git cherry` marks those "-"
+    if (own.length && tips.length) {
+      for (const t of tips) {
+        const fresh = new Set(git('cherry', t, head).split('\n').filter((l) => l.startsWith('+ ')).map((l) => l.slice(2).trim()));
+        own = own.filter((c) => fresh.has(c));
+        if (!own.length) break;
+      }
+    }
+    if (!own.length) { logActivity({ kind: 'note', sha: head.slice(0, 8), file: '', reason: 'the commits this turn added came from elsewhere (a rebase, a merge, a fast-forward); none is the agent\'s own, nothing to re-prove', by }); skip = true; }
+    else base = git('rev-parse', `${own[own.length - 1]}^`).trim() || from;
+  }
+  if (!skip) node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', base, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
   rec = readRec();
 }
 st.lastSha = head || st.lastSha;
