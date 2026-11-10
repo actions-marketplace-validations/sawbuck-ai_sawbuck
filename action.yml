@@ -24,4 +24,4 @@ runs:
       run: git fetch -q origin '+refs/sawbuck/ledger:refs/sawbuck/ledger' 2>/dev/null || true
     - name: sawbuck debt gate
       shell: bash
-      run: npx -y sawbuck@0.1.55 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}"
+      run: npx -y sawbuck@0.1.56 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}"

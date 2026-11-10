@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
+import { undoHook, EDIT_MATCHER } from './undo.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -130,6 +131,7 @@ Usage:
                             command; --strict makes them block
   sawbuck rules --prepare   Gather your messages on this machine so an agent can propose the rules you never wrote
   sawbuck rules --check F   Keep only proposed rules with 2 quotes that are really yours
+  sawbuck undo --hook       The edit-tool hooks attach wires: an edit the person had undone in a session is kept, with their words, and shown with the prompt that names the file
   sawbuck hold --hook       The PreToolUse hook attach wires: a publish, release, merge, public comment or force push asks a person first
   sawbuck share --title T [text]  Hand a finding to the memory you run (claude-mem, Claude Code's notes, a Markdown folder), once
   sawbuck rules --notes     The notes Claude Code's own memory holds for this repo, to promote into its CLAUDE.md
@@ -357,6 +359,7 @@ switch (cmd) {
         }
         framed = !!session && st.framedSession === session;
         if (session) st.framedSession = session;
+        st.lastPrompt = promptText.replace(/\s+/g, ' ').trim().slice(0, 240);   // the person's words, for an undo record (local, git-excluded)
         st.lastPromptAt = now;   // every prompt, mandates or not: the walls key their block budgets on it when the harness sends no prompt_id
         mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
       } catch { /* the frame never fails a prompt */ }
@@ -420,6 +423,16 @@ switch (cmd) {
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const d = holdDecision(body, gitTop(repoArg()) || repoArg());
     if (d) out(JSON.stringify(d));
+    break;
+  }
+  case 'undo': {
+    // the undo ledger's hook, wired by attach on PreToolUse and PostToolUse for the edit tools. Before an edit: snapshot
+    // the file once per session. After one: a file back at its snapshot, after a change and after a word from the person,
+    // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
+    let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
+    const r = gitTop(repoArg()) || repoArg();
+    const e = undoHook(body, r);
+    if (e) shareFinding(r, { kind: 'undone', title: `undone: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
     break;
   }
   case 'share': {
@@ -717,12 +730,13 @@ function wireClaude(repo, opts) {
   const ctx = run(here ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
   const chk = run(here ? '__hook --by claude --stop' : `__hook --repo ${JSON.stringify(repo)} --by claude --stop`);
   const hold = run(here ? 'hold --hook' : `hold --hook ${JSON.stringify(repo)}`);
+  const undo = run(here ? 'undo --hook' : `undo --hook ${JSON.stringify(repo)}`);
   // attached already? "already attached" only when every hook of THIS version is present; an older
   // attachment (say, without the SessionStart[compact] hook) is upgraded in place, never left stale.
   let upgrading = false;
   if (OURS.test(JSON.stringify(cfg))) {
     const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
-    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash')) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
     upgrading = true;
   }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
@@ -735,7 +749,7 @@ function wireClaude(repo, opts) {
   const baseline = !user && existsSync(join(repo, 'promptwheel.config.json')) && !st.turnBaseline;
   if (dry) {
     out(dryText([
-      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] hooks: the per-turn block, the check, and the hold on outward commands)`,
+      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + PreToolUse/PostToolUse[edit tools] hooks: the per-turn block, the check, the hold on outward commands, and the undo ledger)`,
       !user && ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       baseline ? `write   ${stPath}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
@@ -745,7 +759,8 @@ function wireClaude(repo, opts) {
   }
   cfg.hooks = cfg.hooks || {};
   const put = (event, command, matcher) => {
-    cfg.hooks[event] = (cfg.hooks[event] || []).filter((h) => !OURS.test(JSON.stringify(h)));
+    // one entry of ours per event and matcher: the hold (Bash) and the undo ledger (edit tools) share PreToolUse
+    cfg.hooks[event] = (cfg.hooks[event] || []).filter((h) => !(OURS.test(JSON.stringify(h)) && String(h.matcher || '') === String(matcher || '')));
     cfg.hooks[event].push({ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] });
   };
   put('UserPromptSubmit', ctx);
@@ -755,6 +770,9 @@ function wireClaude(repo, opts) {
   put('Stop', chk);
   // the hold on outward commands: a publish, a release, a merge, a public comment, a force push ask a person first
   put('PreToolUse', hold, 'Bash');
+  // the undo ledger: a file snapshotted before an edit, an undo at the person's request recorded after one
+  put('PreToolUse', undo, EDIT_MATCHER);
+  put('PostToolUse', undo, EDIT_MATCHER);
   mkdirSync(dir, { recursive: true });
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
   if (baseline) {
@@ -808,7 +826,7 @@ function unwireClaude(repo, { user }) {
 }
 function removeClaudeEntries(cfg) {
   if (!cfg.hooks) return;
-  for (const ev of ['UserPromptSubmit', 'SessionStart', 'Stop', 'PreToolUse']) {
+  for (const ev of ['UserPromptSubmit', 'SessionStart', 'Stop', 'PreToolUse', 'PostToolUse']) {
     if (!Array.isArray(cfg.hooks[ev])) continue;
     cfg.hooks[ev] = cfg.hooks[ev].filter((h) => !OURS.test(JSON.stringify(h)));
     if (!cfg.hooks[ev].length) delete cfg.hooks[ev];     // no empty [] residue
@@ -877,7 +895,7 @@ function doctorRepo(repo) {
     if (!cmds.length) continue;
     // the set attach writes, each under its own event: the rule on a prompt and after a compaction, the check on Stop
     const at = (event, re, matcher) => ours(((cfg.hooks || {})[event] || []).filter((h) => !matcher || (h && h.matcher === matcher))).some((c) => re.test(c));
-    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold'].filter(Boolean);
+    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold', at('PreToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PreToolUse[edit tools] with undo', at('PostToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PostToolUse[edit tools] with undo'].filter(Boolean);
     checks.push({ mode, file: f, ok: !missing.length && [...new Set(cmds)].every(hookRuns), missing });
   }
   // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded, or under .git)
