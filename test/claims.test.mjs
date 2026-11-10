@@ -330,6 +330,17 @@ test('claim: stopping the agent twice on a command the hold does not cover sugge
   const h = steerHome([{ at, repo: '/r', session: 'a', axis: 'stop', nudge: 'stopped: running git push origin main', pressure: 3 }, { at, repo: '/r', session: 'b', axis: 'stop', nudge: 'stopped: git push --tags', pressure: 3 }, { at, repo: '/r', session: 'c', axis: 'stop', nudge: 'stopped: editing the README', pressure: 3 }]);
   const o = steersOut(h); assert.match(o, /"holds":\{"outward":\["\\\\bgit\\\\s\+push\\\\b"\]\}/); assert.match(o, /git push 2x/);
 });
+test('claim: ripples show what happened after a steer: commits, an undo, a partial undo, and the same push said again later', () => {
+  const d = signed(true); mkdirSync(join(d, '.sawbuck'), { recursive: true }); writeFileSync(join(d, '.sawbuck', 'state.json'), '{}');
+  const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
+  const env = { ...ENV, GIT_COMMITTER_DATE: iso(5), GIT_AUTHOR_DATE: iso(5) };
+  put(d, 'src/cache.js', 'x\n'); execFileSync('git', ['add', '-A'], { cwd: d, env }); execFileSync('git', ['commit', '-qm', 'cache'], { cwd: d, env });
+  writeFileSync(join(d, '.sawbuck', 'undone.jsonl'), JSON.stringify({ at: iso(10), file: 'src/cache.js', kind: 'part', added: 2, first: 'const cache', why: 'drop the cache' }) + '\n');
+  const h = steerHome([{ at: iso(0), repo: d, session: 'a', axis: 'scope', nudge: 'Drop the cache, keep the log line', pressure: 2 }, { at: iso(130), repo: d, session: 'b', axis: 'scope', nudge: 'drop the cache; keep the log', pressure: 2 }]);
+  const r = JSON.parse(spawnSync(process.execPath, [CLI, 'ripples', '--all', '--json'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout);
+  assert.equal(r[0].commits, 1); assert.deepEqual(r[0].files, ['src/cache.js']); assert.equal(r[0].partly, 1); assert.equal(r[0].cameBack, iso(130));
+  assert.match(spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout, /a time join, a lead not proof of cause/);
+});
 test('claim: the scratchpad report reads only: it writes no file', () => { const h = steerHome([]); steersOut(h); assert.deepEqual(readdirSync(join(h, '.claude/plugins/store')), ['sawbuck-reins_x.json']); assert.ok(!existsSync(join(h, '.sawbuck'))); });
 
 // ------------------------------------------------------------ finding the rules nobody wrote

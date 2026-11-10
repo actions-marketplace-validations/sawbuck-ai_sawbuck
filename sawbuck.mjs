@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
+import { ripplesReport } from './ripples.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
@@ -142,6 +143,8 @@ Usage:
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
   sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
   sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
+  sawbuck ripples [--all]   What happened after each steer here: commits, undos (whole or partial), the check's
+                            verdicts, reverts, and whether you said it again (--json; --all for every repo)
   sawbuck statusline        One-line segment for your status line (watching | N caught)
 
   sawbuck --help | --version
@@ -500,6 +503,7 @@ switch (cmd) {
   }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
+  case 'ripples': { out(ripplesReport({ json: flags.has('--json'), repo: flags.has('--all') ? null : (gitTop(process.cwd()) || null) })); break; }
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.
     try {

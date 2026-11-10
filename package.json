@@ -42,6 +42,7 @@
     "share.mjs",
     "ledger.mjs",
     "undo.mjs",
+    "ripples.mjs",
     "hold.mjs",
     "steers.mjs",
     "rules.mjs",
