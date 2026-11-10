@@ -130,8 +130,13 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', '--no-renames', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
   const hashNow = {}; for (const f of dirty) if (Object.prototype.hasOwnProperty.call(baseline, f)) hashNow[f] = hashOf(repo, f);
   const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
-  const changed = [...new Set([...dirty.filter((f) => !untouched(f)), ...committedSince])];
-  const leftAlone = dirty.filter(untouched);
+  // a person's own uncommitted file (in the baseline) that the turn only committed, content unchanged, is still theirs:
+  // after /contract, the agent's `git add -A` sweeps the new contract into its commit, and that is not a protected edit
+  const committedAsTheyWere = (f) => Object.prototype.hasOwnProperty.call(baseline, f)
+    && (git('rev-parse', '--verify', '-q', `HEAD:${f}`) || 'deleted') === baseline[f]
+    && (!dirty.includes(f) || untouched(f));
+  const changed = [...new Set([...dirty.filter((f) => !untouched(f)), ...committedSince.filter((f) => !committedAsTheyWere(f))])];
+  const leftAlone = [...new Set([...dirty.filter(untouched), ...committedSince.filter(committedAsTheyWere)])];
   // the rules in force when the turn began: a rule this turn adds does not apply to it, so signing a contract does
   // not block itself, and one it deletes or narrows still holds
   const hits = changed.length ? mandateHits(repo, changed, base && Array.isArray(base.rules) ? { list: base.rules } : {}) : [];
