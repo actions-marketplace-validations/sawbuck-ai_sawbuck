@@ -198,6 +198,24 @@ test('limit: the undo hook writes nothing in a repo sawbuck is not attached to',
   const d = repo(true); const r = spawnSync(process.execPath, [CLI, 'undo', '--hook', d], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(d, 'src/add.js') }, session_id: 'x' }) });
   assert.equal(r.status, 0); assert.ok(!existsSync(join(d, '.sawbuck')));
 });
+// ------------------------------------------------------------ "a rebase inside a turn does not blame upstream's commits on the agent" (everflux: agents rebasing forks nightly)
+test('claim: a turn that rebases onto upstream re-proves only the agent\'s own commits; an upstream test edit is not the agent\'s gamed green', () => {
+  const d = signed(false); const w = wired(d);   // red at base: add is broken
+  // upstream moves: a person over there made the red test pass by editing it (their business, not this agent's)
+  git(d, 'checkout', '-qb', 'upstream'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'upstream: adjust the add test'); put(d, 'src/mul.js', 'exports.x=1\n'); save(d, 'upstream: a new file');
+  git(d, 'checkout', '-q', 'main'); git(d, 'checkout', '-qb', 'feat');
+  w.prompt('rebase my branch onto upstream and add a note'); 
+  put(d, 'NOTES.md', 'a note\n'); save(d, 'feat: a note');   // the agent's own honest commit
+  git(d, 'rebase', '-q', 'upstream');   // history rewritten inside the turn: HEAD no longer descends from the last known sha
+  const out = w.stop();
+  assert.ok(!blocked(out), `upstream's test edit was blamed on the agent: ${out}`);
+  const recOf = () => { try { return JSON.parse(readFileSync(join(d, '.sawbuck', 'results.json'), 'utf8')); } catch { return {}; } };
+  assert.equal(recOf().gamed || 0, 0); assert.match(readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8'), /"kind":"verified".*NOTES\.md/, 'only the agent\'s own replayed commit was re-proved');
+  // and after the rebase the hook still catches the agent's own gamed green: the person commits a red test between turns, the agent edits it to pass
+  put(d, 'test/red.test.js', "const t=require('node:test'),a=require('node:assert');t.test('red',()=>a.equal(1,2))\n"); save(d, 'a red test, by the person');
+  w.prompt('make the red test pass'); edit(d, 'test/red.test.js', (s) => s.replace('a.equal(1,2)', 'a.equal(1,1)')); save(d, 'make it pass');
+  assert.ok(blocked(w.stop()), 'the agent\'s own test edit after the rebase still reads gamed');
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });

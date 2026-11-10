@@ -354,7 +354,7 @@ switch (cmd) {
             const stillInHead = moved && Object.entries(flagged).some(([f, h]) => { const b = blobAt(repo, sha, f); return h === 'deleted' ? b === '' : (!!h && b === h); });
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
-            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo) };
+            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo) };
           }
         }
         framed = !!session && st.framedSession === session;
@@ -779,7 +779,7 @@ function wireClaude(repo, opts) {
     try {
       ensureExcluded(repo);
       let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-      st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach' };
+      st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach', refs: refTips(repo) };
       st.lastPromptAt = new Date().toISOString();
       mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
     } catch {}
@@ -855,6 +855,10 @@ function verifyClean(repo) {
   const left = footprint(repo);
   if (!left.length) out('sawbuck: verified, the hooks and the receipt are gone.');
   else { out('sawbuck: NOT clean, these remain:'); for (const it of left) out(`  ${it.state.padEnd(22)} ${it.what}`); process.exitCode = 1; }
+}
+// every ref tip at the start of a turn, so a rebase inside the turn can tell the agent's own commits from upstream's
+function refTips(repo) {
+  try { return [...new Set(execFileSync('git', ['-C', repo, 'for-each-ref', '--format=%(objectname)'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean))].slice(0, 500); } catch { return []; }
 }
 // detach keeps .sawbuck/state.json as the record; this flag is how the plugin band and status tell "detached" from "watching"
 function markDetached(repo, detached) {
