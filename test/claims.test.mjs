@@ -188,6 +188,34 @@ test('claim: an edit the person had undone in a session comes back with the prom
   put(d, 'src/add.js', before + '//\n'); assert.match(sb(d, 'context').out, /undone here at your request/, 'context shows it for the file in hand');
   assert.match(sb(d, 'status').out, /1 undone in a session at your request/);
 });
+test('claim: a partial undo is kept too: the person said no to part of the change and the agent took that part out', () => {
+  const d = signed(true); const w = wired(d); const before = readFileSync(join(d, 'src/add.js'), 'utf8');
+  w.prompt('add is slow, add a cache and a log line'); w.agentEdit('src/add.js', (s) => s + 'const cache=new Map()\nconst hits=0\nfunction log(k){console.log(k)}\n');
+  w.prompt('Drop the cache, it logged people out before. Keep the log line.'); w.agentEdit('src/add.js', () => before + 'function log(k){console.log(k)}\n');
+  const u = readFileSync(join(d, '.sawbuck', 'undone.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(u.length, 1); assert.equal(u[0].kind, 'part'); assert.match(u[0].first, /cache/); assert.match(u[0].why, /logged people out/);
+  assert.match(w.prompt('make src/add.js faster'), /partly undone here at your request .*cache/);
+});
+test('claim: under Codex the undo ledger reads the files apply_patch names; under Cursor it rebuilds the text before each edit', () => {
+  const d = signed(true); sb(d, 'attach', '--codex'); const before = readFileSync(join(d, 'src/add.js'), 'utf8');
+  const h = JSON.parse(readFileSync(join(d, '.codex/hooks.json'), 'utf8')).hooks;
+  const by = (ev, m) => h[ev].find((x) => String(x.matcher || '') === m).hooks[0].command;
+  const run = (cmd, input) => spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ cwd: d, session_id: 'cx', ...input }) }).stdout || '';
+  const patch = { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: src/add.js\n@@\n+x\n*** End Patch' } };
+  run(by('UserPromptSubmit', ''), { hook_event_name: 'UserPromptSubmit', prompt: 'add a cache' });
+  run(by('PreToolUse', 'apply_patch'), { hook_event_name: 'PreToolUse', ...patch }); put(d, 'src/add.js', before + 'const cache=new Map()\nconst size=0\n'); run(by('PostToolUse', 'apply_patch'), { hook_event_name: 'PostToolUse', ...patch });
+  run(by('UserPromptSubmit', ''), { hook_event_name: 'UserPromptSubmit', prompt: 'Undo that, a stale cache logged people out.' });
+  run(by('PreToolUse', 'apply_patch'), { hook_event_name: 'PreToolUse', ...patch }); put(d, 'src/add.js', before); run(by('PostToolUse', 'apply_patch'), { hook_event_name: 'PostToolUse', ...patch });
+  assert.match(readFileSync(join(d, '.sawbuck', 'undone.jsonl'), 'utf8'), /"kind":"whole".*logged people out/, 'Codex');
+  const c = signed(true); sb(c, 'attach', '--cursor'); const cb = readFileSync(join(c, 'src/add.js'), 'utf8');
+  const ch = JSON.parse(readFileSync(join(c, '.cursor/hooks.json'), 'utf8')).hooks;
+  const cr = (ev, input) => spawnSync('sh', ['-c', ch[ev][0].command], { cwd: c, encoding: 'utf8', env: ENV, input: JSON.stringify({ conversation_id: 'k', ...input }) }).stdout || '';
+  cr('beforeSubmitPrompt', { prompt: 'add a cache' }); const added = 'const cache=new Map()\nconst size=0\n';
+  put(c, 'src/add.js', cb + added); cr('afterFileEdit', { file_path: join(c, 'src/add.js'), edits: [{ old_string: cb, new_string: cb + added }] });
+  cr('beforeSubmitPrompt', { prompt: 'Undo that, a stale cache logged people out.' });
+  put(c, 'src/add.js', cb); cr('afterFileEdit', { file_path: join(c, 'src/add.js'), edits: [{ old_string: cb + added, new_string: cb }] });
+  assert.match(readFileSync(join(c, '.sawbuck', 'undone.jsonl'), 'utf8'), /"kind":"whole".*logged people out/, 'Cursor');
+});
 test('limit: an undo the agent makes on its own, with no word from the person in between, is not recorded', () => {
   const d = signed(true); const w = wired(d); const before = readFileSync(join(d, 'src/add.js'), 'utf8');
   w.prompt('try a cache in src/add.js'); w.agentEdit('src/add.js', cacheLine); w.agentEdit('src/add.js', () => before);
@@ -297,6 +325,11 @@ test('claim: a steer repeated 3 times across 2 sessions is shown, with a pointer
 test('claim: status shows what you keep saying, and says nothing when nothing repeats', () => { const e = (session, repo) => ({ session, repo, nudge: 'verify it live first' }); const d = repo(true); const run = (h) => spawnSync(process.execPath, [CLI, 'status'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout; const o = run(steerHome([e('1', 'a'), e('1', 'a'), e('2', 'b')])); assert.match(o, /You keep saying/); assert.match(o, /3x\s+verify it live first/); assert.doesNotMatch(run(steerHome([e('1', 'a')])), /You keep saying/); });
 test('claim: a steer from one session is not called a pattern', () => { const e = { session: '1', repo: 'a', nudge: 'verify first' }; assert.match(steersOut(steerHome([e, e, e])), /Nothing repeats yet/); });
 test('claim: replies that could not be scored are shown as an undercount', () => { assert.match(steersOut(steerHome([{ session: '1', repo: 'a', nudge: 'x y' }], { scored: 1, lost: 4 })), /4 could not be scored, so this undercounts/); });
+test('claim: stopping the agent twice on a command the hold does not cover suggests the line that makes it ask first', () => {
+  const at = '2026-11-10T00:00:00Z';
+  const h = steerHome([{ at, repo: '/r', session: 'a', axis: 'stop', nudge: 'stopped: running git push origin main', pressure: 3 }, { at, repo: '/r', session: 'b', axis: 'stop', nudge: 'stopped: git push --tags', pressure: 3 }, { at, repo: '/r', session: 'c', axis: 'stop', nudge: 'stopped: editing the README', pressure: 3 }]);
+  const o = steersOut(h); assert.match(o, /"holds":\{"outward":\["\\\\bgit\\\\s\+push\\\\b"\]\}/); assert.match(o, /git push 2x/);
+});
 test('claim: the scratchpad report reads only: it writes no file', () => { const h = steerHome([]); steersOut(h); assert.deepEqual(readdirSync(join(h, '.claude/plugins/store')), ['sawbuck-reins_x.json']); assert.ok(!existsSync(join(h, '.sawbuck'))); });
 
 // ------------------------------------------------------------ finding the rules nobody wrote

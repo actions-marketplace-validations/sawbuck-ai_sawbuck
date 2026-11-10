@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
-import { undoHook, EDIT_MATCHER } from './undo.mjs';
+import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -452,6 +452,11 @@ switch (cmd) {
       const why = d && d.hookSpecificOutput && d.hookSpecificOutput.permissionDecisionReason;
       out(JSON.stringify(why ? { permission: 'ask', user_message: why, agent_message: why } : { permission: 'allow' })); break;
     }
+    if (ev === 'afterFileEdit') {
+      const e = undoCursor(JSON.stringify(h), r);
+      if (e) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || '', files: [e.file] }).catch(() => {});
+      out('{}'); break;
+    }
     out('{}'); break;
   }
   case 'hold': {
@@ -471,8 +476,8 @@ switch (cmd) {
     // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const r = gitTop(repoArg()) || repoArg();
-    const e = undoHook(body, r);
-    if (e) shareFinding(r, { kind: 'undone', title: `undone: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
+    const found = flags.has('--codex') ? undoCodex(body, r) : [undoHook(body, r)].filter(Boolean);
+    for (const e of found) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
     break;
   }
   case 'share': {
@@ -927,7 +932,10 @@ function wireCodex(repo) {
   put('SessionStart', run(`turn --hook ${r}`), 'compact');
   put('Stop', run(`__hook --repo ${r} --by codex --stop`));
   put('PreToolUse', run(`hold --hook --codex ${r}`), 'Bash');
-  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] for Codex)`])); return; }
+  // the undo ledger: apply_patch names the files it touches; they are snapshotted before and observed after
+  put('PreToolUse', run(`undo --hook --codex ${r}`), 'apply_patch');
+  put('PostToolUse', run(`undo --hook --codex ${r}`), 'apply_patch');
+  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + Pre/PostToolUse[apply_patch] for Codex)`])); return; }
   mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
   ensureExcluded(repo);
   try { const ex = join(gitDir(repo), 'info', 'exclude'); const t = existsSync(ex) ? readFileSync(ex, 'utf8') : ''; if (!/^\/?\.codex\/hooks\.json$/m.test(t)) { mkdirSync(dirname(ex), { recursive: true }); writeFileSync(ex, t + (t && !t.endsWith('\n') ? '\n' : '') + '.codex/hooks.json\n'); } } catch {}
@@ -952,8 +960,8 @@ function wireCursor(repo) {
   if (existsSync(f)) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it.`); } }
   const cmd = (ev) => `${nodeCmd()} ${JSON.stringify(SELF)} __cursor ${ev} ${JSON.stringify(repo)}`;
   cfg.version = cfg.version || 1; cfg.hooks = cfg.hooks || {};
-  for (const ev of ['beforeSubmitPrompt', 'stop', 'beforeShellExecution']) cfg.hooks[ev] = [...(cfg.hooks[ev] || []).filter((x) => !OURS.test(JSON.stringify(x))), { command: cmd(ev) }];
-  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (beforeSubmitPrompt + stop + beforeShellExecution for Cursor)`])); return; }
+  for (const ev of ['beforeSubmitPrompt', 'stop', 'beforeShellExecution', 'afterFileEdit']) cfg.hooks[ev] = [...(cfg.hooks[ev] || []).filter((x) => !OURS.test(JSON.stringify(x))), { command: cmd(ev) }];
+  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (beforeSubmitPrompt + stop + beforeShellExecution + afterFileEdit for Cursor)`])); return; }
   mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
   ensureExcluded(repo);
   try { const ex = join(gitDir(repo), 'info', 'exclude'); const t = existsSync(ex) ? readFileSync(ex, 'utf8') : ''; if (!/^\/?\.cursor\/hooks\.json$/m.test(t)) writeFileSync(ex, t + (t && !t.endsWith('\n') ? '\n' : '') + '.cursor/hooks.json\n'); } catch {}

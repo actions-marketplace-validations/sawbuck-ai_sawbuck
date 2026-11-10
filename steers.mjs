@@ -50,6 +50,21 @@ export function steersReport({ json = false, home } = {}) {
     out.push('', `You stopped it ${stops.length} time${stops.length === 1 ? '' : 's'}. What it was doing (a lead to read, not a verdict: the most common reason to stop an agent is having something to add):`);
     for (const e of stops.slice(-5).reverse()) out.push(`  ${String(e.nudge || '').replace(/^stopped: /, '')}  (${basename(e.repo || '') || 'no repo'})`);
     out.push('  A thing you stop it on more than once is a hold: say it once in CLAUDE.md, or protect the path.');
+    // stops whose words name an outward or destructive command the hold does not already cover: suggest the line to add
+    const sug = holdSuggestions(stops.map((e) => String(e.nudge || '')));
+    if (sug.length) { out.push('', 'Stopped more than once on a command the hold does not cover yet. To have it ask you first, add to sawbuck.config.json:'); out.push(`  {"holds":{"outward":[${sug.map((x) => JSON.stringify(x.pattern)).join(', ')}]}}   (${sug.map((x) => `${x.name} ${x.n}x`).join(', ')})`); }
   }
   return out.join('\n');
 }
+
+// commands people stop an agent on that the default hold does not cover; a suggestion needs two stops naming one
+const RISKY = [
+  ['git push', /\bgit\s+push\b/i, '\\bgit\\s+push\\b'], ['deploy', /\bdeploy/i, '\\bdeploy'], ['migrate', /\bmigrat/i, '\\bmigrat'],
+  ['rm -rf', /\brm\s+-rf?\b/i, '\\brm\\s+-rf?\\b'], ['drop table', /\bdrop\s+(table|database)\b/i, '\\bdrop\\s+(table|database)\\b'],
+  ['git reset --hard', /\bgit\s+reset\s+--hard\b/i, '\\bgit\\s+reset\\s+--hard\\b'], ['terraform apply', /\bterraform\s+apply\b/i, '\\bterraform\\s+apply\\b'],
+  ['kubectl', /\bkubectl\s+(apply|delete)\b/i, '\\bkubectl\\s+(apply|delete)\\b'], ['send email', /\bsend(ing)?\s+(an?\s+)?e-?mail/i, 'sendmail|mail\\s+-s'],
+];
+export function holdSuggestions(texts) {
+  return RISKY.map(([name, re, pattern]) => ({ name, pattern, n: texts.filter((t) => re.test(t)).length })).filter((x) => x.n >= 2);
+}
+
