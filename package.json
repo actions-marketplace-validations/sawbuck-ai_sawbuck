@@ -1,6 +1,6 @@
 {
   "name": "sawbuck",
-  "version": "0.1.59",
+  "version": "0.1.60",
   "description": "Write down the rules your agent follows, and prove they held. A deterministic, zero-LLM check re-proves each win from the agent's source edits alone, so a test that went green by editing the test, grader, or config is sent back. For Claude Code, with Codex untested.",
   "type": "module",
   "license": "Apache-2.0",
@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@promptwheel/logbook": "0.11.0",
-    "promptwheel": "0.8.3"
+    "promptwheel": "0.8.4"
   },
   "files": [
     "sawbuck.mjs",
@@ -64,5 +64,5 @@
     "README.md",
     "CONTRACT.md"
   ],
-  "promptwheelAction": "342c538937e61109152063c635fc44274b78c90d"
+  "promptwheelAction": "ddb07314f69d22e916fe112d2d5af87237f4300c"
 }

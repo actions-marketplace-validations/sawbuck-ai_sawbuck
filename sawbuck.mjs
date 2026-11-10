@@ -39,6 +39,8 @@ function gateReport(repo, a) {
   let rep = null; try { rep = JSON.parse(o.slice(o.indexOf('{'))); } catch {}
   // the engine's own reason, without its zero-config notice
   const why = err.split('\n').filter((l) => l.trim() && !/^no promptwheel\.config\.json, auto-gating/.test(l)).join(' ').trim();
+  const plain = /Error: (this shell cannot write[^\n]*)/.exec(err);   // the engine's own sentence, without node's stack
+  if (plain) return { rep, code, why: plain[1] };
   return { rep, code, why };
 }
 // why nothing could be measured, in words that match the case: no test command, tests red on both sides, or a
