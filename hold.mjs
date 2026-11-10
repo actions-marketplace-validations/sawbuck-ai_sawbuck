@@ -3,8 +3,9 @@
 // CLAUDE.md (6 of 9 pushed when asked to); a PreToolUse hook does not get talked past. Wired by `attach` on PreToolUse for
 // Bash: a matching command is turned into a question to the person ("ask"); everything else passes untouched. The list is
 // the default below plus `holds.outward` in sawbuck.config.json; `{"holds":{"off":true}}` turns it off for a repo.
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 export const OUTWARD = [
   ['npm publish', /\bnpm\s+publish\b/], ['pnpm publish', /\bpnpm\s+publish\b/], ['yarn publish', /\byarn\s+(npm\s+)?publish\b/],
@@ -14,8 +15,12 @@ export const OUTWARD = [
   ['vercel --prod', /\b(npx\s+)?vercel\b[^|;&]*--prod\b/], ['cargo publish', /\bcargo\s+publish\b/], ['twine upload', /\btwine\s+upload\b/], ['gem push', /\bgem\s+push\b/],
 ];
 
-export function holdConfig(repo) {
-  try { return JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')).holds || {}; } catch { return {}; }
+// the repo's holds (sawbuck.config.json) and the person's own, for every repo and none (~/.sawbuck/config.json):
+// patterns add up; either one saying off turns the hold off where it says it
+export function holdConfig(repo, home = process.env.HOME || homedir()) {
+  const read = (p) => { try { return JSON.parse(readFileSync(p, 'utf8')).holds || {}; } catch { return {}; } };
+  const mine = read(join(home, '.sawbuck', 'config.json')), here = repo ? read(join(repo, 'sawbuck.config.json')) : {};
+  return { off: !!(here.off || mine.off), outward: [...(Array.isArray(mine.outward) ? mine.outward : []), ...(Array.isArray(here.outward) ? here.outward : [])] };
 }
 
 // the hold a command trips, or null
@@ -35,5 +40,5 @@ export function holdDecision(hookJson, repo) {
   const cmd = h.tool_input && typeof h.tool_input.command === 'string' ? h.tool_input.command : '';
   const name = outwardHold(cmd, repo);
   if (!name) return null;
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `Sawbuck hold: "${name}" goes outside this repo and cannot be taken back, so a person approves it. Say what it is for; to stop asking here, set {"holds":{"off":true}} in sawbuck.config.json.` } };
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `Sawbuck hold: "${name}" ${repo && existsSync(join(repo, '.git')) ? 'goes outside this repo and ' : ''}cannot be taken back, so a person approves it. Say what it is for; to stop asking here, set {"holds":{"off":true}} in sawbuck.config.json.` } };
 }

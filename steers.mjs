@@ -52,7 +52,7 @@ export function steersReport({ json = false, home } = {}) {
     out.push('  A thing you stop it on more than once is a hold: say it once in CLAUDE.md, or protect the path.');
     // stops whose words name an outward or destructive command the hold does not already cover: suggest the line to add
     const sug = holdSuggestions(stops.map((e) => String(e.nudge || '')));
-    if (sug.length) { out.push('', 'Stopped more than once on a command the hold does not cover yet. To have it ask you first, add to sawbuck.config.json:'); out.push(`  {"holds":{"outward":[${sug.map((x) => JSON.stringify(x.pattern)).join(', ')}]}}   (${sug.map((x) => `${x.name} ${x.n}x`).join(', ')})`); }
+    if (sug.length) { out.push('', 'Stopped more than once on a command the hold does not cover yet. To have it ask you first everywhere on this machine, add to ~/.sawbuck/config.json (or a repo\'s sawbuck.config.json for that repo only):'); out.push(`  {"holds":{"outward":[${sug.map((x) => JSON.stringify(x.pattern)).join(', ')}]}}   (${sug.map((x) => `${x.name} ${x.n}x`).join(', ')})`); }
   }
   return out.join('\n');
 }

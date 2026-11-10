@@ -43,6 +43,7 @@
     "ledger.mjs",
     "undo.mjs",
     "ripples.mjs",
+    "profile.mjs",
     "hold.mjs",
     "steers.mjs",
     "rules.mjs",

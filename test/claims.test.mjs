@@ -341,6 +341,24 @@ test('claim: ripples show what happened after a steer: commits, an undo, a parti
   assert.equal(r[0].commits, 1); assert.deepEqual(r[0].files, ['src/cache.js']); assert.equal(r[0].partly, 1); assert.equal(r[0].cameBack, iso(130));
   assert.match(spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout, /a time join, a lead not proof of cause/);
 });
+test('claim: a personal hold in ~/.sawbuck/config.json asks first everywhere on the machine, in a folder with no repo too', () => {
+  const home = mkdtempSync(join(tmpdir(), 'claims-prof-')); put(home, '.sawbuck/config.json', JSON.stringify({ holds: { outward: ['\\bgit\\s+push\\b'] } }));
+  const dir = mkdtempSync(join(tmpdir(), 'claims-norepo-'));
+  const hold = (cmd) => spawnSync(process.execPath, [CLI, 'hold', '--hook'], { cwd: dir, encoding: 'utf8', env: { ...ENV, HOME: home }, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: cmd }, cwd: dir }) }).stdout;
+  const o = JSON.parse(hold('git push origin main')); assert.equal(o.hookSpecificOutput.permissionDecision, 'ask');
+  assert.ok(!/outside this repo/.test(o.hookSpecificOutput.permissionDecisionReason), 'no repo here, so it does not say "this repo"');
+  assert.equal(hold('ls'), '');
+});
+test('claim: a profile exported on one machine imports on another: personal rules and holds added, nothing already there lost', () => {
+  const a = mkdtempSync(join(tmpdir(), 'claims-a-')); put(a, '.claude/CLAUDE.md', '# mine\n\n- Reply in at most 3 lines.\n- Never push without asking.\n'); put(a, '.sawbuck/config.json', JSON.stringify({ holds: { outward: ['\\bdeploy'] } }));
+  const run = (h, ...args) => spawnSync(process.execPath, [CLI, 'profile', ...args], { cwd: a, encoding: 'utf8', env: { ...ENV, HOME: h } });
+  const file = join(a, 'p.json'); writeFileSync(file, run(a, 'export').stdout);
+  const b = mkdtempSync(join(tmpdir(), 'claims-b-')); put(b, '.claude/CLAUDE.md', '- Reply in at most 3 lines.\n- Use pnpm.\n');
+  assert.match(run(b, 'import', file).stdout, /1 rule added .* 1 hold added/);
+  const md = readFileSync(join(b, '.claude/CLAUDE.md'), 'utf8'); assert.match(md, /Use pnpm/); assert.match(md, /Never push without asking/); assert.equal((md.match(/at most 3 lines/g) || []).length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(b, '.sawbuck/config.json'), 'utf8')).holds.outward, ['\\bdeploy']);
+  assert.match(run(b).stdout, /2 lines in .*CLAUDE\.md|3 lines in .*CLAUDE\.md/); assert.match(run(b).stdout, /14 built in \+ 1 of yours/);
+});
 test('claim: the scratchpad report reads only: it writes no file', () => { const h = steerHome([]); steersOut(h); assert.deepEqual(readdirSync(join(h, '.claude/plugins/store')), ['sawbuck-reins_x.json']); assert.ok(!existsSync(join(h, '.sawbuck'))); });
 
 // ------------------------------------------------------------ finding the rules nobody wrote
