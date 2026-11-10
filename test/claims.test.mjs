@@ -163,6 +163,27 @@ test('claim: the debt gate names what git threw away on the paths a branch touch
   put(c, 'src/other.js', 'x\n'); save(c, 'unrelated'); git(c, 'checkout', '-q', 'main'); git(c, 'checkout', '-qb', 'feat2'); put(c, 'src/other.js', 'y\n'); save(c, 'other');
   assert.ok(!/logged users out/.test(sb(c, 'debt', '--since', 'main').out), 'a branch that does not touch the file hears nothing');
 });
+test('claim: the Action posts the erased history as a PR comment, by running its own step on the real debt output', () => {
+  const { d, bare } = withRemote(); const w = wired(d); eraseRevert(d); w.prompt(); assert.equal(sb(d, 'ledger', 'push').code, 0);
+  const c = mkdtempSync(join(tmpdir(), 'claims-pr-')); git(c, 'clone', '-q', bare, '.'); git(c, 'fetch', '-q', 'origin', '+refs/sawbuck/ledger:refs/sawbuck/ledger');
+  git(c, 'checkout', '-qb', 'feat'); put(c, 'src/cache.js', 'exports.c={max:10}\n'); save(c, 'cache again');
+  // the step's run block, taken from action.yml as written, with a stand-in gh that keeps the body it was handed
+  const yml = readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
+  const step = yml.split('- name: the erased history, as a PR comment (opt-in)')[1]; assert.ok(step, 'the comment step exists');
+  const script = step.split('run: |\n')[1].split('\n').filter((l) => /^ {8}\S/.test(l)).map((l) => l.slice(8)).join('\n');
+  const run = (debtOut) => {
+    const t = mkdtempSync(join(tmpdir(), 'claims-runner-')); mkdirSync(join(t, 'bin'));
+    writeFileSync(join(t, 'bin', 'gh'), '#!/bin/sh\n[ "$1 $2 $3" = "pr comment 7" ] && cp "$5" "$RUNNER_TEMP/posted.md"\n', { mode: 0o755 });
+    writeFileSync(join(t, 'sawbuck-debt.txt'), debtOut);
+    const r = spawnSync('bash', ['-c', script], { cwd: c, encoding: 'utf8', env: { ...ENV, PATH: `${join(t, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: t, PR: '7', GH_TOKEN: 'x' } });
+    assert.equal(r.status, 0, r.stderr); return existsSync(join(t, 'posted.md')) ? readFileSync(join(t, 'posted.md'), 'utf8') : null;
+  };
+  const posted = run(sb(c, 'debt', '--since', 'main').out);
+  assert.ok(posted, 'a branch on the reverted file gets a comment');
+  assert.match(posted, /reverted: Revert "cache: add an LRU limit".*It logged users out/s, 'the comment carries the revert and its reason');
+  git(c, 'checkout', '-q', 'main'); git(c, 'checkout', '-qb', 'feat2'); put(c, 'src/other.js', 'y\n'); save(c, 'other');
+  assert.equal(run(sb(c, 'debt', '--since', 'main').out), null, 'a branch that does not touch the file gets no comment');
+});
 test('limit: ledger push needs a remote and says so; pull from a remote with no ledger says so', () => {
   const d = signed(true); assert.match(sb(d, 'ledger', 'push').out, /no remote named origin/);
   const { d: e } = withRemote(); assert.match(sb(e, 'ledger', 'pull').out, /has no ledger yet/);
