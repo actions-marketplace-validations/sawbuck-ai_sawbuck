@@ -248,6 +248,19 @@ test('claim: rules --notes flags a memory note that names only files the repo no
   const o = spawnSync(process.execPath, [CLI, 'rules', '--notes'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: home } }).stdout;
   assert.match(o, /stale\? it names src\/cache\.js, src\/lru\.js/); assert.ok(!/stale\? it names src\/add\.js/.test(o)); assert.match(o, /1 note name only files this repo no longer has/);
 });
+test('claim: attach --cursor wires Cursor: a gamed commit comes back as a follow-up message, an outward command asks, detach removes it', () => {
+  const d = signed(false); const r = sb(d, 'attach', '--cursor'); assert.equal(r.code, 0, r.out);
+  const h = JSON.parse(readFileSync(join(d, '.cursor/hooks.json'), 'utf8')); assert.equal(h.version, 1);
+  const run = (ev, extra = {}) => spawnSync('sh', ['-c', h.hooks[ev][0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ conversation_id: 'c1', generation_id: 'g1', hook_event_name: ev, workspace_roots: [d], ...extra }) }).stdout || '';
+  assert.deepEqual(JSON.parse(run('beforeSubmitPrompt', { prompt: 'make add pass' })), { continue: true });
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  const stop = JSON.parse(run('stop', { status: 'completed', loop_count: 0 })); assert.match(stop.followup_message || '', /gamed/);
+  assert.deepEqual(JSON.parse(run('stop', { status: 'completed', loop_count: 3 })), {}, 'three send-backs, then the turn ends');
+  const sh = JSON.parse(run('beforeShellExecution', { command: 'npm publish', cwd: d })); assert.equal(sh.permission, 'ask'); assert.match(sh.user_message, /publish/);
+  assert.deepEqual(JSON.parse(run('beforeShellExecution', { command: 'npm test', cwd: d })), { permission: 'allow' });
+  assert.ok(!/\.cursor/.test(git(d, 'status', '--porcelain')));
+  assert.equal(sb(d, 'detach', '--cursor').code, 0); assert.ok(!existsSync(join(d, '.cursor/hooks.json')));
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
