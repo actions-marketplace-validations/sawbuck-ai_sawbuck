@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { repoState } from './repo-state.mjs';
 import { readSteers, groupSteers } from './steers.mjs';
 import { ledgerState } from './ledger.mjs';
+import { readUndone } from './undo.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
@@ -143,10 +144,10 @@ if (debt && debt.total) {
 // What git threw away: the erased attempts kept here, and whether the team has them
 if (isGit) {
   try {
-    const l = ledgerState(repo);
-    if (l.local || l.shared) {
+    const l = ledgerState(repo); const u = readUndone(repo).length;
+    if (l.local || l.shared || u) {
       out.push('');
-      out.push(`   What git threw away  ·  ${l.local} erased attempt${l.local === 1 ? '' : 's'} kept here, ${l.shared} shared with the team (refs/sawbuck/ledger)`);
+      out.push(`   What git threw away  ·  ${l.local} erased attempt${l.local === 1 ? '' : 's'} kept here, ${l.shared} shared with the team (refs/sawbuck/ledger)${u ? `, ${u} undone in a session at your request` : ''}`);
       if (l.onlyHere) out.push(`     ${l.onlyHere} on this machine only  →  sawbuck ledger push`);
     }
   } catch {}

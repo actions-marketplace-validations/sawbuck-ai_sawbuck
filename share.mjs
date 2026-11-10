@@ -9,9 +9,9 @@ import { join, resolve, isAbsolute } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { createHash } from 'node:crypto';
 
-const KINDS = ['rule', 'revert', 'gamed'];
+const KINDS = ['rule', 'revert', 'gamed', 'undone'];
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'finding';
-const applyLine = { rule: 'Hold to this on every task here, without being asked again.', revert: 'Do not redo this change. If asked for it, name the reason it was reverted and ask first.', gamed: 'Earn the green in the source. Never edit a test, grader or config to make it pass.' };
+const applyLine = { rule: 'Hold to this on every task here, without being asked again.', revert: 'Do not redo this change. If asked for it, name the reason it was reverted and ask first.', gamed: 'Earn the green in the source. Never edit a test, grader or config to make it pass.', undone: 'Do not redo this change. If asked for it, name why it was undone and ask first.' };
 
 function config(repo) { try { return JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')).share || {}; } catch { return {}; } }
 
