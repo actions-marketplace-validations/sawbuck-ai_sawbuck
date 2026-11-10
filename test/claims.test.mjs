@@ -373,6 +373,20 @@ test('claim: ripples show what happened after a steer: commits, an undo, a parti
   assert.equal(r[0].commits, 1); assert.deepEqual(r[0].files, ['src/cache.js']); assert.equal(r[0].partly, 1); assert.equal(r[0].cameBack, iso(130));
   assert.match(spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout, /a time join, a lead not proof of cause/);
 });
+test('claim: a steer from a folder over several repos joins the commits in each, and old steers with no folder are counted, not dropped silently', () => {
+  const top = mkdtempSync(join(tmpdir(), 'claims-projects-'));
+  const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
+  const commitAt = (d, f, m) => { const env = { ...ENV, GIT_COMMITTER_DATE: iso(m), GIT_AUTHOR_DATE: iso(m) }; put(d, f, `${m}\n`); execFileSync('git', ['add', '-A'], { cwd: d, env }); execFileSync('git', ['commit', '-qm', f], { cwd: d, env }); };
+  for (const name of ['site', 'engine']) { const d = join(top, name); mkdirSync(d); git(d, 'init', '-q', '-b', 'main'); }
+  mkdirSync(join(top, 'notes'));   // a plain folder beside them is not a repo and is skipped
+  commitAt(join(top, 'site'), 'index.html', 5); commitAt(join(top, 'engine'), 'run.js', 20); commitAt(join(top, 'engine'), 'late.js', 90);   // the last is after the hour
+  const h = steerHome([{ at: iso(0), repo: '', dir: top, session: 'a', axis: 'scope', nudge: 'Make the intro plain', pressure: 2 }, { at: iso(1), repo: '', session: 'old', axis: 'scope', nudge: 'from before folders were kept', pressure: 1 }]);
+  const r = JSON.parse(spawnSync(process.execPath, [CLI, 'ripples', '--all', '--json'], { cwd: top, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout);
+  assert.equal(r.length, 1); assert.equal(r[0].commits, 2, 'one commit in each repo inside the hour, none after it'); assert.equal(r[0].across, 2);
+  assert.deepEqual(r[0].files.sort(), ['engine/run.js', 'site/index.html'], 'each file named with its repo');
+  const o = spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: top, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout;
+  assert.match(o, /across 2 repos/); assert.match(o, /1 older steer from outside any repo kept no folder/);
+});
 test('claim: a personal hold in ~/.sawbuck/config.json asks first everywhere on the machine, in a folder with no repo too', () => {
   const home = mkdtempSync(join(tmpdir(), 'claims-prof-')); put(home, '.sawbuck/config.json', JSON.stringify({ holds: { outward: ['\\bgit\\s+push\\b'] } }));
   const dir = mkdtempSync(join(tmpdir(), 'claims-norepo-'));
