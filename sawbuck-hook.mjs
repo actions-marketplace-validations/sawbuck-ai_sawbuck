@@ -77,7 +77,16 @@ if (head && from && head !== from) {
   let base = standing ? rec.latest.base : from; let skip = false;
   if (!standing) {
     const tips = (st.turnBaseline && Array.isArray(st.turnBaseline.refs)) ? st.turnBaseline.refs : [];
-    const own = git('rev-list', '--no-merges', head, `^${from}`, ...tips.map((t) => `^${t}`), '--not', '--remotes').split('\n').filter(Boolean);
+    let own = git('rev-list', '--no-merges', head, `^${from}`, ...tips.map((t) => `^${t}`), '--not', '--remotes').split('\n').filter(Boolean);
+    // a rebase replays commits that existed before the turn under new shas (the person's own branch commits among them);
+    // a replayed commit is patch-equivalent to one reachable from a recorded tip, and `git cherry` marks those "-"
+    if (own.length && tips.length) {
+      for (const t of tips) {
+        const fresh = new Set(git('cherry', t, head).split('\n').filter((l) => l.startsWith('+ ')).map((l) => l.slice(2).trim()));
+        own = own.filter((c) => fresh.has(c));
+        if (!own.length) break;
+      }
+    }
     if (!own.length) { logActivity({ kind: 'note', sha: head.slice(0, 8), file: '', reason: 'the commits this turn added came from elsewhere (a rebase, a merge, a fast-forward); none is the agent\'s own, nothing to re-prove', by }); skip = true; }
     else base = git('rev-parse', `${own[own.length - 1]}^`).trim() || from;
   }

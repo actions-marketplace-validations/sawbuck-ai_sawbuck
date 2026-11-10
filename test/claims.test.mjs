@@ -204,13 +204,17 @@ test('claim: a turn that rebases onto upstream re-proves only the agent\'s own c
   // upstream moves: a person over there made the red test pass by editing it (their business, not this agent's)
   git(d, 'checkout', '-qb', 'upstream'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'upstream: adjust the add test'); put(d, 'src/mul.js', 'exports.x=1\n'); save(d, 'upstream: a new file');
   git(d, 'checkout', '-q', 'main'); git(d, 'checkout', '-qb', 'feat');
+  // the person's own earlier commit on the branch skips a test (theirs to answer for); the rebase will replay it under a new sha
+  put(d, 'test/later.test.js', "const t=require('node:test'),a=require('node:assert');t.test.skip('later',()=>a.equal(1,2))\n"); save(d, 'feat: a skipped test for later (the person)');
   w.prompt('rebase my branch onto upstream and add a note'); 
   put(d, 'NOTES.md', 'a note\n'); save(d, 'feat: a note');   // the agent's own honest commit
   git(d, 'rebase', '-q', 'upstream');   // history rewritten inside the turn: HEAD no longer descends from the last known sha
   const out = w.stop();
-  assert.ok(!blocked(out), `upstream's test edit was blamed on the agent: ${out}`);
+  assert.ok(!blocked(out), `upstream's test edit, or the person's replayed commit, was blamed on the agent: ${out}`);
   const recOf = () => { try { return JSON.parse(readFileSync(join(d, '.sawbuck', 'results.json'), 'utf8')); } catch { return {}; } };
-  assert.equal(recOf().gamed || 0, 0); assert.match(readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8'), /"kind":"verified".*NOTES\.md/, 'only the agent\'s own replayed commit was re-proved');
+  const act = readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8');
+  assert.equal(recOf().gamed || 0, 0); assert.match(act, /"kind":"verified".*NOTES\.md/, 'the agent\'s own replayed commit was re-proved');
+  assert.ok(!/later\.test\.js/.test(act), 'the person\'s pre-turn commit, replayed by the rebase under a new sha, was not re-proved as the agent\'s');
   // and after the rebase the hook still catches the agent's own gamed green: the person commits a red test between turns, the agent edits it to pass
   put(d, 'test/red.test.js', "const t=require('node:test'),a=require('node:assert');t.test('red',()=>a.equal(1,2))\n"); save(d, 'a red test, by the person');
   w.prompt('make the red test pass'); edit(d, 'test/red.test.js', (s) => s.replace('a.equal(1,2)', 'a.equal(1,1)')); save(d, 'make it pass');
