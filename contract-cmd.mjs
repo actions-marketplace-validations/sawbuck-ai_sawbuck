@@ -163,7 +163,7 @@ try {
 let files = [];
 try { files = execFileSync('git', ['-C', repo, 'ls-files'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n'); } catch { /* not a repo: attach says so */ }
 const seen = new Set();
-for (const f of files) { const m = f.match(/^(.*?(?:^|\/)(?:auth|authentication|billing|payments?|migrations))\//); if (m && !/(^|\/)(node_modules|test|tests|docs?)\//.test(m[1])) seen.add(m[1]); }
+for (const f of files) { const m = f.match(/^(.*?(?:^|\/)(?:auth|authentication|billing|payments?|migrations))\//); if (m && !/(^|\/)(node_modules|test|tests|docs?|examples?|samples?|demos?|fixtures?)\//.test(m[1])) seen.add(m[1]); }
 if (seen.size) process.stdout.write(`\n  To protect product code too, add these protected paths under "mandates" in promptwheel.config.json:\n${[...seen].slice(0, 5).map((d) => `    { "name": "${d.replace(/\W+/g, '-')}", "paths": ["${d}/**"], "reason": "changed by a person" }`).join('\n')}\n`);
 if (!dry) {
   const hid = hiddenFromGit(repo);

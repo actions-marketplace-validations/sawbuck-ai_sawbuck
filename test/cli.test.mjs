@@ -980,6 +980,8 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
   g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
   mkdirSync(join(d, 'src/auth'), { recursive: true }); writeFileSync(join(d, 'src/auth/a.js'), 'export const a = 1;\n');
+  // an example app's auth folder is not product code: express has examples/auth, and signing suggested protecting it
+  mkdirSync(join(d, 'examples/auth'), { recursive: true }); writeFileSync(join(d, 'examples/auth/index.js'), 'export const demo = 1;\n');
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'r', type: 'module', scripts: { test: 'node -e 0' } }));
   g('add', '-A'); g('commit', '-qm', 'base');
   const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
@@ -988,7 +990,7 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   assert.match(sb('contract', '--full', '--dry-run'), /would write/);
   assert.equal(existsSync(join(d, 'promptwheel.config.json')), false, 'a dry run writes nothing');
   const out = sb('contract', '--full');
-  assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested');
+  assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested'); assert.doesNotMatch(out, /examples\/auth/, 'an example folder is not');
   const cfg = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'));
   assert.ok(cfg.metrics.some((m) => m.name === 'lock_drift'), 'the lock guard');
   assert.ok(cfg.metrics.some((m) => /test/.test(m.cmd) && !m.cmd.includes('packs/')), 'the test metric stays: the preset alone would drop the gamed check');
