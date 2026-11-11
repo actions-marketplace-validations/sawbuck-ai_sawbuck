@@ -56,11 +56,25 @@ export function erasedCommits(repo) {
 // the lines `context` adds for the paths in hand: reverts first, then the checks that caught something here
 export function erasedBlock(repo, changed) {
   const touched = new Set(changed);
-  const hits = [], subjects = new Set();
+  // one line per attempt: the ledger may hold a commit from before and after a rebase (same subject), and a person who
+  // amends one attempt many times leaves a commit per take ("take 910", "take 911"). Amends whose subjects match once
+  // numbers are set aside are one attempt, shown as the newest with a count. Reverts are never merged: each carries its
+  // own reason. The three lines left go to distinct attempts.
+  const same = (e) => e.revert ? `r:${e.subject}` : `e:${String(e.subject).toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim()}`;
+  const hits = [], seen = new Map();
   for (const e of erasedCommits(repo).filter((e) => (e.files || []).some((f) => touched.has(f)))
     .sort((a, b) => (b.revert - a.revert) || String(b.at).localeCompare(String(a.at)))) {
-    if (subjects.has(e.subject)) continue;   // the ledger may hold a commit from before and after a rebase
-    subjects.add(e.subject); hits.push(e); if (hits.length === 3) break;
+    const k = same(e); const had = seen.get(k);
+    if (had) {
+      had.versions.add(e.subject);
+      // the newest stands for the group; commits made in the same second tie on time, so the higher take number wins
+      const num = (x) => Math.max(-1, ...(String(x.subject).match(/\d+/g) || []).map(Number));
+      const later = String(e.at) > String(had.at) || (String(e.at) === String(had.at) && num(e) > num(had));
+      if (later && !e.revert) { const v = had.versions; Object.assign(had, e); had.versions = v; }
+      continue;
+    }
+    if (hits.length === 3) continue;
+    const h = { ...e, versions: new Set([e.subject]) }; seen.set(k, h); hits.push(h);
   }
   let caught = [];
   try {
@@ -70,7 +84,7 @@ export function erasedBlock(repo, changed) {
   const undone = undoneLines(repo, [...touched]);   // attempts the person had undone in a session, never committed
   if (!hits.length && !caught.length && !undone.length) return '';
   const lines = ['not in git history any more (recovered locally, leads):'];
-  for (const e of hits) lines.push(`    - ${e.revert ? 'reverted' : 'erased by a rewrite'}: ${e.subject} (${e.sha.slice(0, 12)}, ${String(e.at).slice(0, 10)})${e.why ? `: ${e.why}` : ''}`);
+  for (const e of hits) lines.push(`    - ${e.revert ? 'reverted' : 'erased by a rewrite'}: ${e.subject} (${e.sha.slice(0, 12)}, ${String(e.at).slice(0, 10)})${e.versions.size > 1 ? ` · ${e.versions.size} versions, this is the newest` : ''}${e.why ? `: ${e.why}` : ''}`);
   for (const e of caught) lines.push(`    - caught as gamed on ${e.file} (${e.sha}, ${String(e.at).slice(0, 10)})`);
   lines.push(...undone);
   return lines.join('\n');
