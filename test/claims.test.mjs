@@ -887,6 +887,7 @@ test('claim: an inconclusive check names the cause: a failed setup, a missing de
   assert.match(sb(red, 'check').out, /inconclusive: your tests fail before and after this change/);
   const dep = repo(true); put(dep, 'test/add.test.js', "require('a-package-nobody-installed');\n" + TEST); save(dep, 'needs a package'); edit(dep, 'src/add.js', (s) => s + '// x\n');
   const o = sb(dep, 'check').out; assert.match(o, /inconclusive: the clean copy the check runs in is missing something your tests need/); assert.match(o, /a-package-nobody-installed/);
+  assert.match(o, /Run `sawbuck init`, then set linkDirs or setup in promptwheel\.config\.json/); assert.doesNotMatch(o, /\.\. |setup, with/, 'one period, and a sentence that parses');
   const setup = repo(true); put(setup, 'promptwheel.config.json', JSON.stringify({ repeat: 1, setup: 'echo "boom: no compiler" >&2; exit 7', metrics: [{ name: 'tests_pass', cmd: 'false', extract: 'exit', direction: 'pass', guard: true }] }) + '\n'); save(setup, 'cfg'); edit(setup, 'src/add.js', (s) => s + '// x\n');
   assert.match(sb(setup, 'check').out, /inconclusive: the setup command failed \(exit 7\)[^\n]*boom: no compiler/);
 });
@@ -899,6 +900,7 @@ test('claim: when the tests need a build first, the inconclusive message points 
   put(d, 'NOTES.md', 'x\n'); save(d, 'a note');
   const r = sb(d, 'check'); assert.equal(r.code, 3, r.out);
   assert.match(r.out, /is missing something your tests need[^\n]*build[^\n]*`sawbuck init` writes a config that runs it/);
+  assert.doesNotMatch(r.out, /\.\. |setup, with|linkDirs/, 'with a build script and no config, the one thing to do is sawbuck init');
   assert.equal(sb(d, 'init', '--yes', '--no-investigate', '--no-agent-block').code, 0); save(d, 'config');
   put(d, 'NOTES.md', 'y\n'); save(d, 'another note');
   const ok = sb(d, 'check'); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /held/);

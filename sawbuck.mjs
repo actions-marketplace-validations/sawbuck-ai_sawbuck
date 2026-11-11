@@ -68,7 +68,8 @@ function inconclusiveWhy(rep, repo) {
   let build = false; try { build = !!JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).scripts?.build; } catch {}
   const needsBuild = !build ? '' : hasCfg ? ' This repo has a build script: if your tests need it, set "setup" to it in promptwheel.config.json.' : ' This repo has a build script, and tests often need it first: `sawbuck init` writes a config that runs it.';
   if (m && m.cause === 'too-much-output') return `your test command was stopped: ${m.detail}. Make it quieter, or point the check at a smaller command ${where}.`;
-  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${m.detail}. Link it with linkDirs, or install it with setup, ${where}.${needsBuild}`;
+  // with a build script and no config yet, the one thing to do is `sawbuck init` (needsBuild says it), so no second instruction
+  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${String(m.detail || '').replace(/[.\s]+$/, '')}.${build && !hasCfg ? '' : ` ${hasCfg ? 'Set' : 'Run `sawbuck init`, then set'} linkDirs or setup in promptwheel.config.json so the clean copy has it.`}${needsBuild}`;
   return `your tests fail before and after this change, so there was no win or loss to measure ("${(m && m.name) || 'tests_pass'}"). Fix the failing tests first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.${needsBuild}`;
 }
 // the test commands the engine finds with no config (promptwheel's detectTestCmd)
