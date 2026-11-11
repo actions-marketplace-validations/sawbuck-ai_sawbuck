@@ -327,6 +327,37 @@ test('claim: attach --cursor wires Cursor: a gamed commit comes back as a follow
   assert.ok(!/\.cursor/.test(git(d, 'status', '--porcelain')));
   assert.equal(sb(d, 'detach', '--cursor').code, 0); assert.ok(!existsSync(join(d, '.cursor/hooks.json')));
 });
+// the gamed send-back, and the person's way out of it
+const gamedTurn = () => { const d = signed(false); const w = wired(d); w.prompt('make add pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green'); return { d, w }; };
+const stopSaying = (d, said) => { const t = join(d, '..', `transcript-${Date.now()}-${Math.random()}.jsonl`); writeFileSync(t, JSON.stringify({ type: 'user', message: { content: 'make add pass' } }) + '\n' + JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: said }] } }) + '\n');
+  const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.Stop[0].hooks[0].command;
+  return spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'Stop', cwd: d, session_id: 's', transcript_path: t }) }).stdout || ''; };
+test('claim: a gamed turn is sent back with two ways for the agent: fix the source as the test was, or show the person the test change and ask', () => {
+  const { w } = gamedTurn(); const o = w.stop(); assert.ok(blocked(o));
+  assert.match(o, /fix the source so the test passes as it was written/); assert.match(o, /do not change the source to fit it: end your turn by showing the person the test change and asking them/);
+});
+test('claim: an agent that asks the person about the test may end the turn, and the person gets the three choices as commands', () => {
+  const { d } = gamedTurn();
+  const o = stopSaying(d, 'I changed test/add.test.js to expect 0 because add subtracts. That may be the wrong call: should add really return 4 for add(2,2)?');
+  assert.ok(!blocked(o), o); const m = JSON.parse(o).systemMessage;
+  assert.match(m, /your agent is asking you about it/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow "<why>"/);
+  assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed', 'asking does not clear the verdict');
+});
+test('limit: an agent that says it is done, with no question to the person, is still sent back', () => {
+  const { d } = gamedTurn(); assert.ok(blocked(stopSaying(d, 'Done. All tests pass now.')));
+});
+test('claim: after three send-backs the person is told the three choices', () => {
+  const { w } = gamedTurn(); for (let i = 0; i < 3; i++) assert.ok(blocked(w.stop()));
+  const o = w.stop(); assert.ok(!blocked(o)); const m = JSON.parse(o).systemMessage;
+  assert.match(m, /stopped blocking after 3 tries/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
+});
+test('claim: the person accepting the test change with --allow ends the send-back, and the hold asks before anyone types --allow', () => {
+  const { d, w } = gamedTurn(); assert.ok(blocked(w.stop()));
+  assert.match(w.pre('npx sawbuck check --allow "the spec changed"'), /"permissionDecision":"ask"/);
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed').code, 0);
+  assert.ok(!blocked(w.stop()), 'allowed by a person: the turn may end');
+  const r = JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest; assert.equal(r.kind, 'allowed'); assert.equal(r.allowed.reason, 'the spec changed');
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });

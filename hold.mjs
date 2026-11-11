@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+export const ALLOW = /\b(sawbuck|promptwheel)(\.mjs)?\b[^|;&]*\s--allow\b/;
 export const OUTWARD = [
   ['npm publish', /\bnpm\s+publish\b/], ['pnpm publish', /\bpnpm\s+publish\b/], ['yarn publish', /\byarn\s+(npm\s+)?publish\b/],
   ['gh release', /\bgh\s+release\s+(create|upload|edit|delete)\b/], ['gh pr merge', /\bgh\s+pr\s+merge\b/],
@@ -38,6 +39,9 @@ export function holdDecision(hookJson, repo) {
   let h = {}; try { h = JSON.parse(hookJson || '{}'); } catch {}
   if (h.tool_name && h.tool_name !== 'Bash') return null;
   const cmd = h.tool_input && typeof h.tool_input.command === 'string' ? h.tool_input.command : '';
+  // --allow records a person's decision to accept what the check could not prove; the agent typing it is not that.
+  // Always asked, holds off or not: it is how a gamed verdict is cleared.
+  if (ALLOW.test(cmd)) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'Sawbuck: --allow records that a person accepts a change the check could not prove (a test, config or protected file changed). Approve only if you decided it, not the agent.' } };
   const name = outwardHold(cmd, repo);
   if (!name) return null;
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: `Sawbuck hold: "${name}" ${repo && existsSync(join(repo, '.git')) ? 'goes outside this repo and ' : ''}cannot be taken back, so a person approves it. Say what it is for; to stop asking here, set {"holds":{"off":true}} in sawbuck.config.json.` } };

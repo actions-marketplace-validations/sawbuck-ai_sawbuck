@@ -7,7 +7,7 @@ import { shareFinding } from './share.mjs';
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +104,21 @@ const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFile
 const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
 // Send the turn back, at most enforce.maxBlocks times per prompt, then let it end with a warning: it can never
 // loop, because the harness's own block cap resets on every tool call.
+// the agent's last words this turn: Claude Code passes them, or they are read from the end of the transcript
+const lastAgentText = () => {
+  if (typeof hookInput.last_assistant_message === 'string') return hookInput.last_assistant_message;
+  try {
+    const p = hookInput.transcript_path; if (!p) return '';
+    const lines = readFileSync(p, 'utf8').slice(-400000).split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let e; try { e = JSON.parse(lines[i]); } catch { continue; }
+      if (e && e.type === 'assistant') { const t = ((e.message && e.message.content) || []).filter((x) => x && x.type === 'text').map((x) => x.text).join('\n'); if (t.trim()) return t; }
+    }
+  } catch {}
+  return '';
+};
+// a question to the person about the test: a question mark near the end, and the test named
+const asksPerson = (text, file) => { const tail = String(text || '').slice(-800); return tail.includes('?') && (tail.includes(basename(file || '')) || /\btests?\b/i.test(tail)); };
 const sendBack = (idKey, countKey, reason, stillOpen) => {
   const max = +(cfg.enforce?.maxBlocks) || 3;
   if (st[idKey] !== promptId) { st[idKey] = promptId; st[countKey] = 0; }
@@ -190,7 +205,16 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   // the catch is a finding too: handed once to whatever memory runs here, beside the rules and the reverted attempts
   // awaited: sendBack exits the process, and an unawaited hand-off died with it (found by hand against a live worker, 2026-11-08)
   await shareFinding(repo, { kind: 'gamed', title: `gamed: ${where} edited to pass`, text: rec.latest.reason || `A green on ${where} came from editing the test, config or grader, not the source.`, files: [where] }).catch(() => {});
-  sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the metric passes on its own, then finish.`, `the win on ${where} is still gamed and needs a real source fix.`);
+  // the person decides when the agent cannot: the test may be the wrong one. Three ways out, each a command.
+  const back = rec.latest.base ? String(rec.latest.base).slice(0, 12) : 'HEAD~1';
+  const choices = `Your call: (1) fix the source and keep the test as it was; (2) put the test back: git checkout ${back} -- ${where}, then commit; (3) if the test change is right, accept it: sawbuck check --allow "<why>".`;
+  // the agent asking the person instead of bending the source is the right move, so the turn may end there
+  if (asksPerson(lastAgentText(), where)) {
+    saveState();
+    process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: the win on ${where} came from changing the test, and your agent is asking you about it instead of changing the source to fit. ${choices}` }));
+    process.exit(0);
+  }
+  sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the test passes as it was written. If you believe the test itself was wrong, do not change the source to fit it: end your turn by showing the person the test change and asking them.`, `the win on ${where} is still gamed. ${choices}`);
 }
 
 // 3b) THE LOCK AT TURN LEVEL: tell the person the moment a turn changes the repo's structure or its resolved

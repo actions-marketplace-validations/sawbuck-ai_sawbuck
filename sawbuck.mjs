@@ -262,6 +262,14 @@ switch (cmd) {
     const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
     const { rep, code, why } = gateReport(repo, [...args, ...pass]);
     if (!rep || !rep.verdict) { out(`sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
+    // a person's --allow on the last commit clears the gamed verdict standing there, so the end-of-turn check stops
+    // sending the turn back (the hold asks before an agent can type --allow). Only that commit, only a gamed verdict.
+    if (rep.verdict === 'pass' && rep.allowed && !dirty && !base && !head) {
+      const rp = join(repo, '.sawbuck', 'results.json');
+      try { const r = JSON.parse(readFileSync(rp, 'utf8')); const sha8 = g('rev-parse', 'HEAD').slice(0, 8);
+        if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); }
+      } catch { /* not attached here: nothing stands to clear */ }
+    }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     for (const md of rep.mandates || []) out(`⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
