@@ -128,6 +128,12 @@ test('limit: the agent editing that uncommitted contract and committing it is st
   w.prompt(); const p = join(d, 'promptwheel.config.json'); const c = JSON.parse(readFileSync(p, 'utf8')); c.mandates = []; writeFileSync(p, JSON.stringify(c)); save(d, 'loosen');
   assert.ok(blocked(w.stop()));
 });
+test('limit: two sessions in one checkout: the one that touched a protected file is sent back, and so is the other, told not to undo what it did not change', () => {
+  const d = signed(true); const a = wired(d, 'A'), b = wired(d, 'B');
+  a.prompt(); put(d, '.npmrc', 'x\n'); b.prompt();
+  assert.ok(blocked(a.stop()), 'the protected edit does not walk through when another session prompts in between');
+  const o = b.stop(); assert.ok(blocked(o), 'the other session is sent back too (one shared record)'); assert.match(o, /do not revert anything you did not change/);
+});
 test('claim: a person editing a protected path between turns is not the agent', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); put(d, '.npmrc', 'x\n'); w.prompt(); assert.ok(!blocked(w.stop())); });
 test('claim: a sent-back protected path says how a person accepts it: --allow for the rules file and the hooks, removing the rule for the rest', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'Dockerfile', 'FROM node:22\n'); save(d, 'docker'); let o = sb(d, 'check').out; assert.match(o, /sent back/); assert.match(o, /remove that rule from promptwheel\.config\.json in a commit of its own/); assert.doesNotMatch(o, /sawbuck check --allow/); assert.equal(sb(d, 'check', '--allow', 'I asked for it').code, 1, 'and --allow really does not clear it'); git(d, 'reset', '-q', '--hard', 'HEAD~1'); put(d, '.claude/settings.json', '{}\n'); save(d, 'hooks'); o = sb(d, 'check').out; assert.match(o, /sawbuck check --allow "<reason>"/); assert.doesNotMatch(o, /remove that rule/); assert.equal(sb(d, 'check', '--allow', 'team hooks').code, 0); });
 test('claim: attach --shared in a repo that already has its rules says the commit of that file needs --allow; with no rules it does not', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.match(sb(d, 'attach', '--shared').out, /protected path in this repo[^\n]*--allow "team hooks"/); const e = repo(true); assert.doesNotMatch(sb(e, 'attach', '--shared').out, /protected path in this repo/); });
