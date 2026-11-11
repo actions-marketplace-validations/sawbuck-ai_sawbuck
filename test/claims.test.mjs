@@ -83,6 +83,24 @@ test('limit: the Stop hook does not run the tests on uncommitted work', () => { 
 test('claim: signing writes the contract and the lock and commits nothing', () => { const d = repo(true); const n = git(d, 'rev-list', '--count', 'HEAD'); assert.equal(sb(d, 'contract', '--full').code, 0); assert.equal(git(d, 'rev-list', '--count', 'HEAD'), n); for (const f of ['promptwheel.config.json', 'promptwheel.lock.json', '.promptwheel/packs/supply-chain/scan.mjs']) assert.ok(existsSync(join(d, f)), f); });
 test('claim: a signing commit passes its own contract', () => { const d = signed(true); assert.equal(check(d).code, 0); });
 test('claim: a signing commit is not a pass when the tests never ran', () => { const d = repo(false); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.notEqual(sb(d, 'check').out.includes('carried the win'), true); });
+// found by running the first commands on real repos (proof-bench/onboard): npm/node-semver ignores everything its
+// .gitignore does not list, so git status never showed the two files signing writes
+test('claim: in a repo whose ignore rules hide new files, the dry run still lists what signing writes, and signing says how to add them', () => {
+  const d = repo(true); put(d, '.gitignore', '/*\n!/.gitignore\n!/package.json\n!/src/\n!/test/\n'); save(d, 'ignore everything not listed');
+  let o = sb(d, 'contract', '--dry-run').out;
+  assert.doesNotMatch(o, /already signed/, 'it is not signed yet');
+  assert.match(o, /promptwheel\.config\.json\s+new/); assert.match(o, /AGENTS\.md\s+new/);
+  assert.match(o, /hides? .*from git[^\n]*git add -f AGENTS\.md promptwheel\.config\.json/);
+  assert.equal(git(d, 'status', '--porcelain'), '', 'and the dry run wrote nothing');
+  o = sb(d, 'contract').out;
+  assert.match(o, /signed/); assert.match(o, /git add -f AGENTS\.md promptwheel\.config\.json/);
+  assert.doesNotMatch(o, /^\s*Commit promptwheel\.config\.json and AGENTS\.md\./m, 'not the plain line: git would skip both');
+  git(d, 'add', '-f', 'AGENTS.md', 'promptwheel.config.json'); git(d, 'commit', '-qm', 'sign');
+  assert.match(sb(d, 'contract', '--dry-run').out, /already signed, nothing would change/);
+  // a repo with ordinary ignore rules keeps the plain line
+  const e = repo(true); o = sb(e, 'contract').out;
+  assert.match(o, /Commit promptwheel\.config\.json and AGENTS\.md\./); assert.doesNotMatch(o, /git add -f/);
+});
 test('claim: --dry-run writes nothing', () => { const d = repo(true); assert.equal(sb(d, 'contract', '--dry-run').code, 0); assert.equal(git(d, 'status', '--porcelain'), ''); });
 
 // ------------------------------------------------------------ protected paths

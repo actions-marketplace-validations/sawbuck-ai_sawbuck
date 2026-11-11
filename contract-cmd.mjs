@@ -44,6 +44,12 @@ ${npm ? `      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d68200
         with: { inconclusive: pass }
 `;
 const cfgPath = join(repo, 'promptwheel.config.json');
+// The files signing writes that this repo's ignore rules hide from git: git status does not show them and git add skips
+// them, so "commit these" would be a dead end. Some repos ignore everything their .gitignore does not list (npm's do).
+// git check-ignore leaves tracked files out, and exits 1 when none of these is ignored.
+const SIGNED_FILES = ['AGENTS.md', 'promptwheel.config.json', 'promptwheel.lock.json', '.github/workflows/sawbuck.yml', '.promptwheel/packs/supply-chain/scan.mjs'];
+const hiddenFromGit = (root) => { try { return execFileSync('git', ['-C', root, 'check-ignore', '--', ...SIGNED_FILES.filter((f) => existsSync(join(root, f)))], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean).map((f) => f.replace(/^(\.promptwheel\/packs\/supply-chain\/).*/, '$1')); } catch { return []; } };
+const addByName = (files) => `  This repo's ignore rules hide ${files.join(' and ')} from git, so add ${files.length > 1 ? 'them' : 'it'} by name: git add -f ${files.join(' ')}\n`;
 const run = (args, cwd, stdio = ['ignore', 'pipe', 'pipe']) => execFileSync(process.execPath, args, { cwd, encoding: 'utf8', stdio });
 
 // the preset as the engine writes it, in a scratch repo, so the contract and the engine cannot drift apart
@@ -76,13 +82,15 @@ try {
       try { if (existsSync(exclude(repo))) { mkdirSync(dirname(exclude(shadow)), { recursive: true }); cpSync(exclude(repo), exclude(shadow)); } } catch {}
       const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
       const exWas = read(exclude(shadow));
-      g('add', '-A'); g('commit', '-q', '--allow-empty', '-m', 'as it is now');
+      g('add', '-A', '-f'); g('commit', '-q', '--allow-empty', '-m', 'as it is now');   // -f: a file the repo tracks in spite of its ignore rules is tracked here too
       run([fileURLToPath(import.meta.url), shadow, ...process.argv.slice(3).filter((a) => a !== '--dry-run')], shadow);
       const rows = new Map();
       for (const l of g('status', '--porcelain', '-uall').split('\n').filter(Boolean)) {
         const f = l.slice(3).replace(/^(\.promptwheel\/packs\/supply-chain\/).*/, '$1');
         if (f !== 'node_modules') rows.set(f, l.startsWith('??') ? 'new' : 'changed');
       }
+      const hid = hiddenFromGit(shadow);
+      for (const f of hid) rows.set(f, 'new');
       const after = existsSync(join(shadow, 'promptwheel.config.json')) ? JSON.parse(read(join(shadow, 'promptwheel.config.json'))) : { metrics: [], mandates: [] };
       let now = {}; try { if (had) now = JSON.parse(readFileSync(cfgPath, 'utf8')); } catch {}
       const notes = strict ? (now.metrics || []).filter((m) => m && m.report && REPORT.has(m.name)).length : 0;
@@ -99,6 +107,7 @@ try {
         process.stdout.write('sawbuck contract --dry-run: nothing was written. A real run would write:\n');
         for (const [f, how] of rows) process.stdout.write(`  ${f.padEnd(34)} ${how}${what[f] ? ': ' + what[f] : ''}\n`);
         if (read(exclude(shadow)) !== exWas) process.stdout.write('  and lines in .git/info/exclude that keep Sawbuck\'s record out of git status (local, never committed)\n');
+        if (hid.length) process.stdout.write(addByName(hid));
       }
     } finally { rmSync(shadow, { recursive: true, force: true }); }
   } else {
@@ -156,4 +165,9 @@ try { files = execFileSync('git', ['-C', repo, 'ls-files'], { encoding: 'utf8', 
 const seen = new Set();
 for (const f of files) { const m = f.match(/^(.*?(?:^|\/)(?:auth|authentication|billing|payments?|migrations))\//); if (m && !/(^|\/)(node_modules|test|tests|docs?)\//.test(m[1])) seen.add(m[1]); }
 if (seen.size) process.stdout.write(`\n  To protect product code too, add these protected paths under "mandates" in promptwheel.config.json:\n${[...seen].slice(0, 5).map((d) => `    { "name": "${d.replace(/\W+/g, '-')}", "paths": ["${d}/**"], "reason": "changed by a person" }`).join('\n')}\n`);
-if (!dry) process.stdout.write(`\n  Commit promptwheel.config.json and AGENTS.md${full ? ', promptwheel.lock.json and .promptwheel/packs/' : ''}. Then sawbuck attach watches every turn: protected paths at turn end, each commit re-proved.\n`);
+if (!dry) {
+  const hid = hiddenFromGit(repo);
+  process.stdout.write(hid.length
+    ? `\n${addByName(hid)}  Commit ${hid.length > 1 ? 'them' : 'it'}${full ? ' with the rest of what signing wrote' : ''}. Then sawbuck attach watches every turn: protected paths at turn end, each commit re-proved.\n`
+    : `\n  Commit promptwheel.config.json and AGENTS.md${full ? ', promptwheel.lock.json and .promptwheel/packs/' : ''}. Then sawbuck attach watches every turn: protected paths at turn end, each commit re-proved.\n`);
+}
