@@ -273,31 +273,47 @@ switch (cmd) {
     }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
+    // --allow as a person should type it here: one thing needs no name; with more than one, the reason names each one
+    // it covers, so a reason written about one change cannot wave through another
+    const bare = (l) => l.replace(/^mandate:/, '');
+    const allowNames = (rep.allowable || []).length > 1 ? rep.allowable.map(bare).join(', ') + ': ' : '';
+    const allowHow = `--allow "${allowNames}<reason>"`;
+    // what a reason given here did not let through, and what each name is, so the line to copy explains itself
+    const left = rep.allowed ? (rep.allowable || []).filter((l) => !(rep.allowed.cleared || []).includes(l)) : [];
+    const kind = (l) => { const x = (rep.metrics || []).find((y) => y.name === l) || {}; const e = (rep.explained || []).find((y) => y.metric === l);
+      return l.startsWith('mandate:') ? 'a protected path' : l === 'gate' ? 'the check itself was weakened' : x.gamed === true ? 'a win that came from editing the test' : x.unprovable === true ? 'a win that could not be re-proved' : e ? e.what : 'a guard'; };
+    let said = false;
+    const many = () => { if (allowNames && !said) { said = true; out(`sawbuck: more than one thing here needs a reason from a person: ${rep.allowable.map((l) => `${bare(l)} (${kind(l)})`).join(', ')}.`); } };
     for (const md of rep.mandates || []) out(`⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
     const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
     const noDetect = pass.includes('--no-detect-gaming');
-    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).join(', ') || 'the change'} was let through without a source-only re-proof.`);
+    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).map(bare).join(', ') || 'the change'} ${(rep.allowed.cleared || []).length > 1 ? 'were' : 'was'} let through without a source-only re-proof.`);
     else if (rep.verdict === 'pass' && win && noDetect) out(`✓ passed: "${win.name}" improved, but gaming detection is off (--no-detect-gaming), so the win was not re-proved from the source.`);
     else if (rep.verdict === 'pass' && win) out(`✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'pass') out(`✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') {
       out('🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
       if (((rep.gate && rep.gate.weakened) || []).some((w) => w.change === 'measurement-edited')) out('sawbuck: this change also edits how the check measures (setup, env or linkDirs in promptwheel.config.json), and a change is judged by the settings in force before it. Commit that edit on its own first, then check your fix again.');
-      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('sawbuck: note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
+      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out(`sawbuck: note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes ${allowHow}.`);
     }
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
       out('✗ sent back: a protected path changed, however green the rest is.');
+      many();
       // the way through, for a person who meant it: two of the default rules take a reason, the rest are lifted first
       const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
       const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
-      if (soft.length) out(`sawbuck: if a person meant this: sawbuck check --allow "<reason>" accepts ${names(soft)}, and the result shows the reason.`);
+      if (soft.length && !left.length) out(`sawbuck: if a person meant this: sawbuck check ${allowHow} accepts ${allowNames ? 'each thing it names' : names(soft)}, and the result shows the reason.`);
       if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
     }
     else if (rep.verdict === 'fail') out('✗ sent back: this change made something worse.');
     else out(`≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
+    // more than one thing needs a person's reason: say what each one is, then (when a reason was given and did not
+    // cover them all) what it let through, what it did not, and the line that would
+    if (rep.verdict !== 'pass') many();
+    if (left.length) out(`sawbuck: your reason${(rep.allowed.cleared || []).length ? ` let ${rep.allowed.cleared.map(bare).join(', ')} through, and` : ''} did not let ${left.map(bare).join(', ')} through: a reason covers only what it names. To accept them all: sawbuck check ${allowHow}`);
     if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
-    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
+    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? `. If you meant this: ${allowHow}, or on a pull request comment sawbuck-allow: ${allowNames}<reason>` : ''}`);
     if (rep.gate && rep.gate.changed) out(`⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }

@@ -91,7 +91,13 @@ for (const [name, f] of [['workflows', '.github/workflows/x.yml'], ['registry co
 }
 test('claim: moving a file out of a protected path counts as touching it', () => { const d = signed(true); put(d, 'scripts/release.sh', 'x\n'); git(d, 'add', '-A'); git(d, 'commit', '-qm', 'p', '-q'); git(d, 'mv', 'scripts/release.sh', 'rel.sh'); git(d, 'commit', '-qm', 'mv'); assert.equal(check(d).code, 1); });
 test('claim: a new install script fails the gate', () => { const d = signed(true); json(d, 'package.json', (o) => { o.scripts.postinstall = 'x'; }); save(d, 'x'); assert.equal(check(d).code, 1); });
-test('claim: under --strict a new dependency needs a reason from a person', () => { const d = strict(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x'); assert.equal(check(d).code, 1); assert.equal(check(d, '--allow', 'a person said so').code, 0); });
+test('claim: under --strict a new dependency needs a reason from a person, and it moves more than one count, so the reason names each', () => {
+  const d = strict(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x');
+  const r = check(d); assert.equal(r.code, 1); assert.ok(r.allowable.length > 1 && r.allowable.includes('dependency_entries'), JSON.stringify(r.allowable));
+  assert.equal(check(d, '--allow', 'a person said so').code, 1, 'a reason that names none of them lets none through');
+  const o = sb(d, 'check'); assert.ok(o.out.includes(`--allow "${r.allowable.join(', ')}: <reason>"`), o.out);   // the line to copy
+  assert.equal(check(d, '--allow', `${r.allowable.join(', ')}: a person said so`).code, 0);
+});
 test('claim: under --strict a new network address in the source is caught by the lock', () => { const d = strict(true); edit(d, 'src/add.js', (s) => s + 'exports.x=()=>fetch("https://a.invalid")\n'); save(d, 'x'); assert.equal(check(d).code, 1); });
 
 test('claim: a new contract starts by watching: a new dependency is a note, not a failure', () => { const d = signed(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 0); assert.match(r.out, /note: a new dependency/); });
@@ -588,6 +594,32 @@ test('claim: a green from fixing only a test-*.js file reads gamed, not a source
   const r = sb(d, 'check'); assert.match(r.out, /gamed/, r.out); assert.doesNotMatch(r.out, /verified/);
 });
 test('claim: a gamed change let through with --allow says so, with the reason, and never says verified', () => { const d = gamedRepo(); const r = sb(d, 'check', '--allow', 'a person said so'); assert.equal(r.code, 0); assert.match(r.out, /allowed/); assert.match(r.out, /a person said so/); assert.doesNotMatch(r.out, /verified|carried the win/); });
+// One reason, one thing. From an outside report: a reason written about a config change also waved through a gamed test
+// in the same change. With more than one thing to let through, a reason lets through only what it names.
+test('claim: a reason written about one change does not wave through another: with two things, --allow lets through only what it names', () => {
+  const d = signed(false);   // add is broken, so the test is red
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); save(d, 'edit the test and the rules file');
+  const need = check(d).allowable;
+  assert.ok(need.includes('mandate:contract-frozen') && need.length > 1, JSON.stringify(need));
+  const names = need.map((l) => l.replace(/^mandate:/, '')).join(', ');
+  // a reason about the rules file, and the gamed test rides along: nothing is let through
+  let r = sb(d, 'check', '--allow', 'more repeats');
+  assert.notEqual(r.code, 0); assert.doesNotMatch(r.out, /allowed with --allow/);
+  assert.match(r.out, /your reason did not let .* through/); assert.ok(r.out.includes(`sawbuck check --allow "${names}: <reason>"`), r.out);
+  assert.deepEqual(check(d, '--allow', 'more repeats').allowed.cleared, []);
+  // naming one lets that one through and says what is left
+  r = sb(d, 'check', '--allow', 'contract-frozen: more repeats');
+  assert.notEqual(r.code, 0); assert.match(r.out, /your reason let contract-frozen through, and did not let /);
+  // naming each lets each through, and it reads allowed, never verified
+  r = sb(d, 'check', '--allow', `${names}: the spec changed, and more repeats`);
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /allowed with --allow/); assert.doesNotMatch(r.out, /verified|carried the win/);
+  // the README's own line: the rules file and the hooks in one change
+  const e = signed(true); json(e, 'promptwheel.config.json', (o) => { o.repeat = 2; }); put(e, '.claude/settings.json', '{"hooks":{}}\n'); save(e, 'more repeats, and team hooks');
+  assert.deepEqual(check(e).allowable, ['mandate:contract-frozen', 'mandate:hooks-frozen']);
+  assert.equal(sb(e, 'check', '--allow', 'team hooks').code, 1);
+  assert.equal(sb(e, 'check', '--allow', 'contract-frozen, hooks-frozen: more repeats, and the team shares the hooks').code, 0);
+  assert.ok(readFileSync(join(HERE, '..', 'README.md'), 'utf8').includes('sawbuck check --allow "contract-frozen, hooks-frozen: <reason>"'));
+});
 test('claim: with gaming detection off, the check does not say the win was re-proved', () => { const d = gamedRepo(); const r = sb(d, 'check', '--no-detect-gaming'); assert.equal(r.code, 0); assert.match(r.out, /gaming detection is off/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 for (const a of [['contract', '--help'], ['attach', '--help'], ['detach', '--help'], ['init', '-h'], ['check', '-h']]) {
   test(`claim: ${a.join(' ')} prints help and writes nothing`, () => { const d = repo(true); const x = excludeText(d); const r = sb(d, ...a); assert.equal(r.code, 0); assert.match(r.out, new RegExp(`sawbuck ${a[0]}`)); assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(excludeText(d), x); assert.ok(!existsSync(join(d, '.git/sawbuck')) && !existsSync(join(d, '.claude'))); });
