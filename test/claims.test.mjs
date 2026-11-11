@@ -900,6 +900,18 @@ test('claim: a workspaces monorepo is measured with nothing to write: a workspac
   const e = monoRepo(); put(e, 'apps/web/test/sum.test.js', "require('node:test').test('sum',()=>require('node:assert').equal(require('../src/sum.js').sum(2,3),-1))\n");
   assert.equal(sb(e, 'check').code, 2, 'and a test edited to go green there reads gamed');
 });
+// found by replaying real commits (proof-bench/replay): on vuejs/pinia two checks ran past the two minutes the check
+// command allowed (the hooks allowed ten), and the only words were "the check timed out"
+test('claim: a check that runs out of time says how long it waited and how to give it longer, and attach says the same', () => {
+  const d = repo(true); json(d, 'package.json', (o) => { o.scripts.test = 'sleep 20'; }); save(d, 'a slow suite'); edit(d, 'src/add.js', (s) => s + '// x\n'); save(d, 'a change');
+  const slow = (...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env: { ...ENV, SAWBUCK_CHECK_TIMEOUT_MS: '1500' } }); return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }; };
+  const r = slow('check');
+  assert.equal(r.code, 64, r.out); assert.match(r.out, /took longer than 1\.5 seconds and was stopped/); assert.match(r.out, /SAWBUCK_CHECK_TIMEOUT_MS/);
+  const a = slow('attach');
+  assert.match(a.out, /could not measure anything here yet: the check took longer than 1\.5 seconds/); assert.doesNotMatch(a.out, /the check did not run/);
+  // ten minutes in all three places that run the check: the command, the turn hook and the git hook
+  for (const f of ['sawbuck.mjs', 'sawbuck-hook.mjs', 'reflect.mjs']) assert.match(readFileSync(join(dirname(CLI), f), 'utf8'), /SAWBUCK_CHECK_TIMEOUT_MS\) \|\| 600000/, f);
+});
 test('claim: an inconclusive check names the cause: a failed setup, a missing dependency, or tests that fail', () => {
   const red = repo(false); edit(red, 'src/add.js', (s) => s + '// x\n');
   assert.match(sb(red, 'check').out, /inconclusive: your tests fail before and after this change/);

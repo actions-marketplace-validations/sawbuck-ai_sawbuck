@@ -38,10 +38,13 @@ const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
 // A commit message is not a person: an agent can write a Sawbuck-Allow trailer, so no sawbuck path honors one
 // (the Stop hook and the git hook do the same through reflect). `--allow` is the declared override.
+// The same ten minutes the hooks allow. It was two, so a suite that takes a minute could be checked by the hooks and
+// not by `sawbuck check` or by attach's first look (vuejs/pinia under load), and the only words were "timed out".
+const CHECK_TIMEOUT = +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 600000;
 function gateReport(repo, a) {
   let o = '', err = '', code = 0;
-  try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' }, timeout: +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 120000 }); }
-  catch (e) { o = (e.stdout || '').toString(); err = e.signal ? 'the check timed out' : (e.stderr || '').toString(); code = e.status || 0; }
+  try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' }, timeout: CHECK_TIMEOUT }); }
+  catch (e) { o = (e.stdout || '').toString(); err = e.signal ? `the check took longer than ${CHECK_TIMEOUT / 1000} seconds and was stopped. It runs your tests at each commit it compares. Give it longer with SAWBUCK_CHECK_TIMEOUT_MS (milliseconds), or point it at a faster test command in promptwheel.config.json.` : (e.stderr || '').toString(); code = e.status || 0; }
   let rep = null; try { rep = JSON.parse(o.slice(o.indexOf('{'))); } catch {}
   // the engine's own reason, without its zero-config notice
   const why = err.split('\n').filter((l) => l.trim() && !/^no promptwheel\.config\.json, auto-gating/.test(l)).join(' ').trim();
@@ -649,10 +652,10 @@ function verifyAttach(repo) {
   if (!g('rev-parse', 'HEAD')) { out('   attached. Make a commit, then run `sawbuck check` to see it work.'); return; }
   out('   verifying I can measure here (one-time)...');
   const base = g('rev-parse', '--verify', 'HEAD~1') ? 'HEAD~1' : 'HEAD';
-  const { rep } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
+  const { rep, why } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
   const m = rep && (rep.metrics || [])[0];
   if (metricLive(m)) out(`   ✓ I can measure "${m.name}" here. On each commit I'll verify a win survived a source-only re-run, and flag it if it did not.`);
-  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : 'the check did not run'}`);
+  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : (why || 'the check did not run')}`);
 }
 
 // --- the attach receipt (out of the worktree, inside .git) ------------------
