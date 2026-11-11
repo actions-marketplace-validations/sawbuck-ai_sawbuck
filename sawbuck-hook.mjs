@@ -120,12 +120,15 @@ const lastAgentText = () => {
 // a question to the person about the test: a question mark near the end, and the test named
 const asksPerson = (text, file) => { const tail = String(text || '').slice(-800); return tail.includes('?') && (tail.includes(basename(file || '')) || /\btests?\b/i.test(tail)); };
 const sendBack = (idKey, countKey, reason, stillOpen) => {
-  const max = +(cfg.enforce?.maxBlocks) || 3;
+  // enforce.maxBlocks in sawbuck.config.json: how many times a turn is sent back to the agent (default 3). 0 means
+  // the person decides every time: nothing goes back to the agent, the person is told at once.
+  const raw = cfg.enforce ? cfg.enforce.maxBlocks : undefined;
+  const max = (raw === undefined || raw === null || raw === '' || !Number.isFinite(+raw)) ? 3 : Math.max(0, Math.floor(+raw));
   if (st[idKey] !== promptId) { st[idKey] = promptId; st[countKey] = 0; }
   const spent = (st[countKey] || 0) >= max;
   if (!spent) st[countKey] = (st[countKey] || 0) + 1;
   saveState();
-  process.stdout.write(JSON.stringify(spent ? { systemMessage: `Sawbuck stopped blocking after ${max} tries: ${stillOpen}` } : { decision: 'block', reason }));
+  process.stdout.write(JSON.stringify(spent ? { systemMessage: max === 0 ? `Sawbuck (set to ask you first, enforce.maxBlocks 0): ${stillOpen}` : `Sawbuck stopped blocking after ${max} tries: ${stillOpen}` } : { decision: 'block', reason }));
   process.exit(0);
 };
 

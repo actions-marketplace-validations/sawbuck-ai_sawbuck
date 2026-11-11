@@ -351,6 +351,12 @@ test('claim: after three send-backs the person is told the three choices', () =>
   const o = w.stop(); assert.ok(!blocked(o)); const m = JSON.parse(o).systemMessage;
   assert.match(m, /stopped blocking after 3 tries/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
 });
+test('claim: enforce.maxBlocks 0 asks the person first: a gamed turn is not sent back, and the person gets the three choices at once', () => {
+  const d = signed(false); put(d, 'sawbuck.config.json', JSON.stringify({ enforce: { maxBlocks: 0 } }) + '\n'); save(d, 'ask me first');
+  const w = wired(d); w.prompt('make add pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  const o = w.stop(); assert.ok(!blocked(o), o); const m = JSON.parse(o).systemMessage;
+  assert.match(m, /set to ask you first/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
+});
 test('claim: the person accepting the test change with --allow ends the send-back, and the hold asks before anyone types --allow', () => {
   const { d, w } = gamedTurn(); assert.ok(blocked(w.stop()));
   assert.match(w.pre('npx sawbuck check --allow "the spec changed"'), /"permissionDecision":"ask"/);
