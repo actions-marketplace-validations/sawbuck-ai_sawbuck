@@ -794,7 +794,7 @@ function wireClaude(repo, opts) {
   let upgrading = false;
   if (OURS.test(JSON.stringify(cfg))) {
     const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
-    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { if (!dry) regAdd(repo, user ? 'user' : shared ? 'claude-shared' : 'claude'); out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }   // the entry is refreshed: the list drops gone folders and gets back one it lost
     upgrading = true;
   }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';

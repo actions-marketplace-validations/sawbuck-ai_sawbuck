@@ -330,6 +330,18 @@ test('claim: attach --cursor wires Cursor: a gamed commit comes back as a follow
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
+test('claim: the list of attached repos drops a folder that is gone the next time it is written, and detach --all does not trip on it', () => {
+  const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home };
+  const run = (d, ...a) => spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env });
+  const a = repo(true), b = repo(true);
+  assert.equal(run(a, 'attach', '--claude').status, 0); assert.equal(run(b, 'attach', '--claude').status, 0);
+  const reg = () => JSON.parse(readFileSync(join(home, '.sawbuck', 'registry.json'), 'utf8')).repos.map((x) => x.repo);
+  assert.deepEqual(reg().sort(), [a, b].sort());
+  rmSync(b, { recursive: true, force: true });   // a test folder or a deleted clone
+  assert.equal(run(a, 'attach', '--claude').status, 0);
+  assert.deepEqual(reg(), [a], 'the gone folder is dropped when the list is next written');
+  const d = run(a, 'detach', '--all'); assert.equal(d.status, 0, d.stderr); assert.match(d.stdout, /detached everywhere/);
+});
 test('claim: attaching a repo under user-level hooks does not wire a second set', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); put(home, '.claude/settings.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node /x/sawbuck.mjs __hook' }] }] } })); const d = signed(true); const r = spawnSync(process.execPath, [CLI, 'attach', '--claude'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: home } }); assert.match(r.stdout, /user-level/); assert.ok(!existsSync(join(d, '.claude/settings.local.json'))); });
 
 test('claim: a repo watched by user-level hooks is not blocked by sawbuck\'s own record', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home }; const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); const hook = (args, ev) => spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 's', prompt: 'x' }) }).stdout || ''; hook(['turn', '--hook'], 'UserPromptSubmit'); assert.equal(git(d, 'status', '--porcelain'), '', 'nothing of ours shows up'); assert.ok(!blocked(hook(['__hook', '--by', 'claude', '--stop'], 'Stop'))); });
