@@ -6,8 +6,18 @@ on:
 permissions:
   contents: read
 jobs:
+  # the suite on every OS the site names. Hooks are POSIX shell; shell: bash gives Windows git-bash. Windows reports
+  # without failing the run until it is green, so the site claims only what passes here.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
