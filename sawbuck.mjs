@@ -147,12 +147,12 @@ Usage:
   sawbuck rules --notes     The notes Claude Code's own memory holds for this repo, to promote into its CLAUDE.md
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
   sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
-  sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
+  sawbuck steering [--all]  How you steer: what you keep correcting (from the plugin's scratchpad on this machine),
+                            then what happened after each steer here: commits, undos, the check's verdicts,
+                            reverts, and whether you said it again (--json; --all for every repo)
   sawbuck profile [export | import F]
                             Your machine-wide profile: personal rules (~/.claude/CLAUDE.md), holds
                             (~/.sawbuck/config.json), hooks, steering; export/import carries rules and holds
-  sawbuck ripples [--all]   What happened after each steer here: commits, undos (whole or partial), the check's
-                            verdicts, reverts, and whether you said it again (--json; --all for every repo)
   sawbuck statusline        One-line segment for your status line (watching | N caught)
 
   sawbuck --help | --version
@@ -204,6 +204,7 @@ const KNOWN = {
   detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude', '--codex', '--cursor'],
   doctor: ['--all'],
   status: ['--json', '--log', '-n'],
+  steering: ['--json', '--all'],
 };
 if (KNOWN[cmd]) { const bad = rest.filter((a) => a.startsWith('-') && !KNOWN[cmd].includes(a)); if (bad.length) usage(`unknown flag ${bad.join(' ')} for ${cmd} (it takes ${KNOWN[cmd].filter((f) => f !== '--claude').join(', ')})`); }
 
@@ -518,6 +519,13 @@ switch (cmd) {
     const r = ledgerCli(rest, gitTop(process.cwd()) || process.cwd()); out(r.text); if (r.code) process.exitCode = r.code; break;
   }
   case 'shape': { out(shapeCli(rest)); break; }
+  // one view of how you steer: what you keep saying, then what happened after each push. `steers` and `ripples` still
+  // work on their own (the /rules command runs `steers`).
+  case 'steering': {
+    const repo = flags.has('--all') ? null : (gitTop(process.cwd()) || null);
+    if (flags.has('--json')) { out(JSON.stringify({ steers: JSON.parse(steersReport({ json: true })), ripples: JSON.parse(ripplesReport({ json: true, repo })) })); break; }
+    out(steersReport({}) + '\n\n' + ripplesReport({ repo })); break;
+  }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'profile': { const r = profileCli(rest); out(r.text); if (r.code) process.exitCode = r.code; break; }
   case 'ripples': { out(ripplesReport({ json: flags.has('--json'), repo: flags.has('--all') ? null : (gitTop(process.cwd()) || null) })); break; }

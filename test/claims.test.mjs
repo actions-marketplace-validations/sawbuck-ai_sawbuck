@@ -439,6 +439,19 @@ test('claim: ripples show what happened after a steer: commits, an undo, a parti
   assert.equal(r[0].commits, 1); assert.deepEqual(r[0].files, ['src/cache.js']); assert.equal(r[0].partly, 1); assert.equal(r[0].cameBack, iso(130));
   assert.match(spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout, /a time join, a lead not proof of cause/);
 });
+test('claim: sawbuck steering is one view of what you keep correcting and what happened after; steers and ripples still work alone', () => {
+  const d = signed(true); const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
+  const env = { ...ENV, GIT_COMMITTER_DATE: iso(5), GIT_AUTHOR_DATE: iso(5) };
+  put(d, 'src/cache.js', 'x\n'); execFileSync('git', ['add', '-A'], { cwd: d, env }); execFileSync('git', ['commit', '-qm', 'cache'], { cwd: d, env });
+  const e = (session, at) => ({ at, repo: d, session, axis: 'scope', nudge: 'keep the change small', pressure: 2 });
+  const h = steerHome([e('1', iso(0)), e('2', iso(130)), e('3', iso(200))]);
+  const run = (...a) => spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } });
+  const o = run('steering', '--all'); assert.equal(o.status, 0, o.stderr);
+  assert.match(o.stdout, /keep the change small/); assert.match(o.stdout, /what happened after/);
+  const j = JSON.parse(run('steering', '--all', '--json').stdout); assert.ok(j.steers && Array.isArray(j.ripples), 'both parts in --json');
+  assert.equal(run('steers').status, 0); assert.equal(run('ripples', '--all').status, 0);
+  assert.doesNotMatch(run('--help').stdout + run('--help').stderr, /sawbuck (steers|ripples)\b/, 'help lists the one view');
+});
 test('claim: a steer from a folder over several repos joins the commits in each, and old steers with no folder are counted, not dropped silently', () => {
   const top = mkdtempSync(join(tmpdir(), 'claims-projects-'));
   const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
