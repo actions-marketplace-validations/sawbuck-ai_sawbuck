@@ -3,9 +3,10 @@
 // invariant (attach leaves the worktree clean; detach is a true inverse),
 // verify/dry-run, rank's per-path filtering, and context.
 
+import { TMP_HOME } from '../testkit.mjs';   // first: a throwaway HOME and temp folder for everything this file starts
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { test, after } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync, chmodSync } from 'node:fs';
@@ -18,9 +19,7 @@ import { ensureExcluded } from '../exclude.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
-// isolate HOME so the global registry (~/.sawbuck) never touches the real home.
-const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-home-'));
-after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
+// TMP_HOME (testkit.mjs) keeps the global registry (~/.sawbuck) out of the real home.
 const sawbuck = (args, cwd, env) => execFileSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, ...env } });
 // the recording engine (what the hook runs on each commit); `sawbuck check` is now the loud one-shot
 const REFLECT = join(HERE, '..', 'reflect.mjs');
@@ -971,7 +970,7 @@ test('the wall survives a shell with no node on PATH (hooks run under sh, which 
   execFileSync(process.execPath, [SB, 'attach', '--claude', d], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: d, env: { ...process.env, HOME: TMP_HOME } });
   const cfg = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8'));
   const cmd = cfg.hooks.Stop[0].hooks[0].command;
-  const r = spawnSync('/bin/sh', ['-c', cmd], { env: { PATH: '/usr/bin:/bin' }, input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
+  const r = spawnSync('/bin/sh', ['-c', cmd], { env: { PATH: '/usr/bin:/bin', HOME: TMP_HOME }, input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
   if (!/\/usr\/bin\/node|\/bin\/node/.test(execFileSync('sh', ['-c', 'PATH=/usr/bin:/bin command -v node || true'], { encoding: 'utf8' }))) assert.doesNotMatch(r.stderr, /not found/);
   assert.equal(r.status, 0, r.stderr);
 });

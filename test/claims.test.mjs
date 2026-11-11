@@ -2,6 +2,7 @@
 // test here is a sentence nobody has checked. CLAIMS_SAWBUCK points this at an installed package, so the same
 // file proves what is on npm: CLAIMS_SAWBUCK=/path/to/node_modules/sawbuck/sawbuck.mjs node --test test/claims.test.mjs
 // Runs on a clean account on purpose: a developer's global gitignore hid a bug that blocked every turn.
+import '../testkit.mjs';   // first: a throwaway HOME and temp folder for everything this file starts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync, execFile } from 'node:child_process';

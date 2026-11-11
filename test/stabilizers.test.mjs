@@ -9,7 +9,8 @@
 //   7. doctor flags an attachment whose hook no longer resolves
 // Run: node --test
 
-import { test, after } from 'node:test';
+import { TMP_HOME } from '../testkit.mjs';   // first: a throwaway HOME and temp folder for everything this file starts
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from 'node:fs';
@@ -24,8 +25,6 @@ const CLI = join(HERE, '..', 'sawbuck.mjs');
 const PW = require.resolve('promptwheel/bin/promptwheel.mjs');   // the check engine (sibling)
 const GLUE_FILES = ['sawbuck.mjs', 'reflect.mjs', 'sawbuck-hook.mjs', 'rank.mjs', 'debt.mjs', 'memory.mjs', 'status.mjs', 'bins.mjs', 'contract.mjs'].map((f) => join(HERE, '..', f));
 
-const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-shome-'));
-after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
 const sawbuck = (args, cwd, env) => execFileSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, ...env } });
 
 function tmpGit() {

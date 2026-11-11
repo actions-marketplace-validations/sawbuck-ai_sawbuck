@@ -5,6 +5,7 @@
 //   change in the results.
 // Stubbing the check keeps this deterministic (no real metric run needed).
 
+import '../testkit.mjs';   // first: a throwaway HOME and temp folder for everything this file starts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
