@@ -117,6 +117,17 @@ test('claim: saying yes to the offer does not block its own turn: signing and at
 test('claim: attaching mid-turn does not spare what the agent does next in that turn', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); const w = wired(d); put(d, '.npmrc', 'x\n'); assert.ok(blocked(w.stop())); });
 test('claim: the first turn after attach is checked', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); });
 test('claim: every turn checks protected paths, uncommitted included', () => { const d = signed(true); const w = wired(d); w.prompt(); put(d, '.npmrc', 'x\n'); assert.ok(blocked(w.stop())); });
+test('claim: a fresh contract the person left uncommitted, swept unchanged into the agent\'s commit, is not the agent touching it', () => {
+  const d = repo(true); assert.equal(sb(d, 'contract').code, 0); const w = wired(d);   // signed, attached, not committed
+  w.prompt(); put(d, 'src/extra.js', 'exports.x=1\n'); save(d, 'add extra');   // the agent's git add -A takes the contract along
+  assert.match(git(d, 'show', '--name-only', '--format=', 'HEAD'), /promptwheel\.config\.json/, 'the contract rode along');
+  assert.ok(!blocked(w.stop()), 'committing the person\'s file as it was is not touching it');
+});
+test('limit: the agent editing that uncommitted contract and committing it is still sent back', () => {
+  const d = repo(true); assert.equal(sb(d, 'contract').code, 0); const w = wired(d);
+  w.prompt(); const p = join(d, 'promptwheel.config.json'); const c = JSON.parse(readFileSync(p, 'utf8')); c.mandates = []; writeFileSync(p, JSON.stringify(c)); save(d, 'loosen');
+  assert.ok(blocked(w.stop()));
+});
 test('claim: a person editing a protected path between turns is not the agent', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); put(d, '.npmrc', 'x\n'); w.prompt(); assert.ok(!blocked(w.stop())); });
 test('claim: a sent-back protected path says how a person accepts it: --allow for the rules file and the hooks, removing the rule for the rest', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'Dockerfile', 'FROM node:22\n'); save(d, 'docker'); let o = sb(d, 'check').out; assert.match(o, /sent back/); assert.match(o, /remove that rule from promptwheel\.config\.json in a commit of its own/); assert.doesNotMatch(o, /sawbuck check --allow/); assert.equal(sb(d, 'check', '--allow', 'I asked for it').code, 1, 'and --allow really does not clear it'); git(d, 'reset', '-q', '--hard', 'HEAD~1'); put(d, '.claude/settings.json', '{}\n'); save(d, 'hooks'); o = sb(d, 'check').out; assert.match(o, /sawbuck check --allow "<reason>"/); assert.doesNotMatch(o, /remove that rule/); assert.equal(sb(d, 'check', '--allow', 'team hooks').code, 0); });
 test('claim: attach --shared in a repo that already has its rules says the commit of that file needs --allow; with no rules it does not', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.match(sb(d, 'attach', '--shared').out, /protected path in this repo[^\n]*--allow "team hooks"/); const e = repo(true); assert.doesNotMatch(sb(e, 'attach', '--shared').out, /protected path in this repo/); });
@@ -163,6 +174,27 @@ test('claim: the debt gate names what git threw away on the paths a branch touch
   put(c, 'src/other.js', 'x\n'); save(c, 'unrelated'); git(c, 'checkout', '-q', 'main'); git(c, 'checkout', '-qb', 'feat2'); put(c, 'src/other.js', 'y\n'); save(c, 'other');
   assert.ok(!/logged users out/.test(sb(c, 'debt', '--since', 'main').out), 'a branch that does not touch the file hears nothing');
 });
+test('claim: the Action posts the erased history as a PR comment, by running its own step on the real debt output', () => {
+  const { d, bare } = withRemote(); const w = wired(d); eraseRevert(d); w.prompt(); assert.equal(sb(d, 'ledger', 'push').code, 0);
+  const c = mkdtempSync(join(tmpdir(), 'claims-pr-')); git(c, 'clone', '-q', bare, '.'); git(c, 'fetch', '-q', 'origin', '+refs/sawbuck/ledger:refs/sawbuck/ledger');
+  git(c, 'checkout', '-qb', 'feat'); put(c, 'src/cache.js', 'exports.c={max:10}\n'); save(c, 'cache again');
+  // the step's run block, taken from action.yml as written, with a stand-in gh that keeps the body it was handed
+  const yml = readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
+  const step = yml.split('- name: the erased history, as a PR comment (opt-in)')[1]; assert.ok(step, 'the comment step exists');
+  const script = step.split('run: |\n')[1].split('\n').filter((l) => /^ {8}\S/.test(l)).map((l) => l.slice(8)).join('\n');
+  const run = (debtOut) => {
+    const t = mkdtempSync(join(tmpdir(), 'claims-runner-')); mkdirSync(join(t, 'bin'));
+    writeFileSync(join(t, 'bin', 'gh'), '#!/bin/sh\n[ "$1 $2 $3" = "pr comment 7" ] && cp "$5" "$RUNNER_TEMP/posted.md"\n', { mode: 0o755 });
+    writeFileSync(join(t, 'sawbuck-debt.txt'), debtOut);
+    const r = spawnSync('bash', ['-c', script], { cwd: c, encoding: 'utf8', env: { ...ENV, PATH: `${join(t, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: t, PR: '7', GH_TOKEN: 'x' } });
+    assert.equal(r.status, 0, r.stderr); return existsSync(join(t, 'posted.md')) ? readFileSync(join(t, 'posted.md'), 'utf8') : null;
+  };
+  const posted = run(sb(c, 'debt', '--since', 'main').out);
+  assert.ok(posted, 'a branch on the reverted file gets a comment');
+  assert.match(posted, /reverted: Revert "cache: add an LRU limit".*It logged users out/s, 'the comment carries the revert and its reason');
+  git(c, 'checkout', '-q', 'main'); git(c, 'checkout', '-qb', 'feat2'); put(c, 'src/other.js', 'y\n'); save(c, 'other');
+  assert.equal(run(sb(c, 'debt', '--since', 'main').out), null, 'a branch that does not touch the file gets no comment');
+});
 test('limit: ledger push needs a remote and says so; pull from a remote with no ledger says so', () => {
   const d = signed(true); assert.match(sb(d, 'ledger', 'push').out, /no remote named origin/);
   const { d: e } = withRemote(); assert.match(sb(e, 'ledger', 'pull').out, /has no ledger yet/);
@@ -187,6 +219,34 @@ test('claim: an edit the person had undone in a session comes back with the prom
   assert.match(out, /undone here at your request .*cache.*src\/add\.js.*logged people out/, 'the prompt that names the file gets the undo and the reason');
   put(d, 'src/add.js', before + '//\n'); assert.match(sb(d, 'context').out, /undone here at your request/, 'context shows it for the file in hand');
   assert.match(sb(d, 'status').out, /1 undone in a session at your request/);
+});
+test('claim: a partial undo is kept too: the person said no to part of the change and the agent took that part out', () => {
+  const d = signed(true); const w = wired(d); const before = readFileSync(join(d, 'src/add.js'), 'utf8');
+  w.prompt('add is slow, add a cache and a log line'); w.agentEdit('src/add.js', (s) => s + 'const cache=new Map()\nconst hits=0\nfunction log(k){console.log(k)}\n');
+  w.prompt('Drop the cache, it logged people out before. Keep the log line.'); w.agentEdit('src/add.js', () => before + 'function log(k){console.log(k)}\n');
+  const u = readFileSync(join(d, '.sawbuck', 'undone.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(u.length, 1); assert.equal(u[0].kind, 'part'); assert.match(u[0].first, /cache/); assert.match(u[0].why, /logged people out/);
+  assert.match(w.prompt('make src/add.js faster'), /partly undone here at your request .*cache/);
+});
+test('claim: under Codex the undo ledger reads the files apply_patch names; under Cursor it rebuilds the text before each edit', () => {
+  const d = signed(true); sb(d, 'attach', '--codex'); const before = readFileSync(join(d, 'src/add.js'), 'utf8');
+  const h = JSON.parse(readFileSync(join(d, '.codex/hooks.json'), 'utf8')).hooks;
+  const by = (ev, m) => h[ev].find((x) => String(x.matcher || '') === m).hooks[0].command;
+  const run = (cmd, input) => spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ cwd: d, session_id: 'cx', ...input }) }).stdout || '';
+  const patch = { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: src/add.js\n@@\n+x\n*** End Patch' } };
+  run(by('UserPromptSubmit', ''), { hook_event_name: 'UserPromptSubmit', prompt: 'add a cache' });
+  run(by('PreToolUse', 'apply_patch'), { hook_event_name: 'PreToolUse', ...patch }); put(d, 'src/add.js', before + 'const cache=new Map()\nconst size=0\n'); run(by('PostToolUse', 'apply_patch'), { hook_event_name: 'PostToolUse', ...patch });
+  run(by('UserPromptSubmit', ''), { hook_event_name: 'UserPromptSubmit', prompt: 'Undo that, a stale cache logged people out.' });
+  run(by('PreToolUse', 'apply_patch'), { hook_event_name: 'PreToolUse', ...patch }); put(d, 'src/add.js', before); run(by('PostToolUse', 'apply_patch'), { hook_event_name: 'PostToolUse', ...patch });
+  assert.match(readFileSync(join(d, '.sawbuck', 'undone.jsonl'), 'utf8'), /"kind":"whole".*logged people out/, 'Codex');
+  const c = signed(true); sb(c, 'attach', '--cursor'); const cb = readFileSync(join(c, 'src/add.js'), 'utf8');
+  const ch = JSON.parse(readFileSync(join(c, '.cursor/hooks.json'), 'utf8')).hooks;
+  const cr = (ev, input) => spawnSync('sh', ['-c', ch[ev][0].command], { cwd: c, encoding: 'utf8', env: ENV, input: JSON.stringify({ conversation_id: 'k', ...input }) }).stdout || '';
+  cr('beforeSubmitPrompt', { prompt: 'add a cache' }); const added = 'const cache=new Map()\nconst size=0\n';
+  put(c, 'src/add.js', cb + added); cr('afterFileEdit', { file_path: join(c, 'src/add.js'), edits: [{ old_string: cb, new_string: cb + added }] });
+  cr('beforeSubmitPrompt', { prompt: 'Undo that, a stale cache logged people out.' });
+  put(c, 'src/add.js', cb); cr('afterFileEdit', { file_path: join(c, 'src/add.js'), edits: [{ old_string: cb + added, new_string: cb }] });
+  assert.match(readFileSync(join(c, '.sawbuck', 'undone.jsonl'), 'utf8'), /"kind":"whole".*logged people out/, 'Cursor');
 });
 test('limit: an undo the agent makes on its own, with no word from the person in between, is not recorded', () => {
   const d = signed(true); const w = wired(d); const before = readFileSync(join(d, 'src/add.js'), 'utf8');
@@ -248,6 +308,19 @@ test('claim: rules --notes flags a memory note that names only files the repo no
   const o = spawnSync(process.execPath, [CLI, 'rules', '--notes'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: home } }).stdout;
   assert.match(o, /stale\? it names src\/cache\.js, src\/lru\.js/); assert.ok(!/stale\? it names src\/add\.js/.test(o)); assert.match(o, /1 note name only files this repo no longer has/);
 });
+test('claim: attach --cursor wires Cursor: a gamed commit comes back as a follow-up message, an outward command asks, detach removes it', () => {
+  const d = signed(false); const r = sb(d, 'attach', '--cursor'); assert.equal(r.code, 0, r.out);
+  const h = JSON.parse(readFileSync(join(d, '.cursor/hooks.json'), 'utf8')); assert.equal(h.version, 1);
+  const run = (ev, extra = {}) => spawnSync('sh', ['-c', h.hooks[ev][0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ conversation_id: 'c1', generation_id: 'g1', hook_event_name: ev, workspace_roots: [d], ...extra }) }).stdout || '';
+  assert.deepEqual(JSON.parse(run('beforeSubmitPrompt', { prompt: 'make add pass' })), { continue: true });
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  const stop = JSON.parse(run('stop', { status: 'completed', loop_count: 0 })); assert.match(stop.followup_message || '', /gamed/);
+  assert.deepEqual(JSON.parse(run('stop', { status: 'completed', loop_count: 3 })), {}, 'three send-backs, then the turn ends');
+  const sh = JSON.parse(run('beforeShellExecution', { command: 'npm publish', cwd: d })); assert.equal(sh.permission, 'ask'); assert.match(sh.user_message, /publish/);
+  assert.deepEqual(JSON.parse(run('beforeShellExecution', { command: 'npm test', cwd: d })), { permission: 'allow' });
+  assert.ok(!/\.cursor/.test(git(d, 'status', '--porcelain')));
+  assert.equal(sb(d, 'detach', '--cursor').code, 0); assert.ok(!existsSync(join(d, '.cursor/hooks.json')));
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
@@ -284,6 +357,54 @@ test('claim: a steer repeated 3 times across 2 sessions is shown, with a pointer
 test('claim: status shows what you keep saying, and says nothing when nothing repeats', () => { const e = (session, repo) => ({ session, repo, nudge: 'verify it live first' }); const d = repo(true); const run = (h) => spawnSync(process.execPath, [CLI, 'status'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout; const o = run(steerHome([e('1', 'a'), e('1', 'a'), e('2', 'b')])); assert.match(o, /You keep saying/); assert.match(o, /3x\s+verify it live first/); assert.doesNotMatch(run(steerHome([e('1', 'a')])), /You keep saying/); });
 test('claim: a steer from one session is not called a pattern', () => { const e = { session: '1', repo: 'a', nudge: 'verify first' }; assert.match(steersOut(steerHome([e, e, e])), /Nothing repeats yet/); });
 test('claim: replies that could not be scored are shown as an undercount', () => { assert.match(steersOut(steerHome([{ session: '1', repo: 'a', nudge: 'x y' }], { scored: 1, lost: 4 })), /4 could not be scored, so this undercounts/); });
+test('claim: stopping the agent twice on a command the hold does not cover suggests the line that makes it ask first', () => {
+  const at = '2026-11-10T00:00:00Z';
+  const h = steerHome([{ at, repo: '/r', session: 'a', axis: 'stop', nudge: 'stopped: running git push origin main', pressure: 3 }, { at, repo: '/r', session: 'b', axis: 'stop', nudge: 'stopped: git push --tags', pressure: 3 }, { at, repo: '/r', session: 'c', axis: 'stop', nudge: 'stopped: editing the README', pressure: 3 }]);
+  const o = steersOut(h); assert.match(o, /"holds":\{"outward":\["\\\\bgit\\\\s\+push\\\\b"\]\}/); assert.match(o, /git push 2x/);
+});
+test('claim: ripples show what happened after a steer: commits, an undo, a partial undo, and the same push said again later', () => {
+  const d = signed(true); mkdirSync(join(d, '.sawbuck'), { recursive: true }); writeFileSync(join(d, '.sawbuck', 'state.json'), '{}');
+  const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
+  const env = { ...ENV, GIT_COMMITTER_DATE: iso(5), GIT_AUTHOR_DATE: iso(5) };
+  put(d, 'src/cache.js', 'x\n'); execFileSync('git', ['add', '-A'], { cwd: d, env }); execFileSync('git', ['commit', '-qm', 'cache'], { cwd: d, env });
+  writeFileSync(join(d, '.sawbuck', 'undone.jsonl'), JSON.stringify({ at: iso(10), file: 'src/cache.js', kind: 'part', added: 2, first: 'const cache', why: 'drop the cache' }) + '\n');
+  const h = steerHome([{ at: iso(0), repo: d, session: 'a', axis: 'scope', nudge: 'Drop the cache, keep the log line', pressure: 2 }, { at: iso(130), repo: d, session: 'b', axis: 'scope', nudge: 'drop the cache; keep the log', pressure: 2 }]);
+  const r = JSON.parse(spawnSync(process.execPath, [CLI, 'ripples', '--all', '--json'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout);
+  assert.equal(r[0].commits, 1); assert.deepEqual(r[0].files, ['src/cache.js']); assert.equal(r[0].partly, 1); assert.equal(r[0].cameBack, iso(130));
+  assert.match(spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout, /a time join, a lead not proof of cause/);
+});
+test('claim: a steer from a folder over several repos joins the commits in each, and old steers with no folder are counted, not dropped silently', () => {
+  const top = mkdtempSync(join(tmpdir(), 'claims-projects-'));
+  const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
+  const commitAt = (d, f, m) => { const env = { ...ENV, GIT_COMMITTER_DATE: iso(m), GIT_AUTHOR_DATE: iso(m) }; put(d, f, `${m}\n`); execFileSync('git', ['add', '-A'], { cwd: d, env }); execFileSync('git', ['commit', '-qm', f], { cwd: d, env }); };
+  for (const name of ['site', 'engine']) { const d = join(top, name); mkdirSync(d); git(d, 'init', '-q', '-b', 'main'); }
+  mkdirSync(join(top, 'notes'));   // a plain folder beside them is not a repo and is skipped
+  commitAt(join(top, 'site'), 'index.html', 5); commitAt(join(top, 'engine'), 'run.js', 20); commitAt(join(top, 'engine'), 'late.js', 90);   // the last is after the hour
+  const h = steerHome([{ at: iso(0), repo: '', dir: top, session: 'a', axis: 'scope', nudge: 'Make the intro plain', pressure: 2 }, { at: iso(1), repo: '', session: 'old', axis: 'scope', nudge: 'from before folders were kept', pressure: 1 }]);
+  const r = JSON.parse(spawnSync(process.execPath, [CLI, 'ripples', '--all', '--json'], { cwd: top, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout);
+  assert.equal(r.length, 1); assert.equal(r[0].commits, 2, 'one commit in each repo inside the hour, none after it'); assert.equal(r[0].across, 2);
+  assert.deepEqual(r[0].files.sort(), ['engine/run.js', 'site/index.html'], 'each file named with its repo');
+  const o = spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: top, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout;
+  assert.match(o, /across 2 repos/); assert.match(o, /1 older steer from outside any repo kept no folder/);
+});
+test('claim: a personal hold in ~/.sawbuck/config.json asks first everywhere on the machine, in a folder with no repo too', () => {
+  const home = mkdtempSync(join(tmpdir(), 'claims-prof-')); put(home, '.sawbuck/config.json', JSON.stringify({ holds: { outward: ['\\bgit\\s+push\\b'] } }));
+  const dir = mkdtempSync(join(tmpdir(), 'claims-norepo-'));
+  const hold = (cmd) => spawnSync(process.execPath, [CLI, 'hold', '--hook'], { cwd: dir, encoding: 'utf8', env: { ...ENV, HOME: home }, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: cmd }, cwd: dir }) }).stdout;
+  const o = JSON.parse(hold('git push origin main')); assert.equal(o.hookSpecificOutput.permissionDecision, 'ask');
+  assert.ok(!/outside this repo/.test(o.hookSpecificOutput.permissionDecisionReason), 'no repo here, so it does not say "this repo"');
+  assert.equal(hold('ls'), '');
+});
+test('claim: a profile exported on one machine imports on another: personal rules and holds added, nothing already there lost', () => {
+  const a = mkdtempSync(join(tmpdir(), 'claims-a-')); put(a, '.claude/CLAUDE.md', '# mine\n\n- Reply in at most 3 lines.\n- Never push without asking.\n'); put(a, '.sawbuck/config.json', JSON.stringify({ holds: { outward: ['\\bdeploy'] } }));
+  const run = (h, ...args) => spawnSync(process.execPath, [CLI, 'profile', ...args], { cwd: a, encoding: 'utf8', env: { ...ENV, HOME: h } });
+  const file = join(a, 'p.json'); writeFileSync(file, run(a, 'export').stdout);
+  const b = mkdtempSync(join(tmpdir(), 'claims-b-')); put(b, '.claude/CLAUDE.md', '- Reply in at most 3 lines.\n- Use pnpm.\n');
+  assert.match(run(b, 'import', file).stdout, /1 rule added .* 1 hold added/);
+  const md = readFileSync(join(b, '.claude/CLAUDE.md'), 'utf8'); assert.match(md, /Use pnpm/); assert.match(md, /Never push without asking/); assert.equal((md.match(/at most 3 lines/g) || []).length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(b, '.sawbuck/config.json'), 'utf8')).holds.outward, ['\\bdeploy']);
+  assert.match(run(b).stdout, /2 lines in .*CLAUDE\.md|3 lines in .*CLAUDE\.md/); assert.match(run(b).stdout, /14 built in \+ 1 of yours/);
+});
 test('claim: the scratchpad report reads only: it writes no file', () => { const h = steerHome([]); steersOut(h); assert.deepEqual(readdirSync(join(h, '.claude/plugins/store')), ['sawbuck-reins_x.json']); assert.ok(!existsSync(join(h, '.sawbuck'))); });
 
 // ------------------------------------------------------------ finding the rules nobody wrote

@@ -12,7 +12,9 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
-import { undoHook, EDIT_MATCHER } from './undo.mjs';
+import { ripplesReport } from './ripples.mjs';
+import { profileCli } from './profile.mjs';
+import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -39,6 +41,8 @@ function gateReport(repo, a) {
   let rep = null; try { rep = JSON.parse(o.slice(o.indexOf('{'))); } catch {}
   // the engine's own reason, without its zero-config notice
   const why = err.split('\n').filter((l) => l.trim() && !/^no promptwheel\.config\.json, auto-gating/.test(l)).join(' ').trim();
+  const plain = /Error: (this shell cannot write[^\n]*)/.exec(err);   // the engine's own sentence, without node's stack
+  if (plain) return { rep, code, why: plain[1] };
   return { rep, code, why };
 }
 // why nothing could be measured, in words that match the case: no test command, tests red on both sides, or a
@@ -101,13 +105,14 @@ Usage:
                             notes from what your git history shows actually breaks, plus a short guide in
                             AGENTS.md (--no-agent-block to skip). Wizard in a terminal, non-interactive in
                             a pipe/CI (or --yes). An existing config needs --force.
-  sawbuck attach [repo] [--user | --shared | --git | --codex] [--dry-run]
+  sawbuck attach [repo] [--user | --shared | --git | --codex | --cursor] [--dry-run]
                             Watch every Claude Code turn in this repo: protected paths at the end of each
                             turn, a source-only re-run on each commit. --user: every repo that has a
                             promptwheel.config.json. --shared: a tracked settings file a team commits.
                             --git: a post-commit hook, for any other agent or none (commits in a linked
                             worktree are not checked). --codex: the same hooks for Codex in
-                            .codex/hooks.json (trust them once in Codex's /hooks). --dry-run prints every file it would write
+                            .codex/hooks.json (trust them once in Codex's /hooks). --cursor: the check and
+                            the hold for Cursor in .cursor/hooks.json. --dry-run prints every file it would write
   sawbuck detach [repo] [--user] [--all] [--verify] [--purge] [--dry-run]
                             Remove the hooks (no flag: whatever is wired here; --all: every repo). The
                             record stays, kept out of git status; --purge deletes it. --verify proves the
@@ -139,6 +144,11 @@ Usage:
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
   sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
   sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
+  sawbuck profile [export | import F]
+                            Your machine-wide profile: personal rules (~/.claude/CLAUDE.md), holds
+                            (~/.sawbuck/config.json), hooks, steering; export/import carries rules and holds
+  sawbuck ripples [--all]   What happened after each steer here: commits, undos (whole or partial), the check's
+                            verdicts, reverts, and whether you said it again (--json; --all for every repo)
   sawbuck statusline        One-line segment for your status line (watching | N caught)
 
   sawbuck --help | --version
@@ -186,8 +196,8 @@ if (rest.includes('--help') || rest.includes('-h')) {
 const KNOWN = {
   contract: ['--dry-run', '--full', '--strict'],
   init: ['--yes', '-y', '--wizard', '--no-investigate', '--no-agent-block', '--force', '--preset'],
-  attach: ['--user', '--shared', '--git', '--dry-run', '--claude', '--codex'],
-  detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude', '--codex'],
+  attach: ['--user', '--shared', '--git', '--dry-run', '--claude', '--codex', '--cursor'],
+  detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude', '--codex', '--cursor'],
   doctor: ['--all'],
   status: ['--json', '--log', '-n'],
 };
@@ -388,12 +398,13 @@ switch (cmd) {
     break;
   }
   case 'attach': {
-    const user = flags.has('--user'), shared = flags.has('--shared'), git = flags.has('--git'), codex = flags.has('--codex');
-    if (user + shared + git + codex > 1) usage('attach takes one of --user, --shared, --git or --codex');
+    const user = flags.has('--user'), shared = flags.has('--shared'), git = flags.has('--git'), codex = flags.has('--codex'), cursor = flags.has('--cursor');
+    if (user + shared + git + codex + cursor > 1) usage('attach takes one of --user, --shared, --git, --codex or --cursor');
     const top = gitTop(repoArg());
     if (!top && !user) usage(`${repoArg()} is not a git repository (attach wires one; run it inside your project, or name its path)`);
     const repo = top || repoArg();
     if (codex) { wireCodex(repo); break; }
+    if (cursor) { wireCursor(repo); break; }
     if (git) wireGit(repo); else wireClaude(repo, { user, shared });
     if (!dry) verifyAttach(repo);
     break;
@@ -406,6 +417,7 @@ switch (cmd) {
       if (flags.has('--user')) unwireClaude(repo, { user: true });
       else if (flags.has('--claude')) unwireClaude(repo, {});
       else if (flags.has('--codex')) unwireCodex(repo);
+      else if (flags.has('--cursor')) unwireCursor(repo);
       else {
         // no flag: take out whatever is wired in this repo, older git hooks included. The receipt says what attach
         // wrote; our hooks in the project settings or the post-commit hook count without one, so a lost receipt or a
@@ -414,7 +426,7 @@ switch (cmd) {
         const hasClaude = !!(a.claude || a['claude-shared']) || [false, true].some((shared) => hooksIn(claudeFile(repo, { shared }).f));
         if (hasClaude) unwireClaude(repo, {});
         if (a.git || hasBlock(repo) || !hasClaude) unwireGit(repo);
-        unwireCodex(repo, { quiet: true });
+        unwireCodex(repo, { quiet: true }); unwireCursor(repo, { quiet: true });
       }
       if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
@@ -427,6 +439,33 @@ switch (cmd) {
   }
   case 'doctor': { if (flags.has('--all')) doctorAll(); else doctorRepo(repoRoot()); break; }
   case 'rules': { out(rulesCli(rest, { repo: gitTop(process.cwd()) || process.cwd() })); break; }
+  case '__cursor': {
+    // Cursor's hooks (cursor.com/docs/hooks) carry other names and shapes; this adapter turns each into the Claude Code
+    // form our hooks already speak, and the answer back. Cursor cannot add context to a prompt, so the prompt hook only
+    // records the turn's baseline and the person's words; the rules reach the agent through AGENTS.md and .cursorrules.
+    const [ev, r0] = rest.filter((a) => !a.startsWith('--')); const r = gitTop(r0 || '.') || r0 || process.cwd();
+    let h = {}; if (!process.stdin.isTTY) { try { h = JSON.parse(readFileSync(0, 'utf8') || '{}'); } catch {} }
+    const session = String(h.conversation_id || h.session_id || 'cursor');
+    const call = (args, input) => { try { return execFileSync(process.execPath, [SELF, ...args], { encoding: 'utf8', input: JSON.stringify(input), stdio: ['pipe', 'pipe', 'ignore'] }); } catch (e) { return String(e.stdout || ''); } };
+    if (ev === 'beforeSubmitPrompt') { call(['turn', '--hook', r], { hook_event_name: 'UserPromptSubmit', prompt: String(h.prompt || ''), session_id: session, cwd: r }); out(JSON.stringify({ continue: true })); break; }
+    if (ev === 'stop') {
+      if ((h.loop_count || 0) >= 3) { out('{}'); break; }   // the same budget as Claude Code: three send-backs, then the turn ends
+      const o = call(['__hook', '--repo', r, '--by', 'cursor', '--stop'], { hook_event_name: 'Stop', session_id: session, cwd: r }).trim();
+      let j = null; try { j = JSON.parse(o); } catch {}
+      out(JSON.stringify(j && j.decision === 'block' ? { followup_message: j.reason } : {})); break;
+    }
+    if (ev === 'beforeShellExecution') {
+      const d = holdDecision(JSON.stringify({ tool_name: 'Bash', tool_input: { command: String(h.command || '') } }), r);
+      const why = d && d.hookSpecificOutput && d.hookSpecificOutput.permissionDecisionReason;
+      out(JSON.stringify(why ? { permission: 'ask', user_message: why, agent_message: why } : { permission: 'allow' })); break;
+    }
+    if (ev === 'afterFileEdit') {
+      const e = undoCursor(JSON.stringify(h), r);
+      if (e) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || '', files: [e.file] }).catch(() => {});
+      out('{}'); break;
+    }
+    out('{}'); break;
+  }
   case 'hold': {
     // the PreToolUse hook attach wires on Bash: an outward command (publish, release, merge, public comment, force push)
     // becomes a question to the person; everything else passes. Reads the hook's JSON on stdin only under --hook.
@@ -444,8 +483,8 @@ switch (cmd) {
     // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const r = gitTop(repoArg()) || repoArg();
-    const e = undoHook(body, r);
-    if (e) shareFinding(r, { kind: 'undone', title: `undone: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
+    const found = flags.has('--codex') ? undoCodex(body, r) : [undoHook(body, r)].filter(Boolean);
+    for (const e of found) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
     break;
   }
   case 'share': {
@@ -468,6 +507,8 @@ switch (cmd) {
   }
   case 'shape': { out(shapeCli(rest)); break; }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
+  case 'profile': { const r = profileCli(rest); out(r.text); if (r.code) process.exitCode = r.code; break; }
+  case 'ripples': { out(ripplesReport({ json: flags.has('--json'), repo: flags.has('--all') ? null : (gitTop(process.cwd()) || null) })); break; }
   case 'statusline': {
     // compact status-line segment for the cwd repo. Never throws; fast.
     try {
@@ -900,7 +941,10 @@ function wireCodex(repo) {
   put('SessionStart', run(`turn --hook ${r}`), 'compact');
   put('Stop', run(`__hook --repo ${r} --by codex --stop`));
   put('PreToolUse', run(`hold --hook --codex ${r}`), 'Bash');
-  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] for Codex)`])); return; }
+  // the undo ledger: apply_patch names the files it touches; they are snapshotted before and observed after
+  put('PreToolUse', run(`undo --hook --codex ${r}`), 'apply_patch');
+  put('PostToolUse', run(`undo --hook --codex ${r}`), 'apply_patch');
+  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + Pre/PostToolUse[apply_patch] for Codex)`])); return; }
   mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
   ensureExcluded(repo);
   try { const ex = join(gitDir(repo), 'info', 'exclude'); const t = existsSync(ex) ? readFileSync(ex, 'utf8') : ''; if (!/^\/?\.codex\/hooks\.json$/m.test(t)) { mkdirSync(dirname(ex), { recursive: true }); writeFileSync(ex, t + (t && !t.endsWith('\n') ? '\n' : '') + '.codex/hooks.json\n'); } } catch {}
@@ -914,6 +958,32 @@ function unwireCodex(repo, { quiet } = {}) {
   if (dry) { planned.lines.set(f, `modify  ${f}  (our Codex hooks)`); return; }
   if (!Object.keys(cfg).length || (Object.keys(cfg).length === 1 && cfg.description)) rmSync(f); else writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
   say(`sawbuck: removed the Codex hooks from ${f}`);
+}
+// --- Cursor (attach --cursor) -------------------------------------------------
+// <repo>/.cursor/hooks.json, kept out of git status: the check at stop (a gamed commit comes back as a follow-up message),
+// the hold before shell commands (Cursor supports ask), and the prompt hook for the turn's baseline. Not wired: the
+// undo ledger, and history with the prompt (Cursor's prompt hook can only allow or block).
+function cursorFile(repo) { return join(repo, '.cursor', 'hooks.json'); }
+function wireCursor(repo) {
+  const f = cursorFile(repo); let cfg = {};
+  if (existsSync(f)) { try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { die(`${f} exists but is not valid JSON; I will not overwrite it.`); } }
+  const cmd = (ev) => `${nodeCmd()} ${JSON.stringify(SELF)} __cursor ${ev} ${JSON.stringify(repo)}`;
+  cfg.version = cfg.version || 1; cfg.hooks = cfg.hooks || {};
+  for (const ev of ['beforeSubmitPrompt', 'stop', 'beforeShellExecution', 'afterFileEdit']) cfg.hooks[ev] = [...(cfg.hooks[ev] || []).filter((x) => !OURS.test(JSON.stringify(x))), { command: cmd(ev) }];
+  if (dry) { out(dryText([`${existsSync(f) ? 'modify' : 'create'}  ${f}  (beforeSubmitPrompt + stop + beforeShellExecution + afterFileEdit for Cursor)`])); return; }
+  mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  ensureExcluded(repo);
+  try { const ex = join(gitDir(repo), 'info', 'exclude'); const t = existsSync(ex) ? readFileSync(ex, 'utf8') : ''; if (!/^\/?\.cursor\/hooks\.json$/m.test(t)) writeFileSync(ex, t + (t && !t.endsWith('\n') ? '\n' : '') + '.cursor/hooks.json\n'); } catch {}
+  out(`sawbuck: wired Cursor hooks in ${f}. Cursor picks them up on its next start.`);
+}
+function unwireCursor(repo, { quiet } = {}) {
+  const f = cursorFile(repo); if (!existsSync(f)) { if (!quiet) say('sawbuck: no Cursor hooks found to detach'); return; }
+  let cfg; try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { return; }
+  if (!OURS.test(JSON.stringify(cfg))) { if (!quiet) say('sawbuck: no Cursor hooks of ours in ' + f); return; }
+  for (const ev of Object.keys(cfg.hooks || {})) { cfg.hooks[ev] = cfg.hooks[ev].filter((x) => !OURS.test(JSON.stringify(x))); if (!cfg.hooks[ev].length) delete cfg.hooks[ev]; }
+  if (dry) { planned.lines.set(f, `modify  ${f}  (our Cursor hooks)`); return; }
+  if (!Object.keys(cfg.hooks || {}).length) rmSync(f); else writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  say(`sawbuck: removed the Cursor hooks from ${f}`);
 }
 function purgeRecord(repo) {
   let n = 0;
