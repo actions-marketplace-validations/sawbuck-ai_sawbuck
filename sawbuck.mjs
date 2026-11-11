@@ -29,6 +29,10 @@ import { PW } from './bins.mjs';
 import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lockState } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
+// the npx form a hook runs: offline or on a bad network a plain `npx -y` asks the registry first and retries for about
+// 70 s before it uses the cached copy, on every prompt and every stop; these flags use the cache when it holds the
+// version, fail in a fraction of a second when it does not (the hook then fails open), and still download when online
+export const NPX = 'npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y';
 const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
@@ -143,12 +147,12 @@ Usage:
   sawbuck rules --notes     The notes Claude Code's own memory holds for this repo, to promote into its CLAUDE.md
   sawbuck shape --prepare   Gather a sample of your messages so an agent can label what you push on
   sawbuck shape --check F   Draw your steering shape from the labels, keeping only the totals (--png for an image)
-  sawbuck steers            What you keep correcting, from the plugin's scratchpad on this machine (--json)
+  sawbuck steering [--all]  How you steer: what you keep correcting (from the plugin's scratchpad on this machine),
+                            then what happened after each steer here: commits, undos, the check's verdicts,
+                            reverts, and whether you said it again (--json; --all for every repo)
   sawbuck profile [export | import F]
                             Your machine-wide profile: personal rules (~/.claude/CLAUDE.md), holds
                             (~/.sawbuck/config.json), hooks, steering; export/import carries rules and holds
-  sawbuck ripples [--all]   What happened after each steer here: commits, undos (whole or partial), the check's
-                            verdicts, reverts, and whether you said it again (--json; --all for every repo)
   sawbuck statusline        One-line segment for your status line (watching | N caught)
 
   sawbuck --help | --version
@@ -200,6 +204,7 @@ const KNOWN = {
   detach: ['--user', '--all', '--verify', '--purge', '--dry-run', '--claude', '--codex', '--cursor'],
   doctor: ['--all'],
   status: ['--json', '--log', '-n'],
+  steering: ['--json', '--all'],
 };
 if (KNOWN[cmd]) { const bad = rest.filter((a) => a.startsWith('-') && !KNOWN[cmd].includes(a)); if (bad.length) usage(`unknown flag ${bad.join(' ')} for ${cmd} (it takes ${KNOWN[cmd].filter((f) => f !== '--claude').join(', ')})`); }
 
@@ -258,6 +263,14 @@ switch (cmd) {
     const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
     const { rep, code, why } = gateReport(repo, [...args, ...pass]);
     if (!rep || !rep.verdict) { out(`sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
+    // a person's --allow on the last commit clears the gamed verdict standing there, so the end-of-turn check stops
+    // sending the turn back (the hold asks before an agent can type --allow). Only that commit, only a gamed verdict.
+    if (rep.verdict === 'pass' && rep.allowed && !dirty && !base && !head) {
+      const rp = join(repo, '.sawbuck', 'results.json');
+      try { const r = JSON.parse(readFileSync(rp, 'utf8')); const sha8 = g('rev-parse', 'HEAD').slice(0, 8);
+        if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); }
+      } catch { /* not attached here: nothing stands to clear */ }
+    }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     for (const md of rep.mandates || []) out(`⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
@@ -506,6 +519,13 @@ switch (cmd) {
     const r = ledgerCli(rest, gitTop(process.cwd()) || process.cwd()); out(r.text); if (r.code) process.exitCode = r.code; break;
   }
   case 'shape': { out(shapeCli(rest)); break; }
+  // one view of how you steer: what you keep saying, then what happened after each push. `steers` and `ripples` still
+  // work on their own (the /rules command runs `steers`).
+  case 'steering': {
+    const repo = flags.has('--all') ? null : (gitTop(process.cwd()) || null);
+    if (flags.has('--json')) { out(JSON.stringify({ steers: JSON.parse(steersReport({ json: true })), ripples: JSON.parse(ripplesReport({ json: true, repo })) })); break; }
+    out(steersReport({}) + '\n\n' + ripplesReport({ repo })); break;
+  }
   case 'steers': { out(steersReport({ json: flags.has('--json') })); break; }
   case 'profile': { const r = profileCli(rest); out(r.text); if (r.code) process.exitCode = r.code; break; }
   case 'ripples': { out(ripplesReport({ json: flags.has('--json'), repo: flags.has('--all') ? null : (gitTop(process.cwd()) || null) })); break; }
@@ -670,7 +690,7 @@ function hookBlock(repo) {
   // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check shells out to git and would
   // inherit them, operate on the wrong repo, and silently catch nothing. Clear them first, in a subshell: the block
   // sits above the person's own hook lines, and those keep what git gave them.
-  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else npx -y sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
+  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else ${NPX} sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
 }
 // The first commit after attach is checked only if there is a commit to check it from: HEAD as it stands now.
 // A baseline other hooks are keeping (Claude hooks wired here or at user level, a turn in flight) is left alone;
@@ -776,9 +796,9 @@ function wireClaude(repo, opts) {
   // run through npx, the installed path lives in a cache that can be cleared, and a missing hook fails quietly and
   // leaves the wall off: fall back to fetching the same version
   const run = (args) => {
-    if (shared) return `npx -y sawbuck@${version} ${args}`;
+    if (shared) return `${NPX} sawbuck@${version} ${args}`;
     const direct = `${nodeCmd()} ${JSON.stringify(SELF)} ${args}`;
-    return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else npx -y sawbuck@${version} ${args}; fi` : direct;
+    return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else ${NPX} sawbuck@${version} ${args}; fi` : direct;
   };
   const here = user || shared;   // no repo path in the command: the hook works out the repo from where it runs
   const ctx = run(here ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
@@ -790,7 +810,7 @@ function wireClaude(repo, opts) {
   let upgrading = false;
   if (OURS.test(JSON.stringify(cfg))) {
     const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
-    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { if (!dry) regAdd(repo, user ? 'user' : shared ? 'claude-shared' : 'claude'); out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }   // the entry is refreshed: the list drops gone folders and gets back one it lost
     upgrading = true;
   }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';

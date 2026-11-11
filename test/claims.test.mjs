@@ -128,6 +128,12 @@ test('limit: the agent editing that uncommitted contract and committing it is st
   w.prompt(); const p = join(d, 'promptwheel.config.json'); const c = JSON.parse(readFileSync(p, 'utf8')); c.mandates = []; writeFileSync(p, JSON.stringify(c)); save(d, 'loosen');
   assert.ok(blocked(w.stop()));
 });
+test('limit: two sessions in one checkout: the one that touched a protected file is sent back, and so is the other, told not to undo what it did not change', () => {
+  const d = signed(true); const a = wired(d, 'A'), b = wired(d, 'B');
+  a.prompt(); put(d, '.npmrc', 'x\n'); b.prompt();
+  assert.ok(blocked(a.stop()), 'the protected edit does not walk through when another session prompts in between');
+  const o = b.stop(); assert.ok(blocked(o), 'the other session is sent back too (one shared record)'); assert.match(o, /do not revert anything you did not change/);
+});
 test('claim: a person editing a protected path between turns is not the agent', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); put(d, '.npmrc', 'x\n'); w.prompt(); assert.ok(!blocked(w.stop())); });
 test('claim: a sent-back protected path says how a person accepts it: --allow for the rules file and the hooks, removing the rule for the rest', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'Dockerfile', 'FROM node:22\n'); save(d, 'docker'); let o = sb(d, 'check').out; assert.match(o, /sent back/); assert.match(o, /remove that rule from promptwheel\.config\.json in a commit of its own/); assert.doesNotMatch(o, /sawbuck check --allow/); assert.equal(sb(d, 'check', '--allow', 'I asked for it').code, 1, 'and --allow really does not clear it'); git(d, 'reset', '-q', '--hard', 'HEAD~1'); put(d, '.claude/settings.json', '{}\n'); save(d, 'hooks'); o = sb(d, 'check').out; assert.match(o, /sawbuck check --allow "<reason>"/); assert.doesNotMatch(o, /remove that rule/); assert.equal(sb(d, 'check', '--allow', 'team hooks').code, 0); });
 test('claim: attach --shared in a repo that already has its rules says the commit of that file needs --allow; with no rules it does not', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.match(sb(d, 'attach', '--shared').out, /protected path in this repo[^\n]*--allow "team hooks"/); const e = repo(true); assert.doesNotMatch(sb(e, 'attach', '--shared').out, /protected path in this repo/); });
@@ -321,14 +327,63 @@ test('claim: attach --cursor wires Cursor: a gamed commit comes back as a follow
   assert.ok(!/\.cursor/.test(git(d, 'status', '--porcelain')));
   assert.equal(sb(d, 'detach', '--cursor').code, 0); assert.ok(!existsSync(join(d, '.cursor/hooks.json')));
 });
+// the gamed send-back, and the person's way out of it
+const gamedTurn = () => { const d = signed(false); const w = wired(d); w.prompt('make add pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green'); return { d, w }; };
+const stopSaying = (d, said) => { const t = join(d, '..', `transcript-${Date.now()}-${Math.random()}.jsonl`); writeFileSync(t, JSON.stringify({ type: 'user', message: { content: 'make add pass' } }) + '\n' + JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: said }] } }) + '\n');
+  const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.Stop[0].hooks[0].command;
+  return spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'Stop', cwd: d, session_id: 's', transcript_path: t }) }).stdout || ''; };
+test('claim: a gamed turn is sent back with two ways for the agent: fix the source as the test was, or show the person the test change and ask', () => {
+  const { w } = gamedTurn(); const o = w.stop(); assert.ok(blocked(o));
+  assert.match(o, /fix the source so the test passes as it was written/); assert.match(o, /do not change the source to fit it: end your turn by showing the person the test change and asking them/);
+});
+test('claim: an agent that asks the person about the test may end the turn, and the person gets the three choices as commands', () => {
+  const { d } = gamedTurn();
+  const o = stopSaying(d, 'I changed test/add.test.js to expect 0 because add subtracts. That may be the wrong call: should add really return 4 for add(2,2)?');
+  assert.ok(!blocked(o), o); const m = JSON.parse(o).systemMessage;
+  assert.match(m, /your agent is asking you about it/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow "<why>"/);
+  assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed', 'asking does not clear the verdict');
+});
+test('limit: an agent that says it is done, with no question to the person, is still sent back', () => {
+  const { d } = gamedTurn(); assert.ok(blocked(stopSaying(d, 'Done. All tests pass now.')));
+});
+test('claim: after three send-backs the person is told the three choices', () => {
+  const { w } = gamedTurn(); for (let i = 0; i < 3; i++) assert.ok(blocked(w.stop()));
+  const o = w.stop(); assert.ok(!blocked(o)); const m = JSON.parse(o).systemMessage;
+  assert.match(m, /stopped blocking after 3 tries/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
+});
+test('claim: enforce.maxBlocks 0 asks the person first: a gamed turn is not sent back, and the person gets the three choices at once', () => {
+  const d = signed(false); put(d, 'sawbuck.config.json', JSON.stringify({ enforce: { maxBlocks: 0 } }) + '\n'); save(d, 'ask me first');
+  const w = wired(d); w.prompt('make add pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  const o = w.stop(); assert.ok(!blocked(o), o); const m = JSON.parse(o).systemMessage;
+  assert.match(m, /set to ask you first/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
+});
+test('claim: the person accepting the test change with --allow ends the send-back, and the hold asks before anyone types --allow', () => {
+  const { d, w } = gamedTurn(); assert.ok(blocked(w.stop()));
+  assert.match(w.pre('npx sawbuck check --allow "the spec changed"'), /"permissionDecision":"ask"/);
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed').code, 0);
+  assert.ok(!blocked(w.stop()), 'allowed by a person: the turn may end');
+  const r = JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest; assert.equal(r.kind, 'allowed'); assert.equal(r.allowed.reason, 'the spec changed');
+});
 test('claim: a block does not clear a gamed verdict that still stands', () => { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'cheat'); assert.ok(blocked(w.stop())); w.prompt(); put(d, '.npmrc', 'x\n'); w.stop(); assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed'); });
 test('claim: the status line names the repo it detected, from any folder of it', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); const n = d.split('/').pop(); assert.match(sb(d, 'statusline').out, new RegExp(`sawbuck · ${n} · watching`)); assert.match(sb(join(d, 'src'), 'statusline').out, new RegExp(n)); });
 test('claim: outside a repository the status line says so', () => { assert.match(sb(mkdtempSync(join(tmpdir(), 'claims-')), 'statusline').out, /no repo here/); });
+test('claim: the list of attached repos drops a folder that is gone the next time it is written, and detach --all does not trip on it', () => {
+  const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home };
+  const run = (d, ...a) => spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env });
+  const a = repo(true), b = repo(true);
+  assert.equal(run(a, 'attach', '--claude').status, 0); assert.equal(run(b, 'attach', '--claude').status, 0);
+  const reg = () => JSON.parse(readFileSync(join(home, '.sawbuck', 'registry.json'), 'utf8')).repos.map((x) => x.repo);
+  assert.deepEqual(reg().sort(), [a, b].sort());
+  rmSync(b, { recursive: true, force: true });   // a test folder or a deleted clone
+  assert.equal(run(a, 'attach', '--claude').status, 0);
+  assert.deepEqual(reg(), [a], 'the gone folder is dropped when the list is next written');
+  const d = run(a, 'detach', '--all'); assert.equal(d.status, 0, d.stderr); assert.match(d.stdout, /detached everywhere/);
+});
 test('claim: attaching a repo under user-level hooks does not wire a second set', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); put(home, '.claude/settings.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node /x/sawbuck.mjs __hook' }] }] } })); const d = signed(true); const r = spawnSync(process.execPath, [CLI, 'attach', '--claude'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: home } }); assert.match(r.stdout, /user-level/); assert.ok(!existsSync(join(d, '.claude/settings.local.json'))); });
 
 test('claim: a repo watched by user-level hooks is not blocked by sawbuck\'s own record', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home }; const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); const hook = (args, ev) => spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 's', prompt: 'x' }) }).stdout || ''; hook(['turn', '--hook'], 'UserPromptSubmit'); assert.equal(git(d, 'status', '--porcelain'), '', 'nothing of ours shows up'); assert.ok(!blocked(hook(['__hook', '--by', 'claude', '--stop'], 'Stop'))); });
 
-test('claim: clearing the npx cache does not turn the wall off', () => { if (process.env.CLAIMS_SAWBUCK) return; const root = mkdtempSync(join(tmpdir(), 'claims-npx-')); const pkg = join(root, '_npx', 'x', 'sawbuck'); mkdirSync(dirname(pkg), { recursive: true }); execFileSync('cp', ['-r', join(HERE, '..'), pkg]); const d = signed(true); const r = spawnSync(process.execPath, [join(pkg, 'sawbuck.mjs'), 'attach', '--claude'], { cwd: d, encoding: 'utf8', env: ENV }); assert.equal(r.status, 0, r.stderr); const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.Stop[0].hooks[0].command; rmSync(pkg, { recursive: true }); const bin = join(root, 'bin'); put(bin, 'npx', '#!/bin/sh\necho "fallback: $*"\n'); execFileSync('chmod', ['+x', join(bin, 'npx')]); const o = spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: { ...ENV, PATH: `${bin}:${ENV.PATH}` } }); assert.match(o.stdout, /fallback: -y sawbuck@.* __hook/); });
+test('claim: clearing the npx cache does not turn the wall off', () => { if (process.env.CLAIMS_SAWBUCK) return; const root = mkdtempSync(join(tmpdir(), 'claims-npx-')); const pkg = join(root, '_npx', 'x', 'sawbuck'); mkdirSync(dirname(pkg), { recursive: true }); execFileSync('cp', ['-r', join(HERE, '..'), pkg]); const d = signed(true); const r = spawnSync(process.execPath, [join(pkg, 'sawbuck.mjs'), 'attach', '--claude'], { cwd: d, encoding: 'utf8', env: ENV }); assert.equal(r.status, 0, r.stderr); const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.Stop[0].hooks[0].command; rmSync(pkg, { recursive: true }); const bin = join(root, 'bin'); put(bin, 'npx', '#!/bin/sh\necho "fallback: $*"\n'); execFileSync('chmod', ['+x', join(bin, 'npx')]); const o = spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: { ...ENV, PATH: `${bin}:${ENV.PATH}` } }); assert.match(o.stdout, /fallback: --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@.* __hook/, 'the fallback uses the cache first and fails fast offline'); });
 
 // ------------------------------------------------------------ history that a rewrite erased
 const lessons = (attached) => {
@@ -342,6 +397,17 @@ test('claim: a revert erased by a squash comes back in context for that path', (
 test('claim: the ledger outlives the reflog once a repo is attached', () => { const { d, w } = lessons(true); w.prompt(); w.stop(); squash(d); put(d, 'src/cache.js', 'y\n'); w.prompt(); git(d, 'reflog', 'expire', '--expire=now', '--all'); git(d, 'gc', '-q', '--prune=now'); assert.match(sb(d, 'context').out, /Revert "add a result cache"/); });
 test('claim: the reason in a revert comes back with it, and a squash takes only the commits', () => { const d = signed(true); put(d, 'src/cache.js', 'exports.c={}\n'); save(d, 'add a result cache'); git(d, 'revert', '--no-edit', 'HEAD'); git(d, 'commit', '-q', '--amend', '-m', 'Revert "add a result cache"\n\nThe cache held live sessions and evicting logged people out.\n\nThis reverts commit abcdef0.'); edit(d, 'src/add.js', (s) => s + '// a\n'); save(d, 'keep going'); git(d, 'reset', '-q', '--soft', 'HEAD~3'); git(d, 'commit', '-qm', 'all in one'); put(d, 'src/cache.js', 'y\n'); const o = sb(d, 'context').out; assert.match(o, /reverted: Revert "add a result cache" \([0-9a-f]{12}, \d{4}-\d\d-\d\d\): The cache held live sessions and evicting logged people out\./); assert.doesNotMatch(o, /This reverts commit/); });
 test('claim: a lost commit that a rebase replayed is listed once', () => { const d = signed(true); git(d, 'checkout', '-qb', 'feat'); put(d, 'src/cache.js', 'exports.c={}\n'); save(d, 'add a result cache'); git(d, 'revert', '--no-edit', 'HEAD'); edit(d, 'src/add.js', (s) => s + '// a\n'); save(d, 'keep going'); git(d, 'checkout', '-q', 'main'); put(d, 'README.md', 'main moved\n'); save(d, 'main moves on'); git(d, 'checkout', '-q', 'feat'); git(d, 'rebase', '-q', 'main'); git(d, 'commit', '-q', '--amend', '--no-edit'); edit(d, 'src/add.js', (s) => s + '// main moved\n'); save(d, 'tweak on feat'); git(d, 'checkout', '-q', 'main'); git(d, 'merge', '-q', '--squash', 'feat'); git(d, 'commit', '-qm', 'feature (#1)'); git(d, 'branch', '-qD', 'feat'); put(d, 'src/cache.js', 'y\n'); const o = sb(d, 'context').out; assert.equal((o.match(/add a result cache/g) || []).length, 2, 'the attempt once and its revert once:\n' + o); });
+test('claim: many amends of one attempt show as one line with a count, so the three lines left are distinct attempts', () => {
+  const d = signed(true); const w = wired(d); const k = git(d, 'rev-parse', 'HEAD');
+  put(d, 'src/cache.js', 'exports.c=0\n'); save(d, 'cache: try a cap, take 1');
+  for (let i = 2; i <= 6; i++) { put(d, 'src/cache.js', `exports.c=${i}\n`); git(d, 'add', '-A'); git(d, 'commit', '-q', '--amend', '-m', `cache: try a cap, take ${i}`); }
+  put(d, 'src/cache.js', 'exports.ttl=1\n'); save(d, 'cache: try a ttl instead');
+  git(d, 'reset', '-q', '--hard', k);
+  const o = w.prompt('Memory keeps growing in src/cache.js. Fix it.');
+  const lines = o.split('\n').filter((l) => /erased by a rewrite/.test(l));
+  assert.equal(lines.filter((l) => /try a cap/.test(l)).length, 1, o); assert.match(o, /try a cap, take 6[^\n]*6 versions/, 'the newest, with the count');
+  assert.equal(lines.filter((l) => /try a ttl/.test(l)).length, 1, 'a different attempt keeps its own line');
+});
 test('claim: a prompt that names a file gets the history a rewrite erased there, with the prompt, before any edit', () => { const { d, w } = lessons(true); w.prompt(); w.stop(); squash(d); w.prompt(); git(d, 'reflog', 'expire', '--expire=now', '--all'); git(d, 'gc', '-q', '--prune=now'); const o = w.prompt('Memory keeps growing in src/cache.js. Add an LRU limit of 1000 entries and commit it.'); assert.match(o, /not in git history any more/); assert.match(o, /reverted: Revert "add a result cache"/); assert.equal(git(d, 'status', '--porcelain'), '', 'nothing was edited to get it'); });
 test('claim: a bare file name in the prompt counts when one tracked file has it; a prompt naming no file, or another file, shows nothing', () => { const { d, w } = lessons(true); w.prompt(); w.stop(); squash(d); w.prompt(); assert.match(w.prompt('the cache.js file keeps growing, cap it'), /Revert "add a result cache"/); assert.doesNotMatch(w.prompt('Add a slugify helper in src/slugify.js.'), /not in git history/); assert.doesNotMatch(w.prompt('make the tests faster'), /not in git history/); });
 test('claim: the history a prompt names comes once, not twice, when per-turn history is on too', () => { const { d, w } = lessons(true); w.prompt(); w.stop(); squash(d); w.prompt(); put(d, 'sawbuck.config.json', JSON.stringify({ turn: { context: true } })); const o = w.prompt('Memory keeps growing in src/cache.js. Add an LRU limit.'); assert.equal((o.match(/reverted: Revert "add a result cache"/g) || []).length, 1); });
@@ -372,6 +438,19 @@ test('claim: ripples show what happened after a steer: commits, an undo, a parti
   const r = JSON.parse(spawnSync(process.execPath, [CLI, 'ripples', '--all', '--json'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout);
   assert.equal(r[0].commits, 1); assert.deepEqual(r[0].files, ['src/cache.js']); assert.equal(r[0].partly, 1); assert.equal(r[0].cameBack, iso(130));
   assert.match(spawnSync(process.execPath, [CLI, 'ripples', '--all'], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } }).stdout, /a time join, a lead not proof of cause/);
+});
+test('claim: sawbuck steering is one view of what you keep correcting and what happened after; steers and ripples still work alone', () => {
+  const d = signed(true); const t0 = Date.now() - 3 * 3600_000, iso = (m) => new Date(t0 + m * 60_000).toISOString();
+  const env = { ...ENV, GIT_COMMITTER_DATE: iso(5), GIT_AUTHOR_DATE: iso(5) };
+  put(d, 'src/cache.js', 'x\n'); execFileSync('git', ['add', '-A'], { cwd: d, env }); execFileSync('git', ['commit', '-qm', 'cache'], { cwd: d, env });
+  const e = (session, at) => ({ at, repo: d, session, axis: 'scope', nudge: 'keep the change small', pressure: 2 });
+  const h = steerHome([e('1', iso(0)), e('2', iso(130)), e('3', iso(200))]);
+  const run = (...a) => spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env: { ...ENV, HOME: h } });
+  const o = run('steering', '--all'); assert.equal(o.status, 0, o.stderr);
+  assert.match(o.stdout, /keep the change small/); assert.match(o.stdout, /what happened after/);
+  const j = JSON.parse(run('steering', '--all', '--json').stdout); assert.ok(j.steers && Array.isArray(j.ripples), 'both parts in --json');
+  assert.equal(run('steers').status, 0); assert.equal(run('ripples', '--all').status, 0);
+  assert.doesNotMatch(run('--help').stdout + run('--help').stderr, /sawbuck (steers|ripples)\b/, 'help lists the one view');
 });
 test('claim: a steer from a folder over several repos joins the commits in each, and old steers with no folder are counted, not dropped silently', () => {
   const top = mkdtempSync(join(tmpdir(), 'claims-projects-'));
@@ -438,8 +517,16 @@ const commit = (d, msg, path = '/usr/bin:/bin') => { git(d, 'add', '-A'); const 
 const record = (d, f = 'results.json') => { try { return JSON.parse(readFileSync(join(d, '.sawbuck', f), 'utf8')); } catch { return {}; } };
 const cheat = (s) => s.replace('add(2,2),4', 'add(2,2),0');
 test('claim: attach --git checks every commit, whatever made it, starting with the first one', () => { const d = hookRepo(); assert.equal(sb(d, 'attach', '--git').code, 0); assert.ok(!existsSync(join(d, '.claude')), 'no Claude settings'); edit(d, 'test/add.test.js', cheat); commit(d, 'make it green'); assert.ok((record(d).gamed || 0) >= 1, 'the first commit after attach was caught by the hook, with no sawbuck on PATH'); });
-test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 6); for (const c of cmds) assert.match(c, /^npx -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop|hold --hook|undo --hook)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
-test('claim: shared hooks find the repo from where they run, and block a protected path', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach', '--shared').code, 0); const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks; const run = (cmd, ev) => { const args = cmd.replace(/^npx -y sawbuck@[\d.]+ /, '').split(' '); return spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'shared', prompt: 'x' }) }).stdout || ''; }; run(h.UserPromptSubmit[0].hooks[0].command, 'UserPromptSubmit'); put(d, '.github/workflows/x.yml', 'on: push\n'); assert.ok(blocked(run(h.Stop[0].hooks[0].command, 'Stop'))); });
+test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 6); for (const c of cmds) assert.match(c, /^npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop|hold --hook|undo --hook)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
+test('claim: a team file with the old plain npx form is upgraded in place by attach --shared, with no second copy of any hook', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0); const f = join(d, '.claude/settings.json');
+  put(d, '.claude/settings.json', readFileSync(f, 'utf8').replace(/npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y /g, 'npx -y '));   // as an older version wrote it
+  assert.match(readFileSync(f, 'utf8'), /"npx -y sawbuck@/);
+  assert.equal(sb(d, 'attach', '--shared').code, 0);
+  const cmds = Object.values(JSON.parse(readFileSync(f, 'utf8')).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command));
+  assert.equal(cmds.length, 6, 'one of each'); for (const c of cmds) assert.match(c, /^npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@/);
+});
+test('claim: shared hooks find the repo from where they run, and block a protected path', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach', '--shared').code, 0); const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks; const run = (cmd, ev) => { const args = cmd.replace(/^npx (?:--\S+ )*-y sawbuck@[\d.]+ /, '').split(' '); return spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'shared', prompt: 'x' }) }).stdout || ''; }; run(h.UserPromptSubmit[0].hooks[0].command, 'UserPromptSubmit'); put(d, '.github/workflows/x.yml', 'on: push\n'); assert.ok(blocked(run(h.Stop[0].hooks[0].command, 'Stop'))); });
 test('claim: detach --all takes sawbuck out of every repo, and doctor --all lists them first', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home }; const run = (d, ...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env }); return (r.stdout || '') + (r.stderr || ''); }; const a = repo(true), b = repo(true); run(a, 'attach'); run(b, 'attach', '--git'); const list = run(a, 'doctor', '--all'); assert.ok(list.includes(a) && list.includes(b), list); assert.match(run(a, 'detach', '--all'), /detached everywhere/); assert.ok(!existsSync(join(a, '.claude/settings.local.json')) && !existsSync(join(b, '.git/hooks/post-commit'))); assert.match(run(a, 'doctor', '--all'), /not attached anywhere/); });
 test('claim: detach --dry-run shows what would go and changes nothing', () => { const d = repo(true); sb(d, 'attach'); const before = readFileSync(join(d, '.claude/settings.local.json'), 'utf8'); const r = sb(d, 'detach', '--dry-run'); assert.match(r.out, /would remove/); assert.match(r.out, /settings\.local\.json/); assert.equal(readFileSync(join(d, '.claude/settings.local.json'), 'utf8'), before); });
 
@@ -494,6 +581,11 @@ test('claim: detach --verify names what is left on disk, and --purge removes it'
 test('claim: attach --dry-run lists every file attach writes, .sawbuck/state.json included', () => { const d = signed(true); assert.match(sb(d, 'attach', '--claude', '--dry-run').out, /\.sawbuck\/state\.json/); assert.ok(!existsSync(join(d, '.sawbuck'))); });
 test('claim: doctor tests what the hook runs: a dead path is not OK, even with sawbuck on PATH', () => { const d = signed(true); wired(d); assert.equal(sb(d, 'doctor').code, 0); const f = join(d, '.claude/settings.local.json'); put(d, '.claude/settings.local.json', readFileSync(f, 'utf8').replaceAll(CLI.replace(/\\/g, '\\\\'), '/no/such/sawbuck.mjs')); const bin = mkdtempSync(join(tmpdir(), 'claims-bin-')); writeFileSync(join(bin, 'sawbuck'), '#!/bin/sh\n', { mode: 0o755 }); const r = sbE(d, { PATH: `${bin}:${ENV.PATH}` }, 'doctor'); assert.equal(r.code, 1); assert.doesNotMatch(r.out, /\bOK\b/); });
 test('claim: doctor checks user-level hooks too', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const d = repo(true); assert.equal(sbE(d, { HOME: home }, 'attach', '--user').code, 0); const r = sbE(d, { HOME: home }, 'doctor'); assert.equal(r.code, 0); assert.doesNotMatch(r.out, /no attachment/); assert.match(r.out, /OK.*user/); });
+test('claim: a green from fixing only a test-*.js file reads gamed, not a source win (node --test and ava run test-*.js; it read verified before engine 0.8.6)', () => {
+  const d = repo(true); put(d, 'test-release.js', "const t=require('node:test'),a=require('node:assert');const {add}=require('./src/add.js');t.test('release',()=>a.equal(add(2,2),5))\n"); save(d, 'release test');
+  put(d, 'test-release.js', "const t=require('node:test'),a=require('node:assert');const {add}=require('./src/add.js');t.test('release',()=>a.equal(add(2,2),4))\n"); save(d, 'fix the expected value');
+  const r = sb(d, 'check'); assert.match(r.out, /gamed/, r.out); assert.doesNotMatch(r.out, /verified/);
+});
 test('claim: a gamed change let through with --allow says so, with the reason, and never says verified', () => { const d = gamedRepo(); const r = sb(d, 'check', '--allow', 'a person said so'); assert.equal(r.code, 0); assert.match(r.out, /allowed/); assert.match(r.out, /a person said so/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 test('claim: with gaming detection off, the check does not say the win was re-proved', () => { const d = gamedRepo(); const r = sb(d, 'check', '--no-detect-gaming'); assert.equal(r.code, 0); assert.match(r.out, /gaming detection is off/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 for (const a of [['contract', '--help'], ['attach', '--help'], ['detach', '--help'], ['init', '-h'], ['check', '-h']]) {

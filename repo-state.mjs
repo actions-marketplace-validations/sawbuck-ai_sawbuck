@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const WEEK = 7 * 864e5;
-export const OURS = /sawbuck\.mjs|npx -y sawbuck@/;   // a hook of ours: the baked path, or the portable form --shared writes
+export const OURS = /sawbuck\.mjs|npx (?:--\S+ )*-y sawbuck@/;   // a hook of ours: the baked path, or the portable form --shared writes
 export const S_START = '# >>> sawbuck >>>';
 const text = (f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
 // our hooks in a Claude Code settings file: under "hooks", so a permission that names sawbuck is not wiring

@@ -145,7 +145,7 @@ test('stabilizer: the git hook resolves sawbuck at runtime (survives a reinstall
     const hook = readFileSync(join(d, '.git', 'hooks', 'post-commit'), 'utf8');
     assert.match(hook, /command -v sawbuck/, 'prefers a sawbuck on PATH');
     assert.match(hook, /command -v node \|\| echo '[^']+'\)" "/, 'falls back to the absolute path, and finds node without PATH');
-    assert.match(hook, /elif \[ -f "[^"]+sawbuck\.mjs" \]; then .* else npx -y sawbuck@\d+\.\d+\.\d+ __hook/, 'and to the same version through npx when that path is gone (an npx cache gets cleared)');
+    assert.match(hook, /elif \[ -f "[^"]+sawbuck\.mjs" \]; then .* else npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __hook/, 'and to the same version through npx when that path is gone (an npx cache gets cleared)');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 

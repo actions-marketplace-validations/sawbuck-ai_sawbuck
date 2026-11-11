@@ -16,7 +16,7 @@ const ruleLines = (t) => t.split('\n').filter((l) => /^\s*[-*]\s+\S/.test(l));
 
 export function profileView(home = homedir()) {
   const p = P(home), rules = ruleLines(read(p.rules)), holds = (json(p.cfg).holds || {});
-  const hooked = /sawbuck\.mjs|npx -y sawbuck@/.test(read(p.settings));
+  const hooked = /sawbuck\.mjs|npx (?:--\S+ )*-y sawbuck@/.test(read(p.settings));
   const { steers } = readSteers(home); const top = groupSteers(steers).filter((g) => g.n >= 2).slice(0, 3);
   const out = ['sawbuck: your profile on this machine (it applies in every repo and outside any repo)', ''];
   out.push(`  Rules       ${rules.length} line${rules.length === 1 ? '' : 's'} in ${p.rules}${rules.length ? '' : '  (/sawbuck-reins:rules writes here by default)'}`);
