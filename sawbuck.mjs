@@ -29,6 +29,10 @@ import { PW } from './bins.mjs';
 import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lockState } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
+// the npx form a hook runs: offline or on a bad network a plain `npx -y` asks the registry first and retries for about
+// 70 s before it uses the cached copy, on every prompt and every stop; these flags use the cache when it holds the
+// version, fail in a fraction of a second when it does not (the hook then fails open), and still download when online
+export const NPX = 'npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y';
 const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
@@ -670,7 +674,7 @@ function hookBlock(repo) {
   // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check shells out to git and would
   // inherit them, operate on the wrong repo, and silently catch nothing. Clear them first, in a subshell: the block
   // sits above the person's own hook lines, and those keep what git gave them.
-  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else npx -y sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
+  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else ${NPX} sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
 }
 // The first commit after attach is checked only if there is a commit to check it from: HEAD as it stands now.
 // A baseline other hooks are keeping (Claude hooks wired here or at user level, a turn in flight) is left alone;
@@ -776,9 +780,9 @@ function wireClaude(repo, opts) {
   // run through npx, the installed path lives in a cache that can be cleared, and a missing hook fails quietly and
   // leaves the wall off: fall back to fetching the same version
   const run = (args) => {
-    if (shared) return `npx -y sawbuck@${version} ${args}`;
+    if (shared) return `${NPX} sawbuck@${version} ${args}`;
     const direct = `${nodeCmd()} ${JSON.stringify(SELF)} ${args}`;
-    return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else npx -y sawbuck@${version} ${args}; fi` : direct;
+    return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else ${NPX} sawbuck@${version} ${args}; fi` : direct;
   };
   const here = user || shared;   // no repo path in the command: the hook works out the repo from where it runs
   const ctx = run(here ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
