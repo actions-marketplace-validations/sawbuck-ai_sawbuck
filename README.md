@@ -11,6 +11,8 @@ In Claude Code, install the plugin and keep working:
 /plugin install sawbuck-reins@sawbuck
 ```
 
+Run `claude update` first: the plugin needs a current Claude Code.
+
 The first time you open a git repository with no rules, Claude finishes your task and offers once to add them. Say yes: it writes the rule, sets your protected paths, and watches every turn: protected paths at the end of each turn, each commit re-proved from the source.
 
 Or from the command line:
