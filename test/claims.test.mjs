@@ -101,6 +101,42 @@ test('claim: in a repo whose ignore rules hide new files, the dry run still list
   const e = repo(true); o = sb(e, 'contract').out;
   assert.match(o, /Commit promptwheel\.config\.json and AGENTS\.md\./); assert.doesNotMatch(o, /git add -f/);
 });
+// found by reading 340 real commits with the plain contract in force (proof-bench/contract-replay, 2026-11-12): a silencer
+// count that blocks sent back 13 commits where a person added a lint silencer in ordinary work, most of it in new tests
+test('claim: with a plain contract one more lint silencer is a note, and --strict makes it send the change back', () => {
+  const more = (d) => { edit(d, 'test/add.test.js', (s) => s + "t.test('add again',()=>a.equal(add(1,1),2)) // eslint-disable-line no-undef\n"); save(d, 'one more test, with a silencer'); };
+  const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); more(d);
+  let r = sb(d, 'check'); assert.equal(r.code, 0, r.out); assert.match(r.out, /note: more silenced checks/);
+  const e = repo(true); assert.equal(sb(e, 'contract', '--strict').code, 0); save(e, 'sign'); more(e);
+  r = sb(e, 'check'); assert.equal(r.code, 1, r.out); assert.match(r.out, /needs a look: more silenced checks/);
+});
+// the other half of the same rule, and the reason the note is conditional: a silencer that arrives with a green it could
+// have bought is the cheat the count exists for. A plain note let it through (seen 2026-11-12, before any release).
+test('claim: with a plain contract a lint error silenced to get to green is still sent back, and the real fix is earned', () => {
+  const LINT = "const bad = require('fs').readFileSync('src/add.js', 'utf8').split('\\n').filter((l) => /\\bvar\\b/.test(l) && !/eslint-disable/.test(l)); process.exit(bad.length ? 1 : 0);\n";
+  const red = () => { const d = repo(true); put(d, 'lint.js', LINT); json(d, 'package.json', (p) => { p.scripts.test = 'node lint.js'; }); edit(d, 'src/add.js', (s) => 'var legacy = 1;\n' + s); save(d, 'a lint step, red'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); return d; };
+  let d = red(); edit(d, 'src/add.js', (s) => s.replace('var legacy = 1;', 'var legacy = 1; // eslint-disable-line no-var')); save(d, 'make it green');
+  let r = sb(d, 'check'); assert.equal(r.code, 1, r.out); assert.match(r.out, /needs a look: more silenced checks/);
+  d = red(); edit(d, 'src/add.js', (s) => s.replace('var legacy = 1;', 'const legacy = 1;')); save(d, 'fix');
+  r = sb(d, 'check'); assert.equal(r.code, 0, r.out);
+});
+// found the same night: npm/node-semver runs npm's template-oss check inside `npm test`, and it fails when a tracked file
+// matches .gitignore. Following the `git add -f` line there made the repo's own tests fail, so every check after signing
+// read "could not measure" (16 of 20 real commits). The way in is that repo's own allowlist, tried in a clean container.
+test('claim: in a repo whose tests run npm\'s template-oss check, signing says to allow its files in that repo\'s own settings, not to force them in', () => {
+  const HIDE = '/*\n!/.gitignore\n!/package.json\n!/src/\n!/test/\n';
+  const d = repo(true); put(d, '.gitignore', HIDE);
+  json(d, 'package.json', (p) => { p.scripts.postlint = 'template-oss-check'; p.templateOSS = { version: '5.0.0', allowPaths: ['/src/'] }; });
+  save(d, 'a template-oss repo');
+  for (const flags of [['--dry-run'], []]) {
+    const o = sb(d, 'contract', ...flags).out;
+    assert.match(o, /template-oss check/); assert.match(o, /"allowPaths"/); assert.match(o, /"\/AGENTS\.md" and "\/promptwheel\.config\.json"/); assert.match(o, /npx template-oss-apply --force/);
+    assert.doesNotMatch(o, /git add -f/, 'not the add -f line: with the files tracked and still ignored, this repo\'s own tests fail');
+  }
+  // hidden files and no such check: the add -f line, and no word about template-oss
+  const e = repo(true); put(e, '.gitignore', HIDE); save(e, 'ignore everything not listed');
+  const o = sb(e, 'contract').out; assert.match(o, /git add -f AGENTS\.md promptwheel\.config\.json/); assert.doesNotMatch(o, /template-oss/);
+});
 test('claim: --dry-run writes nothing', () => { const d = repo(true); assert.equal(sb(d, 'contract', '--dry-run').code, 0); assert.equal(git(d, 'status', '--porcelain'), ''); });
 
 // ------------------------------------------------------------ protected paths
