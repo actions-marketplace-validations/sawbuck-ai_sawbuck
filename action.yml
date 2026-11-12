@@ -30,7 +30,7 @@ runs:
       shell: bash
       run: |
         set -o pipefail
-        npx -y sawbuck@0.1.65 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}" | tee "$RUNNER_TEMP/sawbuck-debt.txt"
+        npx -y sawbuck@0.1.66 debt --repo "${{ inputs.repo }}" --since "${{ inputs.base }}" --fail-on "${{ inputs.fail-on }}" | tee "$RUNNER_TEMP/sawbuck-debt.txt"
     - name: the erased history, as a PR comment (opt-in)
       if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
       shell: bash

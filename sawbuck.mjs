@@ -15,6 +15,7 @@ import { ledgerCli } from './ledger.mjs';
 import { ripplesReport } from './ripples.mjs';
 import { profileCli } from './profile.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
+import { dependencyEditFromHook } from './deps.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -488,11 +489,13 @@ switch (cmd) {
       out(JSON.stringify(j && j.decision === 'block' ? { followup_message: j.reason } : {})); break;
     }
     if (ev === 'beforeShellExecution') {
+      dependencyEditFromHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: String(h.command || '') }, cwd: h.cwd }), r);   // a write into an installed dependency, for the notice at the end of the turn
       const d = holdDecision(JSON.stringify({ tool_name: 'Bash', tool_input: { command: String(h.command || '') } }), r);
       const why = d && d.hookSpecificOutput && d.hookSpecificOutput.permissionDecisionReason;
       out(JSON.stringify(why ? { permission: 'ask', user_message: why, agent_message: why } : { permission: 'allow' })); break;
     }
     if (ev === 'afterFileEdit') {
+      dependencyEditFromHook(JSON.stringify({ file_path: h.file_path, cwd: h.cwd }), r);
       const e = undoCursor(JSON.stringify(h), r);
       if (e) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || '', files: [e.file] }).catch(() => {});
       out('{}'); break;
@@ -503,6 +506,9 @@ switch (cmd) {
     // the PreToolUse hook attach wires on Bash: an outward command (publish, release, merge, public comment, force push)
     // becomes a question to the person; everything else passes. Reads the hook's JSON on stdin only under --hook.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
+    // the same hook sees a shell write into an installed dependency (sed -i, a redirect, cp): recorded for the notice
+    // at the end of the turn, never held here (the person may have asked for it)
+    dependencyEditFromHook(body, gitTop(repoArg()) || repoArg());
     let d = holdDecision(body, gitTop(repoArg()) || repoArg());
     // Codex parses "ask" but does not support it yet (the call would go through): under --codex the hold denies,
     // and the reason tells the agent a person runs this one
@@ -516,6 +522,7 @@ switch (cmd) {
     // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const r = gitTop(repoArg()) || repoArg();
+    dependencyEditFromHook(body, r);   // an edit inside an installed dependency is in no diff: recorded for the notice at the end of the turn
     const found = flags.has('--codex') ? undoCodex(body, r) : [undoHook(body, r)].filter(Boolean);
     for (const e of found) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
     break;

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync, symlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1017,4 +1017,80 @@ test('claim: however it is attached, status, the status line and doctor all say 
     if (name !== '--shared') { const doc = sbE(d, env, 'doctor'); assert.equal(doc.code, 0, `${name}: doctor\n${doc.out}`); assert.match(doc.out, /OK/, `${name}: doctor`); }
     assert.match(sbE(d, env, 'doctor', '--all').out, /attached to/, `${name}: the list`);
   }
+});
+
+// ---- what the check trusts outside git (proof-bench/outside-git, 2026-11-11): a dependency edited in place
+// a repo with one installed dependency, put there long before the turn
+const depRepo = () => {
+  const d = hookRepo(true);
+  put(d, 'node_modules/ms/package.json', '{"name":"ms","version":"2.1.3"}\n'); put(d, 'node_modules/ms/index.js', 'module.exports = 1\n'); put(d, 'node_modules/.cache/keep', 'x\n');
+  const long = new Date(Date.now() - 864e5); for (const f of ['node_modules/ms/package.json', 'node_modules/ms/index.js']) utimesSync(join(d, f), long, long);
+  return d;
+};
+const DEP_SAID = /inside an installed dependency/;
+test('claim: a file the agent edits inside an installed dependency is told to the person once at the end of the turn, never a block', () => {
+  const d = depRepo(); const w = wired(d); w.prompt('make the month test pass');
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'nothing edited, nothing said');
+  w.agentEdit('node_modules/ms/index.js', (s) => s.replace('1', '2'));
+  const out = w.stop();
+  assert.match(out, /inside an installed dependency was edited here: node_modules\/ms\/index\.js/); assert.match(out, /fresh install will not have it/); assert.match(out, /npm ci/);
+  assert.equal(blocked(out), false, 'a notice, never a block');
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'said once');
+  w.prompt('next'); assert.doesNotMatch(w.stop(), DEP_SAID, 'and not again on the next turn');
+});
+test('claim: a shell write into an installed dependency is told too (sed -i, a redirect, cp), once it has really happened', () => {
+  for (const cmd of ["sed -i 's/1/2/' node_modules/ms/index.js", 'echo "module.exports = 2" > node_modules/ms/index.js', 'cp /tmp/fixed.js ./node_modules/ms/index.js']) {
+    const d = depRepo(); const w = wired(d); w.prompt('make it pass');
+    w.pre(cmd); assert.doesNotMatch(w.stop(), DEP_SAID, 'the command was asked for and never ran: nothing to say');
+    w.pre(cmd); put(d, 'node_modules/ms/index.js', 'module.exports = 2\n');
+    assert.match(w.stop(), /inside an installed dependency was edited here: node_modules\/ms\/index\.js/, cmd);
+  }
+});
+test('claim: reading a dependency, installing, and a tool writing its own cache folder under node_modules say nothing', () => {
+  const d = depRepo(); const w = wired(d); w.prompt('look around');
+  for (const cmd of ['cat node_modules/ms/package.json > /tmp/out.txt', "sed -n '1,5p' node_modules/ms/index.js", 'npm install', 'rm -rf node_modules && npm ci', 'ls node_modules/.bin', 'echo x > node_modules/.cache/keep', 'cp node_modules/ms/index.js /tmp/']) w.pre(cmd);
+  put(d, 'node_modules/.cache/keep', 'y\n'); put(d, 'node_modules/ms/index.js', 'module.exports = 1\n');
+  assert.doesNotMatch(w.stop(), DEP_SAID);
+});
+test('claim: an edit kept as a patch the install applies, or wiped by installing the package again, says nothing', () => {
+  const kept = depRepo(); let w = wired(kept); w.prompt('patch ms');
+  w.agentEdit('node_modules/ms/index.js', (s) => s.replace('1', '2')); put(kept, 'patches/ms+2.1.3.patch', 'diff --git a/node_modules/ms/index.js b/node_modules/ms/index.js\n');
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'patch-package keeps it: a fresh install has the edit');
+  const again = depRepo(); w = wired(again); w.prompt('try something');
+  w.agentEdit('node_modules/ms/index.js', (s) => s.replace('1', '2'));
+  put(again, 'node_modules/ms/index.js', 'module.exports = 1\n'); put(again, 'node_modules/ms/package.json', '{"name":"ms","version":"2.1.3"}\n');   // npm ci wrote the package again
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'installed again: the edit is gone');
+});
+test('limit: a write into a dependency that no hook names (a script that opens the file) is not seen', () => {
+  const d = depRepo(); const w = wired(d); w.prompt('make it pass');
+  w.pre("node -e \"require('fs').writeFileSync('node_modules/ms/index.js','module.exports = 2')\""); put(d, 'node_modules/ms/index.js', 'module.exports = 2\n');
+  assert.doesNotMatch(w.stop(), DEP_SAID);
+});
+test('limit: the check itself reads pass on a green that leans on a dependency edited by hand: its clean copy borrows node_modules', () => {
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n'); put(d, '.gitignore', 'node_modules\n');
+  put(d, 'src/days.js', "const ms = require('ms')\nexports.days = (n) => ms(n) / 86400000\n");
+  put(d, 'test/days.test.js', "const t=require('node:test'),a=require('node:assert');const {days}=require('../src/days.js')\nt.test('a month',()=>a.equal(days('1 month'),30))\n");
+  put(d, 'node_modules/ms/package.json', '{"name":"ms","version":"2.1.3","main":"index.js"}\n'); put(d, 'node_modules/ms/index.js', "module.exports = (s) => (s === '1 day' ? 86400000 : undefined)\n");
+  save(d, 'base: red, ms knows no months');
+  put(d, 'node_modules/ms/index.js', "module.exports = (s) => (s === '1 month' ? 30 * 86400000 : 86400000)\n");   // the library patched in place, in no commit
+  edit(d, 'src/days.js', (s) => s + '// reviewed\n'); save(d, 'note');
+  const r = check(d); assert.equal(r.verdict, 'pass', JSON.stringify(r).slice(0, 300));   // both clean copies see the patched library: "tests pass before and after"
+});
+test('limit: a variable in the environment that changes how a test run ends is trusted (a preload in NODE_OPTIONS forces exit 0, and the check reads pass on a red suite)', () => {
+  const d = repo(); edit(d, 'src/add.js', (s) => s + '// reviewed\n'); save(d, 'note');   // add is still wrong: the suite is red
+  assert.notEqual(check(d).verdict, 'pass', 'red without the variable');
+  const pre = join(mkdtempSync(join(tmpdir(), 'claims-pre-')), 'force0.cjs');
+  writeFileSync(pre, "const r = process.reallyExit; process.reallyExit = function () { return r.call(process, 0) }\nprocess.on('exit', () => { process.exitCode = 0 })\n");
+  const r = sbE(d, { NODE_OPTIONS: `--require ${pre}` }, 'check', '--json'); assert.equal(JSON.parse(r.out).verdict, 'pass', r.out.slice(0, 300));
+});
+test('limit: a git filter set in the repo\'s local config rewrites the clean copy too, so a test it rewrites reads as passing at both commits', () => {
+  const d = repo(); const bin = mkdtempSync(join(tmpdir(), 'claims-filter-'));
+  writeFileSync(join(bin, 'smudge.sh'), '#!/bin/sh\nsed "s/add(2,2),4/add(2,2),0/"\n'); writeFileSync(join(bin, 'clean.sh'), '#!/bin/sh\nsed "s/add(2,2),0/add(2,2),4/"\n'); chmodSync(join(bin, 'smudge.sh'), 0o755); chmodSync(join(bin, 'clean.sh'), 0o755);
+  git(d, 'config', 'filter.easy.smudge', join(bin, 'smudge.sh')); git(d, 'config', 'filter.easy.clean', join(bin, 'clean.sh'));
+  mkdirSync(join(d, '.git/info'), { recursive: true }); writeFileSync(join(d, '.git/info/attributes'), 'test/add.test.js filter=easy\n');
+  rmSync(join(d, 'test/add.test.js')); git(d, 'checkout', '--', 'test/add.test.js');
+  assert.equal(git(d, 'status', '--porcelain'), '', 'nothing shows as changed');
+  edit(d, 'src/add.js', (s) => s + '// reviewed\n'); save(d, 'note');
+  assert.equal(check(d).verdict, 'pass');   // add is still wrong; the committed test would fail; every checkout of it is rewritten
 });
