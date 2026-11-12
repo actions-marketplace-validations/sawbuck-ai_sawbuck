@@ -24,7 +24,10 @@ const strict = process.argv.includes('--strict');
 const full = process.argv.includes('--full') || strict;
 // a new contract starts by watching: everyday change shows as a note. Protected paths, install scripts and sources
 // outside the registry still fail from day one. --strict holds them all, and makes the notes of an earlier --full block.
-const REPORT = new Set(['dependency_entries', 'lock_drift', 'pins_changed', 'unpinned_execution', 'install_policy_gaps']);
+// `suppressions` is the one count `init` writes as a note for a change that wins nothing (one more lint silencer is a person's
+// ordinary work far more often than a cheat: proof-bench/contract-replay, 13 of 340 real commits sent back when it always
+// blocked, and none of them beside a win). --strict makes it block always.
+const REPORT = new Set(['dependency_entries', 'lock_drift', 'pins_changed', 'unpinned_execution', 'install_policy_gaps', 'suppressions']);
 // Tests need their dependencies, so an npm lockfile gets an install, with no scripts. Elsewhere tests may not run in
 // CI, so inconclusive does not fail the job: protected paths are checked either way, and a gamed or failed verdict still fails.
 const workflow = (npm) => `# Written by sawbuck contract. Checks every pull request against the contract in promptwheel.config.json.
@@ -49,7 +52,13 @@ const cfgPath = join(repo, 'promptwheel.config.json');
 // git check-ignore leaves tracked files out, and exits 1 when none of these is ignored.
 const SIGNED_FILES = ['AGENTS.md', 'promptwheel.config.json', 'promptwheel.lock.json', '.github/workflows/sawbuck.yml', '.promptwheel/packs/supply-chain/scan.mjs'];
 const hiddenFromGit = (root) => { try { return execFileSync('git', ['-C', root, 'check-ignore', '--', ...SIGNED_FILES.filter((f) => existsSync(join(root, f)))], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean).map((f) => f.replace(/^(\.promptwheel\/packs\/supply-chain\/).*/, '$1')); } catch { return []; } };
-const addByName = (files) => `  This repo's ignore rules hide ${files.join(' and ')} from git, so add ${files.length > 1 ? 'them' : 'it'} by name: git add -f ${files.join(' ')}\n`;
+// npm's template-oss (node-semver, npm/cli and that family) runs a check inside `npm test` that fails when a tracked file
+// matches .gitignore. There `git add -f` makes the repo's own tests fail, and every check after signing reads "could not
+// measure" (seen on node-semver, 2026-11-12). The way in is that repo's own allowlist; tried in a clean container.
+const templateOss = (root) => { try { const p = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')); return !!p.templateOSS || Object.values(p.scripts || {}).some((v) => /template-oss-check/.test(String(v))); } catch { return false; } };
+const addByName = (files, root) => (templateOss(root)
+  ? `  This repo's ignore rules hide ${files.join(' and ')} from git, and its tests run npm's template-oss check, which fails when a tracked file is ignored.\n  So allow ${files.length > 1 ? 'them' : 'it'} in the repo's own settings first: in package.json, under "templateOSS", add ${files.map((f) => `"/${f}"`).join(' and ')} to "allowPaths", then run: npx template-oss-apply --force\n  That rewrites .gitignore, so commit it and package.json too.\n`
+  : `  This repo's ignore rules hide ${files.join(' and ')} from git, so add ${files.length > 1 ? 'them' : 'it'} by name: git add -f ${files.join(' ')}\n`);
 const run = (args, cwd, stdio = ['ignore', 'pipe', 'pipe']) => execFileSync(process.execPath, args, { cwd, encoding: 'utf8', stdio });
 
 // the preset as the engine writes it, in a scratch repo, so the contract and the engine cannot drift apart
@@ -107,7 +116,7 @@ try {
         process.stdout.write('sawbuck contract --dry-run: nothing was written. A real run would write:\n');
         for (const [f, how] of rows) process.stdout.write(`  ${f.padEnd(34)} ${how}${what[f] ? ': ' + what[f] : ''}\n`);
         if (read(exclude(shadow)) !== exWas) process.stdout.write('  and lines in .git/info/exclude that keep Sawbuck\'s record out of git status (local, never committed)\n');
-        if (hid.length) process.stdout.write(addByName(hid));
+        if (hid.length) process.stdout.write(addByName(hid, repo));
       }
     } finally { rmSync(shadow, { recursive: true, force: true }); }
   } else {
@@ -168,6 +177,6 @@ if (seen.size) process.stdout.write(`\n  To protect product code too, add these 
 if (!dry) {
   const hid = hiddenFromGit(repo);
   process.stdout.write(hid.length
-    ? `\n${addByName(hid)}  Commit ${hid.length > 1 ? 'them' : 'it'}${full ? ' with the rest of what signing wrote' : ''}. Then sawbuck attach watches every turn: protected paths at turn end, each commit re-proved.\n`
+    ? `\n${addByName(hid, repo)}  Commit ${hid.length > 1 ? 'them' : 'it'}${full ? ' with the rest of what signing wrote' : ''}. Then sawbuck attach watches every turn: protected paths at turn end, each commit re-proved.\n`
     : `\n  Commit promptwheel.config.json and AGENTS.md${full ? ', promptwheel.lock.json and .promptwheel/packs/' : ''}. Then sawbuck attach watches every turn: protected paths at turn end, each commit re-proved.\n`);
 }
