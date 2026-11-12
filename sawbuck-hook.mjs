@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 import { mandateHits, hashOf, protectedAmong, lockState } from './contract.mjs';
+import { dependencyEditsSince, dependencyNotice } from './deps.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
 const stop = process.argv.includes('--stop');   // wired as the Claude Code Stop hook: enforce the contract on a gamed turn
@@ -220,6 +221,14 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run. The turn is not done: fix the source so the test passes as it was written. If you believe the test itself was wrong, do not change the source to fit it: end your turn by showing the person the test change and asking them.`, `the win on ${where} is still gamed. ${choices}`);
 }
 
+// 3a) A DEPENDENCY EDITED IN PLACE: the check's clean copy borrows node_modules and the venv from the working tree, so
+// an edit made inside them is in no diff and a green that leans on it cannot be proved (outside-git bench, 2026-11-11:
+// the check read pass while a fresh install was red). A notice to the person, said once, never a block: they may have
+// asked for the patch. Everything recorded and not yet said is said, so a turn that ended on a send-back loses nothing.
+const depEdits = (stop && !process.env.SAWBUCK_NO_ENFORCE) ? dependencyEditsSince(repo, st.depNoticed || '') : [];
+const depSaid = dependencyNotice(depEdits);
+const depDone = () => { if (depSaid) st.depNoticed = new Date().toISOString(); };
+
 // 3b) THE LOCK AT TURN LEVEL: tell the person the moment a turn changes the repo's structure or its resolved
 // dependencies. A notice, not a block: a person who asked for a new dependency should not fight the wall, and
 // the gate in CI is the hard stop, which needs their reason. Said once per change.
@@ -231,12 +240,19 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
     const pinsMoved = !!now.pins && now.pins !== was.pins;
     const key = JSON.stringify([fresh, pinsMoved ? now.pins : '']);
     if ((fresh.length || pinsMoved) && st.lockNotice !== key) {
-      st.lockNotice = key; saveState();
+      st.lockNotice = key; depDone(); saveState();
       const what = [...fresh.slice(0, 8), ...(pinsMoved ? ['the resolved dependency tree'] : [])].join(', ');
-      process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: this turn changed what the lock holds: ${what}${fresh.length > 8 ? `, and ${fresh.length - 8} more` : ''}. If you did not ask for that, look before you commit. The gate needs your reason to pass it: promptwheel run --allow "<reason>".` }));
+      process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: this turn changed what the lock holds: ${what}${fresh.length > 8 ? `, and ${fresh.length - 8} more` : ''}. If you did not ask for that, look before you commit. The gate needs your reason to pass it: promptwheel run --allow "<reason>". When more than one thing changed, the reason names each, and the check prints the line.${depSaid ? ` ${depSaid}` : ''}` }));
       process.exit(0);
     }
   }
+}
+
+// 3a, said alone when the lock had nothing to say
+if (depSaid) {
+  depDone(); saveState();
+  process.stdout.write(JSON.stringify({ systemMessage: depSaid }));
+  process.exit(0);
 }
 
 // 4) otherwise, say a fresh catch once (a flag; never blocks). The band and statusline carry the rest.

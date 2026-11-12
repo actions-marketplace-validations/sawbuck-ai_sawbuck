@@ -2,11 +2,12 @@
 // test here is a sentence nobody has checked. CLAIMS_SAWBUCK points this at an installed package, so the same
 // file proves what is on npm: CLAIMS_SAWBUCK=/path/to/node_modules/sawbuck/sawbuck.mjs node --test test/claims.test.mjs
 // Runs on a clean account on purpose: a developer's global gitignore hid a bug that blocked every turn.
+import '../testkit.mjs';   // first: a throwaway HOME and temp folder for everything this file starts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync, execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync, readdirSync, statSync, lstatSync, chmodSync, symlinkSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +83,24 @@ test('limit: the Stop hook does not run the tests on uncommitted work', () => { 
 test('claim: signing writes the contract and the lock and commits nothing', () => { const d = repo(true); const n = git(d, 'rev-list', '--count', 'HEAD'); assert.equal(sb(d, 'contract', '--full').code, 0); assert.equal(git(d, 'rev-list', '--count', 'HEAD'), n); for (const f of ['promptwheel.config.json', 'promptwheel.lock.json', '.promptwheel/packs/supply-chain/scan.mjs']) assert.ok(existsSync(join(d, f)), f); });
 test('claim: a signing commit passes its own contract', () => { const d = signed(true); assert.equal(check(d).code, 0); });
 test('claim: a signing commit is not a pass when the tests never ran', () => { const d = repo(false); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.notEqual(sb(d, 'check').out.includes('carried the win'), true); });
+// found by running the first commands on real repos (proof-bench/onboard): npm/node-semver ignores everything its
+// .gitignore does not list, so git status never showed the two files signing writes
+test('claim: in a repo whose ignore rules hide new files, the dry run still lists what signing writes, and signing says how to add them', () => {
+  const d = repo(true); put(d, '.gitignore', '/*\n!/.gitignore\n!/package.json\n!/src/\n!/test/\n'); save(d, 'ignore everything not listed');
+  let o = sb(d, 'contract', '--dry-run').out;
+  assert.doesNotMatch(o, /already signed/, 'it is not signed yet');
+  assert.match(o, /promptwheel\.config\.json\s+new/); assert.match(o, /AGENTS\.md\s+new/);
+  assert.match(o, /hides? .*from git[^\n]*git add -f AGENTS\.md promptwheel\.config\.json/);
+  assert.equal(git(d, 'status', '--porcelain'), '', 'and the dry run wrote nothing');
+  o = sb(d, 'contract').out;
+  assert.match(o, /signed/); assert.match(o, /git add -f AGENTS\.md promptwheel\.config\.json/);
+  assert.doesNotMatch(o, /^\s*Commit promptwheel\.config\.json and AGENTS\.md\./m, 'not the plain line: git would skip both');
+  git(d, 'add', '-f', 'AGENTS.md', 'promptwheel.config.json'); git(d, 'commit', '-qm', 'sign');
+  assert.match(sb(d, 'contract', '--dry-run').out, /already signed, nothing would change/);
+  // a repo with ordinary ignore rules keeps the plain line
+  const e = repo(true); o = sb(e, 'contract').out;
+  assert.match(o, /Commit promptwheel\.config\.json and AGENTS\.md\./); assert.doesNotMatch(o, /git add -f/);
+});
 test('claim: --dry-run writes nothing', () => { const d = repo(true); assert.equal(sb(d, 'contract', '--dry-run').code, 0); assert.equal(git(d, 'status', '--porcelain'), ''); });
 
 // ------------------------------------------------------------ protected paths
@@ -90,7 +109,13 @@ for (const [name, f] of [['workflows', '.github/workflows/x.yml'], ['registry co
 }
 test('claim: moving a file out of a protected path counts as touching it', () => { const d = signed(true); put(d, 'scripts/release.sh', 'x\n'); git(d, 'add', '-A'); git(d, 'commit', '-qm', 'p', '-q'); git(d, 'mv', 'scripts/release.sh', 'rel.sh'); git(d, 'commit', '-qm', 'mv'); assert.equal(check(d).code, 1); });
 test('claim: a new install script fails the gate', () => { const d = signed(true); json(d, 'package.json', (o) => { o.scripts.postinstall = 'x'; }); save(d, 'x'); assert.equal(check(d).code, 1); });
-test('claim: under --strict a new dependency needs a reason from a person', () => { const d = strict(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x'); assert.equal(check(d).code, 1); assert.equal(check(d, '--allow', 'a person said so').code, 0); });
+test('claim: under --strict a new dependency needs a reason from a person, and it moves more than one count, so the reason names each', () => {
+  const d = strict(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x');
+  const r = check(d); assert.equal(r.code, 1); assert.ok(r.allowable.length > 1 && r.allowable.includes('dependency_entries'), JSON.stringify(r.allowable));
+  assert.equal(check(d, '--allow', 'a person said so').code, 1, 'a reason that names none of them lets none through');
+  const o = sb(d, 'check'); assert.ok(o.out.includes(`--allow "${r.allowable.join(', ')}: <reason>"`), o.out);   // the line to copy
+  assert.equal(check(d, '--allow', `${r.allowable.join(', ')}: a person said so`).code, 0);
+});
 test('claim: under --strict a new network address in the source is caught by the lock', () => { const d = strict(true); edit(d, 'src/add.js', (s) => s + 'exports.x=()=>fetch("https://a.invalid")\n'); save(d, 'x'); assert.equal(check(d).code, 1); });
 
 test('claim: a new contract starts by watching: a new dependency is a note, not a failure', () => { const d = signed(true); json(d, 'package.json', (o) => { o.dependencies = { 'left-pad': '1.3.0' }; }); save(d, 'x'); const r = sb(d, 'check'); assert.equal(r.code, 0); assert.match(r.out, /note: a new dependency/); });
@@ -587,6 +612,32 @@ test('claim: a green from fixing only a test-*.js file reads gamed, not a source
   const r = sb(d, 'check'); assert.match(r.out, /gamed/, r.out); assert.doesNotMatch(r.out, /verified/);
 });
 test('claim: a gamed change let through with --allow says so, with the reason, and never says verified', () => { const d = gamedRepo(); const r = sb(d, 'check', '--allow', 'a person said so'); assert.equal(r.code, 0); assert.match(r.out, /allowed/); assert.match(r.out, /a person said so/); assert.doesNotMatch(r.out, /verified|carried the win/); });
+// One reason, one thing. From an outside report: a reason written about a config change also waved through a gamed test
+// in the same change. With more than one thing to let through, a reason lets through only what it names.
+test('claim: a reason written about one change does not wave through another: with two things, --allow lets through only what it names', () => {
+  const d = signed(false);   // add is broken, so the test is red
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); save(d, 'edit the test and the rules file');
+  const need = check(d).allowable;
+  assert.ok(need.includes('mandate:contract-frozen') && need.length > 1, JSON.stringify(need));
+  const names = need.map((l) => l.replace(/^mandate:/, '')).join(', ');
+  // a reason about the rules file, and the gamed test rides along: nothing is let through
+  let r = sb(d, 'check', '--allow', 'more repeats');
+  assert.notEqual(r.code, 0); assert.doesNotMatch(r.out, /allowed with --allow/);
+  assert.match(r.out, /your reason did not let .* through/); assert.ok(r.out.includes(`sawbuck check --allow "${names}: <reason>"`), r.out);
+  assert.deepEqual(check(d, '--allow', 'more repeats').allowed.cleared, []);
+  // naming one lets that one through and says what is left
+  r = sb(d, 'check', '--allow', 'contract-frozen: more repeats');
+  assert.notEqual(r.code, 0); assert.match(r.out, /your reason let contract-frozen through, and did not let /);
+  // naming each lets each through, and it reads allowed, never verified
+  r = sb(d, 'check', '--allow', `${names}: the spec changed, and more repeats`);
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /allowed with --allow/); assert.doesNotMatch(r.out, /verified|carried the win/);
+  // the README's own line: the rules file and the hooks in one change
+  const e = signed(true); json(e, 'promptwheel.config.json', (o) => { o.repeat = 2; }); put(e, '.claude/settings.json', '{"hooks":{}}\n'); save(e, 'more repeats, and team hooks');
+  assert.deepEqual(check(e).allowable, ['mandate:contract-frozen', 'mandate:hooks-frozen']);
+  assert.equal(sb(e, 'check', '--allow', 'team hooks').code, 1);
+  assert.equal(sb(e, 'check', '--allow', 'contract-frozen, hooks-frozen: more repeats, and the team shares the hooks').code, 0);
+  assert.ok(readFileSync(join(HERE, '..', 'README.md'), 'utf8').includes('sawbuck check --allow "contract-frozen, hooks-frozen: <reason>"'));
+});
 test('claim: with gaming detection off, the check does not say the win was re-proved', () => { const d = gamedRepo(); const r = sb(d, 'check', '--no-detect-gaming'); assert.equal(r.code, 0); assert.match(r.out, /gaming detection is off/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 for (const a of [['contract', '--help'], ['attach', '--help'], ['detach', '--help'], ['init', '-h'], ['check', '-h']]) {
   test(`claim: ${a.join(' ')} prints help and writes nothing`, () => { const d = repo(true); const x = excludeText(d); const r = sb(d, ...a); assert.equal(r.code, 0); assert.match(r.out, new RegExp(`sawbuck ${a[0]}`)); assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(excludeText(d), x); assert.ok(!existsSync(join(d, '.git/sawbuck')) && !existsSync(join(d, '.claude'))); });
@@ -849,11 +900,24 @@ test('claim: a workspaces monorepo is measured with nothing to write: a workspac
   const e = monoRepo(); put(e, 'apps/web/test/sum.test.js', "require('node:test').test('sum',()=>require('node:assert').equal(require('../src/sum.js').sum(2,3),-1))\n");
   assert.equal(sb(e, 'check').code, 2, 'and a test edited to go green there reads gamed');
 });
+// found by replaying real commits (proof-bench/replay): on vuejs/pinia two checks ran past the two minutes the check
+// command allowed (the hooks allowed ten), and the only words were "the check timed out"
+test('claim: a check that runs out of time says how long it waited and how to give it longer, and attach says the same', () => {
+  const d = repo(true); json(d, 'package.json', (o) => { o.scripts.test = 'sleep 20'; }); save(d, 'a slow suite'); edit(d, 'src/add.js', (s) => s + '// x\n'); save(d, 'a change');
+  const slow = (...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env: { ...ENV, SAWBUCK_CHECK_TIMEOUT_MS: '1500' } }); return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }; };
+  const r = slow('check');
+  assert.equal(r.code, 64, r.out); assert.match(r.out, /took longer than 1\.5 seconds and was stopped/); assert.match(r.out, /SAWBUCK_CHECK_TIMEOUT_MS/);
+  const a = slow('attach');
+  assert.match(a.out, /could not measure anything here yet: the check took longer than 1\.5 seconds/); assert.doesNotMatch(a.out, /the check did not run/);
+  // ten minutes in all three places that run the check: the command, the turn hook and the git hook
+  for (const f of ['sawbuck.mjs', 'sawbuck-hook.mjs', 'reflect.mjs']) assert.match(readFileSync(join(dirname(CLI), f), 'utf8'), /SAWBUCK_CHECK_TIMEOUT_MS\) \|\| 600000/, f);
+});
 test('claim: an inconclusive check names the cause: a failed setup, a missing dependency, or tests that fail', () => {
   const red = repo(false); edit(red, 'src/add.js', (s) => s + '// x\n');
   assert.match(sb(red, 'check').out, /inconclusive: your tests fail before and after this change/);
   const dep = repo(true); put(dep, 'test/add.test.js', "require('a-package-nobody-installed');\n" + TEST); save(dep, 'needs a package'); edit(dep, 'src/add.js', (s) => s + '// x\n');
   const o = sb(dep, 'check').out; assert.match(o, /inconclusive: the clean copy the check runs in is missing something your tests need/); assert.match(o, /a-package-nobody-installed/);
+  assert.match(o, /Run `sawbuck init`, then set linkDirs or setup in promptwheel\.config\.json/); assert.doesNotMatch(o, /\.\. |setup, with/, 'one period, and a sentence that parses');
   const setup = repo(true); put(setup, 'promptwheel.config.json', JSON.stringify({ repeat: 1, setup: 'echo "boom: no compiler" >&2; exit 7', metrics: [{ name: 'tests_pass', cmd: 'false', extract: 'exit', direction: 'pass', guard: true }] }) + '\n'); save(setup, 'cfg'); edit(setup, 'src/add.js', (s) => s + '// x\n');
   assert.match(sb(setup, 'check').out, /inconclusive: the setup command failed \(exit 7\)[^\n]*boom: no compiler/);
 });
@@ -866,6 +930,7 @@ test('claim: when the tests need a build first, the inconclusive message points 
   put(d, 'NOTES.md', 'x\n'); save(d, 'a note');
   const r = sb(d, 'check'); assert.equal(r.code, 3, r.out);
   assert.match(r.out, /is missing something your tests need[^\n]*build[^\n]*`sawbuck init` writes a config that runs it/);
+  assert.doesNotMatch(r.out, /\.\. |setup, with|linkDirs/, 'with a build script and no config, the one thing to do is sawbuck init');
   assert.equal(sb(d, 'init', '--yes', '--no-investigate', '--no-agent-block').code, 0); save(d, 'config');
   put(d, 'NOTES.md', 'y\n'); save(d, 'another note');
   const ok = sb(d, 'check'); assert.equal(ok.code, 0, ok.out); assert.match(ok.out, /held/);
@@ -952,4 +1017,80 @@ test('claim: however it is attached, status, the status line and doctor all say 
     if (name !== '--shared') { const doc = sbE(d, env, 'doctor'); assert.equal(doc.code, 0, `${name}: doctor\n${doc.out}`); assert.match(doc.out, /OK/, `${name}: doctor`); }
     assert.match(sbE(d, env, 'doctor', '--all').out, /attached to/, `${name}: the list`);
   }
+});
+
+// ---- what the check trusts outside git (proof-bench/outside-git, 2026-11-11): a dependency edited in place
+// a repo with one installed dependency, put there long before the turn
+const depRepo = () => {
+  const d = hookRepo(true);
+  put(d, 'node_modules/ms/package.json', '{"name":"ms","version":"2.1.3"}\n'); put(d, 'node_modules/ms/index.js', 'module.exports = 1\n'); put(d, 'node_modules/.cache/keep', 'x\n');
+  const long = new Date(Date.now() - 864e5); for (const f of ['node_modules/ms/package.json', 'node_modules/ms/index.js']) utimesSync(join(d, f), long, long);
+  return d;
+};
+const DEP_SAID = /inside an installed dependency/;
+test('claim: a file the agent edits inside an installed dependency is told to the person once at the end of the turn, never a block', () => {
+  const d = depRepo(); const w = wired(d); w.prompt('make the month test pass');
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'nothing edited, nothing said');
+  w.agentEdit('node_modules/ms/index.js', (s) => s.replace('1', '2'));
+  const out = w.stop();
+  assert.match(out, /inside an installed dependency was edited here: node_modules\/ms\/index\.js/); assert.match(out, /fresh install will not have it/); assert.match(out, /npm ci/);
+  assert.equal(blocked(out), false, 'a notice, never a block');
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'said once');
+  w.prompt('next'); assert.doesNotMatch(w.stop(), DEP_SAID, 'and not again on the next turn');
+});
+test('claim: a shell write into an installed dependency is told too (sed -i, a redirect, cp), once it has really happened', () => {
+  for (const cmd of ["sed -i 's/1/2/' node_modules/ms/index.js", 'echo "module.exports = 2" > node_modules/ms/index.js', 'cp /tmp/fixed.js ./node_modules/ms/index.js']) {
+    const d = depRepo(); const w = wired(d); w.prompt('make it pass');
+    w.pre(cmd); assert.doesNotMatch(w.stop(), DEP_SAID, 'the command was asked for and never ran: nothing to say');
+    w.pre(cmd); put(d, 'node_modules/ms/index.js', 'module.exports = 2\n');
+    assert.match(w.stop(), /inside an installed dependency was edited here: node_modules\/ms\/index\.js/, cmd);
+  }
+});
+test('claim: reading a dependency, installing, and a tool writing its own cache folder under node_modules say nothing', () => {
+  const d = depRepo(); const w = wired(d); w.prompt('look around');
+  for (const cmd of ['cat node_modules/ms/package.json > /tmp/out.txt', "sed -n '1,5p' node_modules/ms/index.js", 'npm install', 'rm -rf node_modules && npm ci', 'ls node_modules/.bin', 'echo x > node_modules/.cache/keep', 'cp node_modules/ms/index.js /tmp/']) w.pre(cmd);
+  put(d, 'node_modules/.cache/keep', 'y\n'); put(d, 'node_modules/ms/index.js', 'module.exports = 1\n');
+  assert.doesNotMatch(w.stop(), DEP_SAID);
+});
+test('claim: an edit kept as a patch the install applies, or wiped by installing the package again, says nothing', () => {
+  const kept = depRepo(); let w = wired(kept); w.prompt('patch ms');
+  w.agentEdit('node_modules/ms/index.js', (s) => s.replace('1', '2')); put(kept, 'patches/ms+2.1.3.patch', 'diff --git a/node_modules/ms/index.js b/node_modules/ms/index.js\n');
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'patch-package keeps it: a fresh install has the edit');
+  const again = depRepo(); w = wired(again); w.prompt('try something');
+  w.agentEdit('node_modules/ms/index.js', (s) => s.replace('1', '2'));
+  put(again, 'node_modules/ms/index.js', 'module.exports = 1\n'); put(again, 'node_modules/ms/package.json', '{"name":"ms","version":"2.1.3"}\n');   // npm ci wrote the package again
+  assert.doesNotMatch(w.stop(), DEP_SAID, 'installed again: the edit is gone');
+});
+test('limit: a write into a dependency that no hook names (a script that opens the file) is not seen', () => {
+  const d = depRepo(); const w = wired(d); w.prompt('make it pass');
+  w.pre("node -e \"require('fs').writeFileSync('node_modules/ms/index.js','module.exports = 2')\""); put(d, 'node_modules/ms/index.js', 'module.exports = 2\n');
+  assert.doesNotMatch(w.stop(), DEP_SAID);
+});
+test('limit: the check itself reads pass on a green that leans on a dependency edited by hand: its clean copy borrows node_modules', () => {
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n'); put(d, '.gitignore', 'node_modules\n');
+  put(d, 'src/days.js', "const ms = require('ms')\nexports.days = (n) => ms(n) / 86400000\n");
+  put(d, 'test/days.test.js', "const t=require('node:test'),a=require('node:assert');const {days}=require('../src/days.js')\nt.test('a month',()=>a.equal(days('1 month'),30))\n");
+  put(d, 'node_modules/ms/package.json', '{"name":"ms","version":"2.1.3","main":"index.js"}\n'); put(d, 'node_modules/ms/index.js', "module.exports = (s) => (s === '1 day' ? 86400000 : undefined)\n");
+  save(d, 'base: red, ms knows no months');
+  put(d, 'node_modules/ms/index.js', "module.exports = (s) => (s === '1 month' ? 30 * 86400000 : 86400000)\n");   // the library patched in place, in no commit
+  edit(d, 'src/days.js', (s) => s + '// reviewed\n'); save(d, 'note');
+  const r = check(d); assert.equal(r.verdict, 'pass', JSON.stringify(r).slice(0, 300));   // both clean copies see the patched library: "tests pass before and after"
+});
+test('limit: a variable in the environment that changes how a test run ends is trusted (a preload in NODE_OPTIONS forces exit 0, and the check reads pass on a red suite)', () => {
+  const d = repo(); edit(d, 'src/add.js', (s) => s + '// reviewed\n'); save(d, 'note');   // add is still wrong: the suite is red
+  assert.notEqual(check(d).verdict, 'pass', 'red without the variable');
+  const pre = join(mkdtempSync(join(tmpdir(), 'claims-pre-')), 'force0.cjs');
+  writeFileSync(pre, "const r = process.reallyExit; process.reallyExit = function () { return r.call(process, 0) }\nprocess.on('exit', () => { process.exitCode = 0 })\n");
+  const r = sbE(d, { NODE_OPTIONS: `--require ${pre}` }, 'check', '--json'); assert.equal(JSON.parse(r.out).verdict, 'pass', r.out.slice(0, 300));
+});
+test('limit: a git filter set in the repo\'s local config rewrites the clean copy too, so a test it rewrites reads as passing at both commits', () => {
+  const d = repo(); const bin = mkdtempSync(join(tmpdir(), 'claims-filter-'));
+  writeFileSync(join(bin, 'smudge.sh'), '#!/bin/sh\nsed "s/add(2,2),4/add(2,2),0/"\n'); writeFileSync(join(bin, 'clean.sh'), '#!/bin/sh\nsed "s/add(2,2),0/add(2,2),4/"\n'); chmodSync(join(bin, 'smudge.sh'), 0o755); chmodSync(join(bin, 'clean.sh'), 0o755);
+  git(d, 'config', 'filter.easy.smudge', join(bin, 'smudge.sh')); git(d, 'config', 'filter.easy.clean', join(bin, 'clean.sh'));
+  mkdirSync(join(d, '.git/info'), { recursive: true }); writeFileSync(join(d, '.git/info/attributes'), 'test/add.test.js filter=easy\n');
+  rmSync(join(d, 'test/add.test.js')); git(d, 'checkout', '--', 'test/add.test.js');
+  assert.equal(git(d, 'status', '--porcelain'), '', 'nothing shows as changed');
+  edit(d, 'src/add.js', (s) => s + '// reviewed\n'); save(d, 'note');
+  assert.equal(check(d).verdict, 'pass');   // add is still wrong; the committed test would fail; every checkout of it is rewritten
 });

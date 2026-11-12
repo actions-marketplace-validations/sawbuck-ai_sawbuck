@@ -15,6 +15,7 @@ import { ledgerCli } from './ledger.mjs';
 import { ripplesReport } from './ripples.mjs';
 import { profileCli } from './profile.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
+import { dependencyEditFromHook } from './deps.mjs';
 import { holdDecision } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
@@ -38,10 +39,13 @@ const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
 // A commit message is not a person: an agent can write a Sawbuck-Allow trailer, so no sawbuck path honors one
 // (the Stop hook and the git hook do the same through reflect). `--allow` is the declared override.
+// The same ten minutes the hooks allow. It was two, so a suite that takes a minute could be checked by the hooks and
+// not by `sawbuck check` or by attach's first look (vuejs/pinia under load), and the only words were "timed out".
+const CHECK_TIMEOUT = +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 600000;
 function gateReport(repo, a) {
   let o = '', err = '', code = 0;
-  try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' }, timeout: +(process.env.SAWBUCK_CHECK_TIMEOUT_MS) || 120000 }); }
-  catch (e) { o = (e.stdout || '').toString(); err = e.signal ? 'the check timed out' : (e.stderr || '').toString(); code = e.status || 0; }
+  try { o = execFileSync(process.execPath, [PW, ...a, '--no-record', '--json'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PROMPTWHEEL_NO_ALLOW_TRAILER: '1' }, timeout: CHECK_TIMEOUT }); }
+  catch (e) { o = (e.stdout || '').toString(); err = e.signal ? `the check took longer than ${CHECK_TIMEOUT / 1000} seconds and was stopped. It runs your tests at each commit it compares. Give it longer with SAWBUCK_CHECK_TIMEOUT_MS (milliseconds), or point it at a faster test command in promptwheel.config.json.` : (e.stderr || '').toString(); code = e.status || 0; }
   let rep = null; try { rep = JSON.parse(o.slice(o.indexOf('{'))); } catch {}
   // the engine's own reason, without its zero-config notice
   const why = err.split('\n').filter((l) => l.trim() && !/^no promptwheel\.config\.json, auto-gating/.test(l)).join(' ').trim();
@@ -68,7 +72,8 @@ function inconclusiveWhy(rep, repo) {
   let build = false; try { build = !!JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).scripts?.build; } catch {}
   const needsBuild = !build ? '' : hasCfg ? ' This repo has a build script: if your tests need it, set "setup" to it in promptwheel.config.json.' : ' This repo has a build script, and tests often need it first: `sawbuck init` writes a config that runs it.';
   if (m && m.cause === 'too-much-output') return `your test command was stopped: ${m.detail}. Make it quieter, or point the check at a smaller command ${where}.`;
-  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${m.detail}. Link it with linkDirs, or install it with setup, ${where}.${needsBuild}`;
+  // with a build script and no config yet, the one thing to do is `sawbuck init` (needsBuild says it), so no second instruction
+  if (m && m.cause === 'missing-dependency') return `the clean copy the check runs in is missing something your tests need: ${String(m.detail || '').replace(/[.\s]+$/, '')}.${build && !hasCfg ? '' : ` ${hasCfg ? 'Set' : 'Run `sawbuck init`, then set'} linkDirs or setup in promptwheel.config.json so the clean copy has it.`}${needsBuild}`;
   return `your tests fail before and after this change, so there was no win or loss to measure ("${(m && m.name) || 'tests_pass'}"). Fix the failing tests first. If they pass for you, the clean copy the check runs in is missing something: set setup or linkDirs ${where}.${needsBuild}`;
 }
 // the test commands the engine finds with no config (promptwheel's detectTestCmd)
@@ -273,31 +278,47 @@ switch (cmd) {
     }
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
+    // --allow as a person should type it here: one thing needs no name; with more than one, the reason names each one
+    // it covers, so a reason written about one change cannot wave through another
+    const bare = (l) => l.replace(/^mandate:/, '');
+    const allowNames = (rep.allowable || []).length > 1 ? rep.allowable.map(bare).join(', ') + ': ' : '';
+    const allowHow = `--allow "${allowNames}<reason>"`;
+    // what a reason given here did not let through, and what each name is, so the line to copy explains itself
+    const left = rep.allowed ? (rep.allowable || []).filter((l) => !(rep.allowed.cleared || []).includes(l)) : [];
+    const kind = (l) => { const x = (rep.metrics || []).find((y) => y.name === l) || {}; const e = (rep.explained || []).find((y) => y.metric === l);
+      return l.startsWith('mandate:') ? 'a protected path' : l === 'gate' ? 'the check itself was weakened' : x.gamed === true ? 'a win that came from editing the test' : x.unprovable === true ? 'a win that could not be re-proved' : e ? e.what : 'a guard'; };
+    let said = false;
+    const many = () => { if (allowNames && !said) { said = true; out(`sawbuck: more than one thing here needs a reason from a person: ${rep.allowable.map((l) => `${bare(l)} (${kind(l)})`).join(', ')}.`); } };
     for (const md of rep.mandates || []) out(`⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
     const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
     const noDetect = pass.includes('--no-detect-gaming');
-    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).join(', ') || 'the change'} was let through without a source-only re-proof.`);
+    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).map(bare).join(', ') || 'the change'} ${(rep.allowed.cleared || []).length > 1 ? 'were' : 'was'} let through without a source-only re-proof.`);
     else if (rep.verdict === 'pass' && win && noDetect) out(`✓ passed: "${win.name}" improved, but gaming detection is off (--no-detect-gaming), so the win was not re-proved from the source.`);
     else if (rep.verdict === 'pass' && win) out(`✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'pass') out(`✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
     else if (rep.verdict === 'gamed') {
       out('🚩 gamed: a win here came from editing the test, config, or grader, not the source. It does NOT survive a source-only re-run, so it does not count.');
       if (((rep.gate && rep.gate.weakened) || []).some((w) => w.change === 'measurement-edited')) out('sawbuck: this change also edits how the check measures (setup, env or linkDirs in promptwheel.config.json), and a change is judged by the settings in force before it. Commit that edit on its own first, then check your fix again.');
-      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out('sawbuck: note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes --allow "<reason>".');
+      if (!dirty && /^(Sawbuck|Promptwheel)-Allow:/im.test(g('log', '--format=%B', `${base || 'HEAD~1'}..${head || 'HEAD'}`))) out(`sawbuck: note: a Sawbuck-Allow trailer does not clear this, because an agent can write a commit message. A person passes ${allowHow}.`);
     }
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
       out('✗ sent back: a protected path changed, however green the rest is.');
+      many();
       // the way through, for a person who meant it: two of the default rules take a reason, the rest are lifted first
       const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
       const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
-      if (soft.length) out(`sawbuck: if a person meant this: sawbuck check --allow "<reason>" accepts ${names(soft)}, and the result shows the reason.`);
+      if (soft.length && !left.length) out(`sawbuck: if a person meant this: sawbuck check ${allowHow} accepts ${allowNames ? 'each thing it names' : names(soft)}, and the result shows the reason.`);
       if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
     }
     else if (rep.verdict === 'fail') out('✗ sent back: this change made something worse.');
     else out(`≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
+    // more than one thing needs a person's reason: say what each one is, then (when a reason was given and did not
+    // cover them all) what it let through, what it did not, and the line that would
+    if (rep.verdict !== 'pass') many();
+    if (left.length) out(`sawbuck: your reason${(rep.allowed.cleared || []).length ? ` let ${rep.allowed.cleared.map(bare).join(', ')} through, and` : ''} did not let ${left.map(bare).join(', ')} through: a reason covers only what it names. To accept them all: sawbuck check ${allowHow}`);
     if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
-    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? '. If you meant this: --allow "<reason>", or on a pull request comment sawbuck-allow: <reason>' : ''}`);
+    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? `. If you meant this: ${allowHow}, or on a pull request comment sawbuck-allow: ${allowNames}<reason>` : ''}`);
     if (rep.gate && rep.gate.changed) out(`⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
@@ -468,11 +489,13 @@ switch (cmd) {
       out(JSON.stringify(j && j.decision === 'block' ? { followup_message: j.reason } : {})); break;
     }
     if (ev === 'beforeShellExecution') {
+      dependencyEditFromHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: String(h.command || '') }, cwd: h.cwd }), r);   // a write into an installed dependency, for the notice at the end of the turn
       const d = holdDecision(JSON.stringify({ tool_name: 'Bash', tool_input: { command: String(h.command || '') } }), r);
       const why = d && d.hookSpecificOutput && d.hookSpecificOutput.permissionDecisionReason;
       out(JSON.stringify(why ? { permission: 'ask', user_message: why, agent_message: why } : { permission: 'allow' })); break;
     }
     if (ev === 'afterFileEdit') {
+      dependencyEditFromHook(JSON.stringify({ file_path: h.file_path, cwd: h.cwd }), r);
       const e = undoCursor(JSON.stringify(h), r);
       if (e) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || '', files: [e.file] }).catch(() => {});
       out('{}'); break;
@@ -483,6 +506,9 @@ switch (cmd) {
     // the PreToolUse hook attach wires on Bash: an outward command (publish, release, merge, public comment, force push)
     // becomes a question to the person; everything else passes. Reads the hook's JSON on stdin only under --hook.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
+    // the same hook sees a shell write into an installed dependency (sed -i, a redirect, cp): recorded for the notice
+    // at the end of the turn, never held here (the person may have asked for it)
+    dependencyEditFromHook(body, gitTop(repoArg()) || repoArg());
     let d = holdDecision(body, gitTop(repoArg()) || repoArg());
     // Codex parses "ask" but does not support it yet (the call would go through): under --codex the hold denies,
     // and the reason tells the agent a person runs this one
@@ -496,6 +522,7 @@ switch (cmd) {
     // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const r = gitTop(repoArg()) || repoArg();
+    dependencyEditFromHook(body, r);   // an edit inside an installed dependency is in no diff: recorded for the notice at the end of the turn
     const found = flags.has('--codex') ? undoCodex(body, r) : [undoHook(body, r)].filter(Boolean);
     for (const e of found) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
     break;
@@ -632,10 +659,10 @@ function verifyAttach(repo) {
   if (!g('rev-parse', 'HEAD')) { out('   attached. Make a commit, then run `sawbuck check` to see it work.'); return; }
   out('   verifying I can measure here (one-time)...');
   const base = g('rev-parse', '--verify', 'HEAD~1') ? 'HEAD~1' : 'HEAD';
-  const { rep } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
+  const { rep, why } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
   const m = rep && (rep.metrics || [])[0];
   if (metricLive(m)) out(`   ✓ I can measure "${m.name}" here. On each commit I'll verify a win survived a source-only re-run, and flag it if it did not.`);
-  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : 'the check did not run'}`);
+  else out(`   ⚠ I could not measure anything here yet: ${rep ? inconclusiveWhy(rep, repo) : (why || 'the check did not run')}`);
 }
 
 // --- the attach receipt (out of the worktree, inside .git) ------------------

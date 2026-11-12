@@ -3,9 +3,10 @@
 // invariant (attach leaves the worktree clean; detach is a true inverse),
 // verify/dry-run, rank's per-path filtering, and context.
 
+import { TMP_HOME } from '../testkit.mjs';   // first: a throwaway HOME and temp folder for everything this file starts
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { test, after } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, realpathSync, chmodSync } from 'node:fs';
@@ -18,9 +19,7 @@ import { ensureExcluded } from '../exclude.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'sawbuck.mjs');
-// isolate HOME so the global registry (~/.sawbuck) never touches the real home.
-const TMP_HOME = mkdtempSync(join(tmpdir(), 'sawbuck-home-'));
-after(() => rmSync(TMP_HOME, { recursive: true, force: true }));
+// TMP_HOME (testkit.mjs) keeps the global registry (~/.sawbuck) out of the real home.
 const sawbuck = (args, cwd, env) => execFileSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', env: { ...process.env, HOME: TMP_HOME, ...env } });
 // the recording engine (what the hook runs on each commit); `sawbuck check` is now the loud one-shot
 const REFLECT = join(HERE, '..', 'reflect.mjs');
@@ -971,7 +970,7 @@ test('the wall survives a shell with no node on PATH (hooks run under sh, which 
   execFileSync(process.execPath, [SB, 'attach', '--claude', d], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: d, env: { ...process.env, HOME: TMP_HOME } });
   const cfg = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8'));
   const cmd = cfg.hooks.Stop[0].hooks[0].command;
-  const r = spawnSync('/bin/sh', ['-c', cmd], { env: { PATH: '/usr/bin:/bin' }, input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
+  const r = spawnSync('/bin/sh', ['-c', cmd], { env: { PATH: '/usr/bin:/bin', HOME: TMP_HOME }, input: JSON.stringify({ prompt_id: 'p' }), encoding: 'utf8' });
   if (!/\/usr\/bin\/node|\/bin\/node/.test(execFileSync('sh', ['-c', 'PATH=/usr/bin:/bin command -v node || true'], { encoding: 'utf8' }))) assert.doesNotMatch(r.stderr, /not found/);
   assert.equal(r.status, 0, r.stderr);
 });
@@ -981,6 +980,8 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   const g = (...a) => execFileSync('git', a, { cwd: d, stdio: 'ignore' });
   g('init', '-q'); g('config', 'user.email', 'a@b.c'); g('config', 'user.name', 'a');
   mkdirSync(join(d, 'src/auth'), { recursive: true }); writeFileSync(join(d, 'src/auth/a.js'), 'export const a = 1;\n');
+  // an example app's auth folder is not product code: express has examples/auth, and signing suggested protecting it
+  mkdirSync(join(d, 'examples/auth'), { recursive: true }); writeFileSync(join(d, 'examples/auth/index.js'), 'export const demo = 1;\n');
   writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'r', type: 'module', scripts: { test: 'node -e 0' } }));
   g('add', '-A'); g('commit', '-qm', 'base');
   const SB = fileURLToPath(new URL('../sawbuck.mjs', import.meta.url));
@@ -989,7 +990,7 @@ test('sawbuck contract signs a repo: tests stay, protections and the lock land, 
   assert.match(sb('contract', '--full', '--dry-run'), /would write/);
   assert.equal(existsSync(join(d, 'promptwheel.config.json')), false, 'a dry run writes nothing');
   const out = sb('contract', '--full');
-  assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested');
+  assert.match(out, /signed/); assert.match(out, /src\/auth\/\*\*/, 'auth is suggested'); assert.doesNotMatch(out, /examples\/auth/, 'an example folder is not');
   const cfg = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8'));
   assert.ok(cfg.metrics.some((m) => m.name === 'lock_drift'), 'the lock guard');
   assert.ok(cfg.metrics.some((m) => /test/.test(m.cmd) && !m.cmd.includes('packs/')), 'the test metric stays: the preset alone would drop the gamed check');
