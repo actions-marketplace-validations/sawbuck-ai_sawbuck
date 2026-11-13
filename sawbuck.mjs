@@ -12,6 +12,8 @@ import { execFileSync } from 'node:child_process';
 import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
+import { recordAllowed, allowedBlock } from './allowed.mjs';
+import { writeGuard, clearGuard } from './guard.mjs';
 import { ripplesReport } from './ripples.mjs';
 import { profileCli } from './profile.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
@@ -106,6 +108,8 @@ Usage:
                             Verify your latest change right now (working tree if dirty, else the last
                             commit, or the range you name). Zero-config, no attach, no hook. The
                             fastest way to see it work. Every promptwheel run flag passes through.
+                            A reason given with --allow is kept where sawbuck is attached, and comes
+                            back with the prompt that names the test or path it let through.
                             Exit 0 pass (verified, held, or allowed) · 1 sent back (a regression or a
                             protected path) · 2 gamed · 3 inconclusive · 64 could not run
                             (--working with nothing uncommitted is 64 too)
@@ -132,7 +136,8 @@ Usage:
                             The live suppression debt in HEAD, risk-ranked, undocumented flagged. --since REF
                             shows only what a branch adds; --fail-on exits 1 when that debt (or, without
                             --since, any live debt of that kind) is there (a CI gate)
-  sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots)
+  sawbuck context [repo]    Relevant history for the files you are changing (reverts, weakened tests, hot spots,
+                            and what a person let through there with a reason)
   sawbuck ledger [push|pull] [remote]
                             What git threw away, shared: push puts the erased attempts and their reasons on
                             refs/sawbuck/ledger for the team and CI; pull takes them into this clone; no
@@ -276,6 +281,9 @@ switch (cmd) {
         if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); }
       } catch { /* not attached here: nothing stands to clear */ }
     }
+    // what a person let through, and why, joins the record where sawbuck is attached (allowed.mjs): kept, and shown
+    // with the prompt that names the test or path, the way a revert is. Under --json too; the output stays the report.
+    const kept = (rep.verdict === 'pass' && rep.allowed) ? recordAllowed(g('rev-parse', '--show-toplevel') || repo, rep, { dirty, base: base || 'HEAD~1', head: head || 'HEAD' }) : null;
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     // --allow as a person should type it here: one thing needs no name; with more than one, the reason names each one
@@ -292,7 +300,7 @@ switch (cmd) {
     for (const md of rep.mandates || []) out(`⛔ protected path "${md.name}" touched${md.reason ? ': ' + md.reason : ''}  (touched: ${(md.files || []).join(', ')})${md.removed ? '  [deleted in this same change; the rule stays in force for the change that removes it]' : ''}`);
     const win = (rep.metrics || []).find((x) => x.status === 'improved' && !x.tripwire);
     const noDetect = pass.includes('--no-detect-gaming');
-    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).map(bare).join(', ') || 'the change'} ${(rep.allowed.cleared || []).length > 1 ? 'were' : 'was'} let through without a source-only re-proof.`);
+    if (rep.verdict === 'pass' && rep.allowed) out(`✎ allowed with --allow: "${rep.allowed.reason}". That is a person's call, not a proof: ${(rep.allowed.cleared || []).map(bare).join(', ') || 'the change'} ${(rep.allowed.cleared || []).length > 1 ? 'were' : 'was'} let through without a source-only re-proof.${kept ? ` The reason is kept here (.sawbuck/allowed.jsonl) and comes back with a prompt that names ${kept.files.slice(0, 3).join(', ') || 'what it let through'}.` : ''}`);
     else if (rep.verdict === 'pass' && win && noDetect) out(`✓ passed: "${win.name}" improved, but gaming detection is off (--no-detect-gaming), so the win was not re-proved from the source.`);
     else if (rep.verdict === 'pass' && win) out(`✓ verified: your ${where} change earned it. "${win.name}" improved, and the source carried the win (it survives a source-only re-run).`);
     else if (rep.verdict === 'pass') out(`✓ held: nothing got worse in your ${where} change, and there was no win to re-prove.`);
@@ -400,6 +408,7 @@ switch (cmd) {
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
             st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo) };
+            writeGuard(repo, { baseline: st.turnBaseline });   // a second copy in the git folder: the record folder is out of git status, so its loss during a turn must not lose the turn's starting point (guard.mjs)
           }
         }
         framed = !!session && st.framedSession === session;
@@ -417,7 +426,7 @@ switch (cmd) {
     // redid a reverted change and 27 of 27 asked first; on demand after the first edit, the agent checked once per
     // session and redid it 27 of 27; shown after the edit, 0 blind but only 19 of 27 held. Timing is the product.
     const named = hookEvent === 'UserPromptSubmit' && top ? namedFiles(repo, promptText) : [];
-    const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false, named) : (named.length ? erasedBlock(repo, named) : '')].filter(Boolean).join('\n');
+    const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false, named) : (named.length ? [erasedBlock(repo, named), allowedBlock(repo, named)].filter(Boolean).join('\n') : '')].filter(Boolean).join('\n');
     if (o) out(o);
     break;
   }
@@ -463,6 +472,7 @@ switch (cmd) {
         unwireCodex(repo, { quiet: true }); unwireCursor(repo, { quiet: true });
       }
       if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
+      if (!dry) clearGuard(repo);   // the hooks are gone: nothing is checked from the second copy either
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
       const left = recordLeft(repo);
       if (left.length) say(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
@@ -644,7 +654,8 @@ function contextBlock(repo, speak, extra = []) {
   let o = '';
   try { o = execFileSync(process.execPath, [join(HERE, 'rank.mjs'), '--repo', repo, ...fileArgs, '--top', '3'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
   catch (e) { o = (e.stdout || '').toString(); }
-  const erased = erasedBlock(repo, changed);
+  // what git threw away for these paths, then what a person let through there with a reason
+  const erased = [erasedBlock(repo, changed), allowedBlock(repo, changed)].filter(Boolean).join('\n');
   if (/relevant history/.test(o)) return [o.trimEnd(), erased].filter(Boolean).join('\n');
   if (erased) return erased;
   return speak ? 'sawbuck: no notable history for the files you are touching (a clean trail).' : '';
@@ -1108,6 +1119,7 @@ function detachAll(purge) {
     else if (x.mode === 'user') unwireClaude(x.repo, { user: true });
     else unwireClaude(x.repo, {});
     if (purge) purgeRecord(x.repo);
+    if (!dry) clearGuard(x.repo);
     syncExclude(x.repo, readManifest(manifestPath(x.repo)));
   }
   say('sawbuck: detached everywhere.');

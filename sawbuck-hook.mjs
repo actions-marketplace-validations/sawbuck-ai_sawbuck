@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 import { mandateHits, hashOf, protectedAmong, lockState } from './contract.mjs';
 import { dependencyEditsSince, dependencyNotice } from './deps.mjs';
+import { readGuard, writeGuard } from './guard.mjs';
+import { readAllowed } from './allowed.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
 const stop = process.argv.includes('--stop');   // wired as the Claude Code Stop hook: enforce the contract on a gamed turn
@@ -37,7 +39,9 @@ try { cfg = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8'));
 const stDir = join(repo, '.sawbuck');
 const stPath = join(stDir, 'state.json');
 let st = { lastSha: '', turns: 0, shownTotal: 0 };
-try { if (existsSync(stPath)) st = JSON.parse(readFileSync(stPath, 'utf8')); } catch {}
+// read once, and known to be a real state: a file that is gone, blank or garbled is not one (see the guard, below)
+let stateRead = false;
+try { if (existsSync(stPath)) { const s = JSON.parse(readFileSync(stPath, 'utf8')); if (s && typeof s === 'object' && !Array.isArray(s)) { st = s; stateRead = true; } } } catch {}
 
 // 1) new commit(s) since last turn → run the check on them. A gamed verdict stands until the span it
 // was measured over re-proves verified: while the latest record is gamed, the re-run keeps that
@@ -54,6 +58,43 @@ let rec = readRec();
 // the person made between turns (a red test first, a merge, a pull) are theirs, not the agent's, and are not scored; a
 // standing gamed verdict keeps its own base below. The first turn after attach has no baseline yet and starts from lastSha.
 const isAncestor = (a, b) => { try { execFileSync('git', ['-C', repo, 'merge-base', '--is-ancestor', a, b], { stdio: 'ignore' }); return true; } catch { return false; } };
+// THE RECORD IS NOT THE ONLY WITNESS (the end-of-turn hook only; guard.mjs says why). Two things are kept a second time
+// in the git folder: the baseline the prompt hook took, and a gamed verdict this hook sent back.
+const enforcing = stop && !process.env.SAWBUCK_NO_ENFORCE;
+const guard = enforcing ? readGuard(repo) : {};
+const inHead = (sha) => !!(sha && head && hasCommit(sha) && (sha === head || isAncestor(sha, head)));
+// 1) the state file is not the one this turn began with. The prompt hook writes it on every prompt, with the time of
+// the prompt, and writes the guard's baseline in the same breath. So a state file that is gone, blank, garbled, or
+// older than the guard's baseline was removed or replaced during the turn. Nothing in it is believed: the turn is
+// checked from the commit it began at, with the baseline it began with.
+let recordRemoved = false;
+const stateUsable = stateRead && !!st.lastPromptAt && !(guard.baseline && guard.baseline.at && Date.parse(st.lastPromptAt) < Date.parse(guard.baseline.at));
+if (enforcing && !stateUsable && guard.baseline && inHead(guard.baseline.sha)) {
+  st = { lastSha: '', turns: 0, shownTotal: 0 };
+  st.turnBaseline = guard.baseline; st.lastSha = guard.baseline.sha; st.lastPromptAt = guard.baseline.at || st.lastPromptAt; recordRemoved = true;
+  logActivity({ kind: 'note', sha: (head || '').slice(0, 8), file: '', reason: 'the record under .sawbuck/ was removed or made unreadable during the turn; it was rebuilt, and the turn is checked again from the commit it began at', by: by || 'hook' });
+}
+// 2) a gamed verdict this hook sent back still stands in the guard. It comes down three ways only: the gamed commit left
+// this history, a person's reason for it is on record, or (below) the engine's own pass over the span in this run.
+let gs = (enforcing && guard.standing && guard.standing.sha && guard.standing.base) ? guard.standing : null;
+const dropStanding = () => { writeGuard(repo, { standing: null }); gs = null; };
+if (gs && !(inHead(gs.sha) && hasCommit(gs.base))) dropStanding();   // reset or rebased away, or its base pruned: nothing left to prove
+if (gs) {
+  const inRecord = !!(rec && rec.latest && rec.latest.kind === 'allowed' && rec.latest.allowed && rec.latest.allowed.reason && String(gs.sha).startsWith(String(rec.latest.sha || '-')));
+  const kept = readAllowed(repo).some((e) => e.sha && String(gs.sha).startsWith(e.sha) && (e.cleared || []).some((l) => !String(l).startsWith('mandate:')));
+  if (inRecord || kept) dropStanding();   // a person's call (`sawbuck check --allow`), not a proof
+}
+// the record no longer says what this hook concluded (rewritten, or deleted): put it back from the second copy. From
+// there the checks below do what they always do: the same commit is sent back again, and a commit on top is proved over
+// the same span, so nothing but the source fix takes it down.
+if (gs && !(rec && rec.latest && rec.latest.kind === 'gamed')) {
+  rec = { regressions: 0, gamed: 0, ...(rec && typeof rec === 'object' ? rec : {}) };
+  rec.latest = { sha: String(gs.sha).slice(0, 8), kind: 'gamed', base: gs.base, file: gs.file || '', reason: gs.reason || 'a win that came from editing the test, not the source', at: gs.at || new Date().toISOString(), by: gs.by || null };
+  if (!rec.gamed) rec.gamed = 1;
+  writeRec(rec);
+  logActivity({ kind: 'note', sha: (head || '').slice(0, 8), file: gs.file || '', reason: 'the record of a gamed verdict was changed outside sawbuck; it was put back from the second copy, and only a pass from the source takes it down', by: by || 'hook' });
+}
+const startedAt = Date.now();
 const tb = (st.turnBaseline && st.turnBaseline.sha) || '';
 const from = (tb && st.lastSha && tb !== st.lastSha && isAncestor(st.lastSha, tb)) ? tb : (st.lastSha || tb || '');
 if (head && from && head !== from) {
@@ -93,6 +134,10 @@ if (head && from && head !== from) {
   }
   if (!skip) node(join(HERE, 'reflect.mjs'), ['--repo', repo, '--base', base, '--head', head, ...(by ? ['--by', by] : []), ...(userMode ? ['--no-auto'] : [])]);
   rec = readRec();
+  // the guard comes down only on the engine's own pass over the span it stands on, written in this run: a "verified"
+  // that was already in the file is not that
+  if (gs && !skip && base === gs.base && rec && rec.latest && rec.latest.kind === 'verified' && rec.latest.base === gs.base && Date.parse(rec.latest.at || '') >= startedAt - 1000) dropStanding();
+  else if (gs && rec && rec.latest && rec.latest.kind === 'unverified') dropStanding();   // its base left the clone (said in the feed above)
 }
 st.lastSha = head || st.lastSha;
 st.turns += 1;
@@ -206,6 +251,8 @@ const gamedThisTurn = rec && rec.latest && rec.latest.kind === 'gamed' && rec.la
 if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   st.shownTotal = total;
   const where = rec.latest.file;
+  // kept a second time, outside the record folder: what stands, and the span it was measured over
+  if (rec.latest.base && head) writeGuard(repo, { standing: { sha: head, base: rec.latest.base, file: where || '', reason: rec.latest.reason || '', at: rec.latest.at || new Date().toISOString(), by: rec.latest.by || null } });
   // the catch is a finding too: handed once to whatever memory runs here, beside the rules and the reverted attempts
   // awaited: sendBack exits the process, and an unawaited hand-off died with it (found by hand against a live worker, 2026-11-08)
   await shareFinding(repo, { kind: 'gamed', title: `gamed: ${where} edited to pass`, text: rec.latest.reason || `A green on ${where} came from editing the test, config or grader, not the source.`, files: [where] }).catch(() => {});
@@ -252,6 +299,14 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
 if (depSaid) {
   depDone(); saveState();
   process.stdout.write(JSON.stringify({ systemMessage: depSaid }));
+  process.exit(0);
+}
+
+// 3c) the record was removed during this turn and nothing above sent the turn back: the person is told, once (the
+// state file is written again below, so the next end of turn does not come here)
+if (recordRemoved) {
+  st.shownTotal = total; saveState();
+  process.stdout.write(JSON.stringify({ systemMessage: 'Sawbuck: its record for this repo (.sawbuck/) was removed or made unreadable during this turn. It was rebuilt from a second copy, and the turn was checked again from the commit it began at. If you did not do that, look at what this turn did.' }));
   process.exit(0);
 }
 

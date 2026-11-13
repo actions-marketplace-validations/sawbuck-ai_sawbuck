@@ -17,6 +17,7 @@ import { repoState } from './repo-state.mjs';
 import { readSteers, groupSteers } from './steers.mjs';
 import { ledgerState } from './ledger.mjs';
 import { readUndone } from './undo.mjs';
+import { readAllowed } from './allowed.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
@@ -150,6 +151,14 @@ if (isGit) {
       out.push(`   What git threw away  ·  ${l.local} erased attempt${l.local === 1 ? '' : 's'} kept here, ${l.shared} shared with the team (refs/sawbuck/ledger)${u ? `, ${u} undone in a session at your request` : ''}`);
       if (l.onlyHere) out.push(`     ${l.onlyHere} on this machine only  →  sawbuck ledger push`);
     }
+  } catch {}
+}
+
+// What a person let through with a reason (allowed.mjs): a count here, the entries with `sawbuck context`
+if (isGit) {
+  try {
+    const n = readAllowed(repo).length;
+    if (n) { out.push(''); out.push(`   Let through with a reason  ·  ${n} change${n === 1 ? '' : 's'} a person accepted with --allow, kept here with ${n === 1 ? 'the reason' : 'each reason'}  →  sawbuck context shows ${n === 1 ? 'it' : 'them'} for the files in hand`); }
   } catch {}
 }
 

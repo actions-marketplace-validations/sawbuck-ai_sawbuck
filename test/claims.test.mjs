@@ -674,6 +674,123 @@ test('claim: a reason written about one change does not wave through another: wi
   assert.equal(sb(e, 'check', '--allow', 'contract-frozen, hooks-frozen: more repeats, and the team shares the hooks').code, 0);
   assert.ok(readFileSync(join(HERE, '..', 'README.md'), 'utf8').includes('sawbuck check --allow "contract-frozen, hooks-frozen: <reason>"'));
 });
+// ------------------------------------------------------------ "what a person let through, and why, is kept and comes back"
+// Until 0.1.68 a reason given with --allow was printed once and kept nowhere. It joins the record now: kept in
+// .sawbuck/allowed.jsonl where sawbuck is attached, and shown with the prompt that names the test or path it concerns.
+const allowedLog = (d) => { try { return readFileSync(join(d, '.sawbuck', 'allowed.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+test('claim: a reason given with --allow is kept, and comes back with the prompt that names the test it let through', () => {
+  const d = repo(); const w = wired(d);   // add is broken and the test is red
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  assert.equal(sb(d, 'check').code, 2, 'gamed, with no reason');
+  assert.deepEqual(allowedLog(d), [], 'nothing is kept until a person lets something through');
+  assert.doesNotMatch(w.prompt('tighten test/add.test.js'), /let through/, 'and nothing is shown');
+  const r = sb(d, 'check', '--allow', 'the spec changed: add subtracts now');
+  assert.equal(r.code, 0, r.out); assert.match(r.out, /The reason is kept here/, 'the check says the reason is kept');
+  const a = allowedLog(d);
+  assert.equal(a.length, 1); assert.equal(a[0].reason, 'the spec changed: add subtracts now'); assert.deepEqual(a[0].files, ['test/add.test.js']);
+  assert.deepEqual(a[0].cleared, ['tests_pass']); assert.match(a[0].sha, /^[0-9a-f]{8,}$/);
+  assert.equal(git(d, 'status', '--porcelain'), '', 'the record stays out of git status');
+  const out = w.prompt('tighten the assertions in test/add.test.js');
+  assert.match(out, /let through here by a person, with a reason \(a past decision, not a standing permission\)/);
+  assert.match(out, /test\/add\.test\.js: a win that came from editing the test.*The reason given: "the spec changed: add subtracts now"/);
+  assert.doesNotMatch(w.prompt('speed up src/add.js'), /let through/, 'a prompt about another file does not get it');
+  assert.match(sb(d, 'context').out, /let through here by a person/, 'context shows it for the files in hand');
+  assert.match(sb(d, 'status').out, /Let through with a reason\s+·\s+1 change a person accepted with --allow/);
+  // the same reason on the same commit again is one entry; another reason is another entry, under --json too
+  sb(d, 'check', '--allow', 'the spec changed: add subtracts now'); assert.equal(allowedLog(d).length, 1);
+  const j = sb(d, 'check', '--json', '--allow', 'and the ticket is ABC-1'); assert.equal(j.code, 0); JSON.parse(j.out);
+  assert.equal(allowedLog(d).length, 2, 'kept under --json, and the output is still only the report');
+  assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /kept in `\.sawbuck\/allowed\.jsonl`/, 'the README says where it is kept');
+});
+test('claim: a protected path let through with --allow is kept under the rule\'s name, and comes back with the prompt that names the path', () => {
+  const d = signed(true); const w = wired(d);
+  json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); save(d, 'more repeats');
+  assert.equal(sb(d, 'check', '--allow', 'the suite is flaky on CI, two runs').code, 0);
+  const a = allowedLog(d); assert.equal(a.length, 1); assert.deepEqual(a[0].cleared, ['mandate:contract-frozen']); assert.deepEqual(a[0].files, ['promptwheel.config.json']);
+  assert.match(w.prompt('set repeat back to 1 in promptwheel.config.json'), /promptwheel\.config\.json: the protected path "contract-frozen".*The reason given: "the suite is flaky on CI, two runs"/);
+});
+test('claim: a new install script let through with --allow is kept in plain words, under the file that holds it', () => {
+  const d = signed(true); const w = wired(d);
+  json(d, 'package.json', (o) => { o.scripts.postinstall = 'node build.js'; }); put(d, 'build.js', '// build\n'); save(d, 'a build step');
+  const need = check(d).allowable; assert.ok(need.includes('lifecycle_scripts'), JSON.stringify(need));
+  assert.equal(sb(d, 'check', '--allow', `${need.join(', ')}: the package needs its build step`).code, 0);
+  const a = allowedLog(d); assert.equal(a.length, 1); assert.ok(a[0].files.includes('package.json') && !a[0].files.includes('build.js'), JSON.stringify(a[0].files));
+  assert.match(w.prompt('clean up the scripts in package.json'), /package\.json: a new install script.*the package needs its build step/);
+});
+test('claim: a reason that lets nothing through is not kept, and one that names two things is kept once, with both', () => {
+  const d = signed(false); wired(d);
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); save(d, 'edit the test and the rules file');
+  assert.notEqual(sb(d, 'check', '--allow', 'more repeats').code, 0); assert.deepEqual(allowedLog(d), [], 'the reason named neither: nothing let through, nothing kept');
+  assert.notEqual(sb(d, 'check', '--allow', 'contract-frozen: more repeats').code, 0); assert.deepEqual(allowedLog(d), [], 'one of two is not a change let through');
+  const names = check(d).allowable.map((l) => l.replace(/^mandate:/, '')).join(', ');
+  assert.equal(sb(d, 'check', '--allow', `${names}: the spec changed, and more repeats`).code, 0);
+  const a = allowedLog(d); assert.equal(a.length, 1); assert.ok(a[0].cleared.includes('mandate:contract-frozen') && a[0].cleared.length > 1, JSON.stringify(a[0].cleared));
+  assert.ok(a[0].files.includes('test/add.test.js') && a[0].files.includes('promptwheel.config.json'), JSON.stringify(a[0].files));
+});
+test('claim: a reason given where sawbuck is not attached is printed and not kept: nothing is written in a repo it does not watch', () => {
+  const d = gamedRepo(); const r = sb(d, 'check', '--allow', 'a person said so');
+  assert.equal(r.code, 0); assert.match(r.out, /a person said so/); assert.doesNotMatch(r.out, /The reason is kept here/);
+  assert.ok(!existsSync(join(d, '.sawbuck')), 'no record folder appears');
+});
+test('claim: a reason given for an uncommitted change is kept too, and still comes back after the commit', () => {
+  const d = repo(); const w = wired(d); w.prompt('make the tests pass');   // a session has started here: the record exists
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0'));
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed').code, 0);
+  const a = allowedLog(d); assert.equal(a.length, 1); assert.equal(a[0].sha, ''); assert.deepEqual(a[0].files, ['test/add.test.js']);
+  save(d, 'the new spec');
+  const out = w.prompt('look at test/add.test.js');
+  assert.match(out, /let through here by a person/); assert.match(out, /before it was committed.*The reason given: "the spec changed"/);
+});
+// ------------------------------------------------------------ "the record is not the only witness"
+// Found 2026-11-12 (proof-bench/record-tamper): on 0.1.67, after a gamed commit was sent back, rewriting or deleting the
+// record under .sawbuck/ ended the turn with no send-back. The folder is kept out of git status, so the rule that names
+// it cannot see a write there. The hooks now keep what they concluded a second time, in the git folder, and prove the
+// commit again from the source when the record no longer accounts for it.
+const sentBackTurn = () => { const d = repo(); const w = wired(d); w.prompt('make the add test pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green'); assert.ok(blocked(w.stop()), 'the gamed commit is sent back'); return { d, w }; };
+const markVerified = (d) => json(d, '.sawbuck/results.json', (o) => { o.latest.kind = 'verified'; o.gamed = 0; });
+const guardFile = (d) => join(d, '.git', 'sawbuck', 'guard.json');
+test('claim: rewriting or deleting the record after a gamed commit does not take the send-back away', () => {
+  let { d, w } = sentBackTurn(); markVerified(d); assert.ok(blocked(w.stop()), 'the verdict rewritten to verified'); assert.ok(blocked(w.stop()), 'and it holds at the next end of turn');
+  assert.equal(git(d, 'status', '--porcelain'), '', 'nothing of this shows in git status');
+  ({ d, w } = sentBackTurn()); rmSync(join(d, '.sawbuck', 'results.json')); assert.ok(blocked(w.stop()), 'the results file deleted');
+  ({ d, w } = sentBackTurn()); rmSync(join(d, '.sawbuck', 'results.json')); rmSync(join(d, '.sawbuck', 'state.json')); assert.ok(blocked(w.stop()), 'the results file and the state file deleted');
+  ({ d, w } = sentBackTurn()); markVerified(d); git(d, 'commit', '-q', '--allow-empty', '-m', 'wip'); assert.ok(blocked(w.stop()), 'rewritten, then an empty commit on top');
+  // before the first end of turn: a state file blanked or garbled, so that no commit of the turn would be looked at
+  for (const [what, text] of [['blanked', '{}\n'], ['garbled', 'x\n'], ['set to null', 'null\n']]) {
+    const e = repo(); const x = wired(e); x.prompt('make the add test pass'); put(e, '.sawbuck/state.json', text);
+    edit(e, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(e, 'make it green');
+    assert.ok(blocked(x.stop()), `the state file ${what} before the turn ended`);
+  }
+  assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /\.git\/sawbuck\/guard\.json/, 'the README says where the second copy is');
+});
+test('claim: deleting the whole record folder during a turn does not take the send-back away, for a gamed commit or a protected path', () => {
+  const { d, w } = sentBackTurn(); rmSync(join(d, '.sawbuck'), { recursive: true });
+  assert.ok(blocked(w.stop()), 'the turn is checked again from the commit it began at');
+  assert.ok(existsSync(guardFile(d)), 'the second copy is in the git folder'); assert.equal(git(d, 'status', '--porcelain'), '', 'and not in the work tree');
+  // a protected path changed and committed in the turn: with the record gone the old check had no commit to compare with
+  const e = signed(true); const x = wired(e); x.prompt('speed up CI'); put(e, '.github/workflows/ci.yml', 'on: push\n'); save(e, 'ci');
+  rmSync(join(e, '.sawbuck'), { recursive: true });
+  assert.ok(blocked(x.stop()), 'the committed workflow change is still sent back');
+});
+test('claim: the honest ways out still clear it after the record was rewritten: the source fix, and a person\'s --allow', () => {
+  let { d, w } = sentBackTurn(); markVerified(d);
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),0', 'add(2,2),4')); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the real fix clears it'); assert.ok(!blocked(w.stop()), 'and it stays cleared');
+  ({ d, w } = sentBackTurn()); rmSync(join(d, '.sawbuck', 'results.json'));
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed: add subtracts now').code, 0);
+  assert.ok(!blocked(w.stop()), 'a person\'s reason clears it, with the results file gone');
+});
+test('claim: a turn that removed the record and did nothing wrong still ends, and the person is told once that it was removed', () => {
+  const d = repo(true); const w = wired(d); w.prompt('add a sub function'); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub');
+  rmSync(join(d, '.sawbuck'), { recursive: true });
+  const out = w.stop(); assert.ok(!blocked(out), out); assert.match(out, /record for this repo \(\.sawbuck\/\) was removed or made unreadable during this turn/);
+  assert.doesNotMatch(w.stop(), /was removed or made unreadable/, 'said once');
+});
+test('claim: detach takes the second copy with it', () => {
+  const { d } = sentBackTurn(); assert.ok(existsSync(guardFile(d)));
+  assert.equal(sb(d, 'detach', '--purge').code, 0); assert.ok(!existsSync(guardFile(d)), 'gone with the record');
+  const e = sentBackTurn().d; assert.equal(sb(e, 'detach').code, 0); assert.ok(!existsSync(guardFile(e)), 'gone when the hooks go, record kept or not');
+});
 test('claim: with gaming detection off, the check does not say the win was re-proved', () => { const d = gamedRepo(); const r = sb(d, 'check', '--no-detect-gaming'); assert.equal(r.code, 0); assert.match(r.out, /gaming detection is off/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 for (const a of [['contract', '--help'], ['attach', '--help'], ['detach', '--help'], ['init', '-h'], ['check', '-h']]) {
   test(`claim: ${a.join(' ')} prints help and writes nothing`, () => { const d = repo(true); const x = excludeText(d); const r = sb(d, ...a); assert.equal(r.code, 0); assert.match(r.out, new RegExp(`sawbuck ${a[0]}`)); assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(excludeText(d), x); assert.ok(!existsSync(join(d, '.git/sawbuck')) && !existsSync(join(d, '.claude'))); });
