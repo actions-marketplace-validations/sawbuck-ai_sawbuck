@@ -741,6 +741,56 @@ test('claim: a reason given for an uncommitted change is kept too, and still com
   const out = w.prompt('look at test/add.test.js');
   assert.match(out, /let through here by a person/); assert.match(out, /before it was committed.*The reason given: "the spec changed"/);
 });
+// ------------------------------------------------------------ "the record is not the only witness"
+// Found 2026-11-12 (proof-bench/record-tamper): on 0.1.67, after a gamed commit was sent back, rewriting or deleting the
+// record under .sawbuck/ ended the turn with no send-back. The folder is kept out of git status, so the rule that names
+// it cannot see a write there. The hooks now keep what they concluded a second time, in the git folder, and prove the
+// commit again from the source when the record no longer accounts for it.
+const sentBackTurn = () => { const d = repo(); const w = wired(d); w.prompt('make the add test pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green'); assert.ok(blocked(w.stop()), 'the gamed commit is sent back'); return { d, w }; };
+const markVerified = (d) => json(d, '.sawbuck/results.json', (o) => { o.latest.kind = 'verified'; o.gamed = 0; });
+const guardFile = (d) => join(d, '.git', 'sawbuck', 'guard.json');
+test('claim: rewriting or deleting the record after a gamed commit does not take the send-back away', () => {
+  let { d, w } = sentBackTurn(); markVerified(d); assert.ok(blocked(w.stop()), 'the verdict rewritten to verified'); assert.ok(blocked(w.stop()), 'and it holds at the next end of turn');
+  assert.equal(git(d, 'status', '--porcelain'), '', 'nothing of this shows in git status');
+  ({ d, w } = sentBackTurn()); rmSync(join(d, '.sawbuck', 'results.json')); assert.ok(blocked(w.stop()), 'the results file deleted');
+  ({ d, w } = sentBackTurn()); rmSync(join(d, '.sawbuck', 'results.json')); rmSync(join(d, '.sawbuck', 'state.json')); assert.ok(blocked(w.stop()), 'the results file and the state file deleted');
+  ({ d, w } = sentBackTurn()); markVerified(d); git(d, 'commit', '-q', '--allow-empty', '-m', 'wip'); assert.ok(blocked(w.stop()), 'rewritten, then an empty commit on top');
+  // before the first end of turn: a state file blanked or garbled, so that no commit of the turn would be looked at
+  for (const [what, text] of [['blanked', '{}\n'], ['garbled', 'x\n'], ['set to null', 'null\n']]) {
+    const e = repo(); const x = wired(e); x.prompt('make the add test pass'); put(e, '.sawbuck/state.json', text);
+    edit(e, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(e, 'make it green');
+    assert.ok(blocked(x.stop()), `the state file ${what} before the turn ended`);
+  }
+  assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /\.git\/sawbuck\/guard\.json/, 'the README says where the second copy is');
+});
+test('claim: deleting the whole record folder during a turn does not take the send-back away, for a gamed commit or a protected path', () => {
+  const { d, w } = sentBackTurn(); rmSync(join(d, '.sawbuck'), { recursive: true });
+  assert.ok(blocked(w.stop()), 'the turn is checked again from the commit it began at');
+  assert.ok(existsSync(guardFile(d)), 'the second copy is in the git folder'); assert.equal(git(d, 'status', '--porcelain'), '', 'and not in the work tree');
+  // a protected path changed and committed in the turn: with the record gone the old check had no commit to compare with
+  const e = signed(true); const x = wired(e); x.prompt('speed up CI'); put(e, '.github/workflows/ci.yml', 'on: push\n'); save(e, 'ci');
+  rmSync(join(e, '.sawbuck'), { recursive: true });
+  assert.ok(blocked(x.stop()), 'the committed workflow change is still sent back');
+});
+test('claim: the honest ways out still clear it after the record was rewritten: the source fix, and a person\'s --allow', () => {
+  let { d, w } = sentBackTurn(); markVerified(d);
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),0', 'add(2,2),4')); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the real fix clears it'); assert.ok(!blocked(w.stop()), 'and it stays cleared');
+  ({ d, w } = sentBackTurn()); rmSync(join(d, '.sawbuck', 'results.json'));
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed: add subtracts now').code, 0);
+  assert.ok(!blocked(w.stop()), 'a person\'s reason clears it, with the results file gone');
+});
+test('claim: a turn that removed the record and did nothing wrong still ends, and the person is told once that it was removed', () => {
+  const d = repo(true); const w = wired(d); w.prompt('add a sub function'); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub');
+  rmSync(join(d, '.sawbuck'), { recursive: true });
+  const out = w.stop(); assert.ok(!blocked(out), out); assert.match(out, /record for this repo \(\.sawbuck\/\) was removed or made unreadable during this turn/);
+  assert.doesNotMatch(w.stop(), /was removed or made unreadable/, 'said once');
+});
+test('claim: detach takes the second copy with it', () => {
+  const { d } = sentBackTurn(); assert.ok(existsSync(guardFile(d)));
+  assert.equal(sb(d, 'detach', '--purge').code, 0); assert.ok(!existsSync(guardFile(d)), 'gone with the record');
+  const e = sentBackTurn().d; assert.equal(sb(e, 'detach').code, 0); assert.ok(!existsSync(guardFile(e)), 'gone when the hooks go, record kept or not');
+});
 test('claim: with gaming detection off, the check does not say the win was re-proved', () => { const d = gamedRepo(); const r = sb(d, 'check', '--no-detect-gaming'); assert.equal(r.code, 0); assert.match(r.out, /gaming detection is off/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 for (const a of [['contract', '--help'], ['attach', '--help'], ['detach', '--help'], ['init', '-h'], ['check', '-h']]) {
   test(`claim: ${a.join(' ')} prints help and writes nothing`, () => { const d = repo(true); const x = excludeText(d); const r = sb(d, ...a); assert.equal(r.code, 0); assert.match(r.out, new RegExp(`sawbuck ${a[0]}`)); assert.equal(git(d, 'status', '--porcelain'), ''); assert.equal(excludeText(d), x); assert.ok(!existsSync(join(d, '.git/sawbuck')) && !existsSync(join(d, '.claude'))); });

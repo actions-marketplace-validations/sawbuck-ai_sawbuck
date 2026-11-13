@@ -44,6 +44,7 @@
     "ledger.mjs",
     "undo.mjs",
     "allowed.mjs",
+    "guard.mjs",
     "deps.mjs",
     "ripples.mjs",
     "profile.mjs",

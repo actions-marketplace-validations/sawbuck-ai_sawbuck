@@ -13,6 +13,7 @@ import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
 import { recordAllowed, allowedBlock } from './allowed.mjs';
+import { writeGuard, clearGuard } from './guard.mjs';
 import { ripplesReport } from './ripples.mjs';
 import { profileCli } from './profile.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
@@ -407,6 +408,7 @@ switch (cmd) {
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
             st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo) };
+            writeGuard(repo, { baseline: st.turnBaseline });   // a second copy in the git folder: the record folder is out of git status, so its loss during a turn must not lose the turn's starting point (guard.mjs)
           }
         }
         framed = !!session && st.framedSession === session;
@@ -470,6 +472,7 @@ switch (cmd) {
         unwireCodex(repo, { quiet: true }); unwireCursor(repo, { quiet: true });
       }
       if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
+      if (!dry) clearGuard(repo);   // the hooks are gone: nothing is checked from the second copy either
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
       const left = recordLeft(repo);
       if (left.length) say(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
@@ -1116,6 +1119,7 @@ function detachAll(purge) {
     else if (x.mode === 'user') unwireClaude(x.repo, { user: true });
     else unwireClaude(x.repo, {});
     if (purge) purgeRecord(x.repo);
+    if (!dry) clearGuard(x.repo);
     syncExclude(x.repo, readManifest(manifestPath(x.repo)));
   }
   say('sawbuck: detached everywhere.');
