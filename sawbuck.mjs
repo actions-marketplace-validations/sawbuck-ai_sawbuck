@@ -13,12 +13,12 @@ import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
 import { recordAllowed, allowedBlock } from './allowed.mjs';
-import { writeGuard, clearGuard } from './guard.mjs';
+import { readGuard, writeGuard, detachGuard, ownOf, guardPath, turnOpen } from './guard.mjs';
 import { ripplesReport } from './ripples.mjs';
 import { profileCli } from './profile.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
 import { dependencyEditFromHook } from './deps.mjs';
-import { holdDecision } from './hold.mjs';
+import { holdDecision, ownRecordEdit } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
@@ -419,10 +419,14 @@ switch (cmd) {
             const stillInHead = moved && Object.entries(flagged).some(([f, h]) => { const b = blobAt(repo, sha, f); return h === 'deleted' ? b === '' : (!!h && b === h); });
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
-            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo) };
+            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo), maxBlocks: maxBlocksIn(repo) };
             writeGuard(repo, { baseline: st.turnBaseline });   // a second copy in the git folder: the record folder is out of git status, so its loss during a turn must not lose the turn's starting point (guard.mjs)
           }
         }
+        // a turn is open from here to an end of turn that lets it end. What that hook counts (the last commit it looked
+        // at, the send-backs spent) is kept in the second copy and read from there; it is started from the state file
+        // once, here, before the turn's first tool call, and never again (guard.mjs).
+        { const g = readGuard(repo); writeGuard(repo, { own: { ...((g.own && typeof g.own === 'object' && !Array.isArray(g.own)) ? g.own : ownOf(st)), turnOpen: true } }); }
         framed = !!session && st.framedSession === session;
         if (session) st.framedSession = session;
         st.lastPrompt = promptText.replace(/\s+/g, ' ').trim().slice(0, 240);   // the person's words, for an undo record (local, git-excluded)
@@ -484,7 +488,9 @@ switch (cmd) {
         unwireCodex(repo, { quiet: true }); unwireCursor(repo, { quiet: true });
       }
       if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
-      if (!dry) clearGuard(repo);   // the hooks are gone: nothing is checked from the second copy either
+      // the hooks are gone: nothing is checked from the second copy either. But a session that is in a turn read its
+      // hooks when it began and still runs them: that turn is checked to its end, and then the copy goes.
+      detachSecondCopy(repo);
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
       const left = recordLeft(repo);
       if (left.length) say(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
@@ -544,6 +550,7 @@ switch (cmd) {
     // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const r = gitTop(repoArg()) || repoArg();
+    { const q = ownRecordEdit(body, r); if (q) out(JSON.stringify(q)); }   // an edit tool pointed into sawbuck's own record: a person says yes first (hold.mjs)
     dependencyEditFromHook(body, r);   // an edit inside an installed dependency is in no diff: recorded for the notice at the end of the turn
     const found = flags.has('--codex') ? undoCodex(body, r) : [undoHook(body, r)].filter(Boolean);
     for (const e of found) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
@@ -776,6 +783,7 @@ function wireGit(repo) {
       ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       base.sha ? `write   ${base.path}  (the commit to check from, so the first commit after this is checked)` : null,
+      base.sha && !readGuard(repo).own && !readGuard(repo).baseline ? `write   ${guardPath(repo)}  (the same commit a second time, in the git folder: the hook reads it from there)` : null,
       `write   ${regPath()}  (the list of attached repos, for detach --all)`,
     ].filter(Boolean)));
     return;
@@ -786,7 +794,10 @@ function wireGit(repo) {
   m.attachments = { ...m.attachments, git: { pc: { created: !existed, ...(existed && shebang ? { shebang } : {}), ...(nl ? { nl } : {}) } } };
   syncExclude(repo, m);
   writeManifest(mp, m);
-  if (base.sha) { try { mkdirSync(dirname(base.path), { recursive: true }); writeFileSync(base.path, JSON.stringify({ turns: 0, shownTotal: 0, ...base.st, lastSha: base.sha }, null, 2) + '\n'); } catch {} }
+  if (base.sha) { try { mkdirSync(dirname(base.path), { recursive: true }); writeFileSync(base.path, JSON.stringify({ turns: 0, shownTotal: 0, ...base.st, lastSha: base.sha }, null, 2) + '\n'); } catch {}
+    // the hook reads "last commit looked at" from the second copy. It is started here only when that copy holds
+    // nothing: with hooks already at work, attach --git must not be a way to say a commit was looked at.
+    const g = readGuard(repo); if (!g.own && !g.baseline) writeGuard(repo, { own: { seen: base.sha } }); }
   regAdd(repo, 'git');
   out(`sawbuck: attached (git post-commit) in ${repo}. Every commit is checked, whatever made it.`);
 }
@@ -881,6 +892,7 @@ function wireClaude(repo, opts) {
       !user && ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       baseline ? `write   ${stPath}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
+      baseline && !readGuard(repo).baseline ? `write   ${guardPath(repo)}  (the same baseline a second time, in the git folder: what the end of a turn is checked from)` : null,
       `write   ${regPath()}  (the list of attached repos, for detach --all)`,
     ].filter(Boolean)));
     return;
@@ -908,11 +920,16 @@ function wireClaude(repo, opts) {
     try {
       ensureExcluded(repo);
       let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-      st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach', refs: refTips(repo) };
-      st.lastPromptAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      st.turnBaseline = { at: now, sha, files: protectedDirty(repo, { store: true }), by: 'attach', refs: refTips(repo), maxBlocks: maxBlocksIn(repo) };
+      st.lastPromptAt = now;
       mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
+      // the second copy gets it only when it holds none: a baseline a prompt took is never replaced from here, so
+      // running attach inside a turn cannot move where that turn began
+      if (!readGuard(repo).baseline) writeGuard(repo, { baseline: st.turnBaseline });
     } catch {}
   }
+  if (!user && readGuard(repo).detached) writeGuard(repo, { detached: null });   // attached again: a detach that was waiting for a turn to end is off
   const m = readManifest(mp);
   const prev = (m.attachments || {})[mode];   // an upgrade keeps the receipt of what the first attach created
   m.attachments = { ...m.attachments, [mode]: { file: f, fileCreated: prev ? !!prev.fileCreated : !fileExisted, dirCreated: prev ? !!prev.dirCreated : !dirExisted } };
@@ -985,11 +1002,21 @@ function verifyClean(repo) {
   if (!left.length) out('sawbuck: verified, the hooks and the receipt are gone.');
   else { out('sawbuck: NOT clean, these remain:'); for (const it of left) out(`  ${it.state.padEnd(22)} ${it.what}`); process.exitCode = 1; }
 }
+// enforce.maxBlocks as sawbuck.config.json has it right now, or null. A baseline carries it, so the end of a turn uses
+// the setting that stood when the prompt began, not one written during the turn.
+// (a function declaration, like its neighbours: the command switch above runs before this line is reached)
+function maxBlocksIn(repo) { try { const e = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')).enforce; return (e && e.maxBlocks !== undefined) ? e.maxBlocks : null; } catch { return null; } }
 // every ref tip at the start of a turn, so a rebase inside the turn can tell the agent's own commits from upstream's
 function refTips(repo) {
   try { return [...new Set(execFileSync('git', ['-C', repo, 'for-each-ref', '--format=%(objectname)'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean))].slice(0, 500); } catch { return []; }
 }
 // detach keeps .sawbuck/state.json as the record; this flag is how the plugin band and status tell "detached" from "watching"
+// the second copy of the hooks' state goes with the hooks, at once or when an open turn ends (guard.mjs)
+function detachSecondCopy(repo) {
+  const p = guardPath(repo); if (!p || !existsSync(p)) return;
+  if (dry) { const open = turnOpen(readGuard(repo)); planned.lines.set(p, open ? `modify  ${p}  (a turn is open here: the second copy of the hooks' state stays until it ends)` : `delete  ${p}  (the second copy of the hooks' state)`); return; }
+  if (detachGuard(repo)) say('sawbuck: a turn is open in this repo. It is still checked when it ends; the second copy of the hooks\' state (.git/sawbuck/guard.json) goes then.');
+}
 function markDetached(repo, detached) {
   const p = join(repo, '.sawbuck', 'state.json');
   if (!there(p)) return;
@@ -1138,7 +1165,7 @@ function detachAll(purge) {
     else if (x.mode === 'user') unwireClaude(x.repo, { user: true });
     else unwireClaude(x.repo, {});
     if (purge) purgeRecord(x.repo);
-    if (!dry) clearGuard(x.repo);
+    detachSecondCopy(x.repo);
     syncExclude(x.repo, readManifest(manifestPath(x.repo)));
   }
   say('sawbuck: detached everywhere.');

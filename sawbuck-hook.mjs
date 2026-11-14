@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 import { mandateHits, hashOf, protectedAmong, lockState } from './contract.mjs';
 import { dependencyEditsSince, dependencyNotice } from './deps.mjs';
-import { readGuard, writeGuard } from './guard.mjs';
+import { readGuard, writeGuard, clearGuard, OWN, ownOf } from './guard.mjs';
 import { readAllowed } from './allowed.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
@@ -61,7 +61,8 @@ const isAncestor = (a, b) => { try { execFileSync('git', ['-C', repo, 'merge-bas
 // THE RECORD IS NOT THE ONLY WITNESS (the end-of-turn hook only; guard.mjs says why). Two things are kept a second time
 // in the git folder: the baseline the prompt hook took, and a gamed verdict this hook sent back.
 const enforcing = stop && !process.env.SAWBUCK_NO_ENFORCE;
-const guard = enforcing ? readGuard(repo) : {};
+const G = readGuard(repo);   // read in every mode: what this hook counts lives there (`own`), whoever runs it
+const guard = enforcing ? G : {};
 const inHead = (sha) => !!(sha && head && hasCommit(sha) && (sha === head || isAncestor(sha, head)));
 // 1) the state file is not the one this turn began with. The prompt hook writes it on every prompt, with the time of
 // the prompt, and writes the guard's baseline in the same breath. So a state file that is gone, blank, garbled, or
@@ -69,10 +70,25 @@ const inHead = (sha) => !!(sha && head && hasCommit(sha) && (sha === head || isA
 // checked from the commit it began at, with the baseline it began with.
 let recordRemoved = false;
 const stateUsable = stateRead && !!st.lastPromptAt && !(guard.baseline && guard.baseline.at && Date.parse(st.lastPromptAt) < Date.parse(guard.baseline.at));
-if (enforcing && !stateUsable && guard.baseline && inHead(guard.baseline.sha)) {
-  st = { lastSha: '', turns: 0, shownTotal: 0 };
-  st.turnBaseline = guard.baseline; st.lastSha = guard.baseline.sha; st.lastPromptAt = guard.baseline.at || st.lastPromptAt; recordRemoved = true;
-  logActivity({ kind: 'note', sha: (head || '').slice(0, 8), file: '', reason: 'the record under .sawbuck/ was removed or made unreadable during the turn; it was rebuilt, and the turn is checked again from the commit it began at', by: by || 'hook' });
+if (enforcing && guard.baseline && guard.baseline.sha && hasCommit(guard.baseline.sha)) {
+  if (!stateUsable) {
+    st = { lastSha: guard.baseline.sha, turns: 0, shownTotal: 0 }; st.lastPromptAt = guard.baseline.at || st.lastPromptAt; recordRemoved = true;
+    logActivity({ kind: 'note', sha: (head || '').slice(0, 8), file: '', reason: 'the record under .sawbuck/ was removed or made unreadable during the turn; it was rebuilt, and the turn is checked again from the commit it began at', by: by || 'hook' });
+  }
+  // 1b) a state file that reads well is not believed for where the turn began either. One field edited there (the
+  // baseline's commit set to the gamed commit, or that commit added to its list of tips) ended a turn with nothing
+  // looked at, and no line in git status (record-tamper, 2026-11-13). The baseline that counts is the second copy's,
+  // whole: its commit, its tips, the files already dirty, the lock, the rules, the send-backs the repo allowed.
+  st.turnBaseline = guard.baseline;
+}
+// 1c) what this hook itself counts is read from the second copy in every mode, not from the state file: the last
+// commit it looked at (set that to the gamed commit and nothing was checked), and how many times this prompt was sent
+// back (set that to its limit and the turn was not sent back at all). The state file keeps a copy for `status` and the
+// band; nothing here is decided by it once the second copy holds these.
+const own = (G.own && typeof G.own === 'object' && !Array.isArray(G.own)) ? G.own : null;
+if (own) {
+  for (const k of OWN) { if (Object.prototype.hasOwnProperty.call(own, k)) st[k] = own[k]; else delete st[k]; }
+  st.lastSha = (own.seen && hasCommit(own.seen)) ? own.seen : '';
 }
 // 2) a gamed verdict this hook sent back still stands in the guard. It comes down three ways only: the gamed commit left
 // this history, a person's reason for it is on record, or (below) the engine's own pass over the span in this run.
@@ -144,7 +160,15 @@ st.turns += 1;
 
 // 2) the record of what the check has charted (read above, after any re-run)
 const total = rec ? (rec.regressions || 0) + (rec.gamed || 0) + (rec.mandates || 0) : 0;
-const saveState = () => { try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {} };
+// how: 'ends' when this run lets the turn end, 'back' when it sends the turn back, nothing for a save on the way.
+// Each save writes what this hook counts to the second copy too. A detach that arrived while the turn was open takes
+// the second copy away here, when the turn ends, and not before.
+const saveState = (how) => {
+  try { mkdirSync(stDir, { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n'); } catch {}
+  if (stop && how === 'ends' && G.detached) { clearGuard(repo); return; }
+  const was = !!(own && own.turnOpen);
+  writeGuard(repo, { own: { ...ownOf(st), turnOpen: !stop ? was : how === 'ends' ? false : how === 'back' ? true : was } });
+};
 // the budget is per prompt: prompt_id when the harness sends one, else the prompt's own timestamp (written by
 // `sawbuck turn --hook`), never a constant that would spend it for good
 const promptId = hookInput.prompt_id || st.lastPromptAt || 'none';
@@ -168,12 +192,15 @@ const asksPerson = (text, file) => { const tail = String(text || '').slice(-800)
 const sendBack = (idKey, countKey, reason, stillOpen) => {
   // enforce.maxBlocks in sawbuck.config.json: how many times a turn is sent back to the agent (default 3). 0 means
   // the person decides every time: nothing goes back to the agent, the person is told at once.
-  const raw = cfg.enforce ? cfg.enforce.maxBlocks : undefined;
+  // the setting as it stood when the prompt began (the baseline carries it): written during the turn, a 0 here turned
+  // every send-back into a note to the person. A baseline from before 0.1.69 does not carry it; then the file is read.
+  const tbl = (st.turnBaseline && typeof st.turnBaseline === 'object') ? st.turnBaseline : null;
+  const raw = (tbl && Object.prototype.hasOwnProperty.call(tbl, 'maxBlocks')) ? tbl.maxBlocks : (cfg.enforce ? cfg.enforce.maxBlocks : undefined);
   const max = (raw === undefined || raw === null || raw === '' || !Number.isFinite(+raw)) ? 3 : Math.max(0, Math.floor(+raw));
   if (st[idKey] !== promptId) { st[idKey] = promptId; st[countKey] = 0; }
   const spent = (st[countKey] || 0) >= max;
   if (!spent) st[countKey] = (st[countKey] || 0) + 1;
-  saveState();
+  saveState(spent ? 'ends' : 'back');
   process.stdout.write(JSON.stringify(spent ? { systemMessage: max === 0 ? `Sawbuck (set to ask you first, enforce.maxBlocks 0): ${stillOpen}` : `Sawbuck stopped blocking after ${max} tries: ${stillOpen}` } : { decision: 'block', reason }));
   process.exit(0);
 };
@@ -261,7 +288,7 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   const choices = `Your call: (1) fix the source and keep the test as it was; (2) put the test back: git checkout ${back} -- ${where}, then commit; (3) if the test change is right, accept it: sawbuck check --allow "<why>".`;
   // the agent asking the person instead of bending the source is the right move, so the turn may end there
   if (asksPerson(lastAgentText(), where)) {
-    saveState();
+    saveState('ends');
     process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: the win on ${where} came from changing the test, and your agent is asking you about it instead of changing the source to fit. ${choices}` }));
     process.exit(0);
   }
@@ -287,7 +314,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
     const pinsMoved = !!now.pins && now.pins !== was.pins;
     const key = JSON.stringify([fresh, pinsMoved ? now.pins : '']);
     if ((fresh.length || pinsMoved) && st.lockNotice !== key) {
-      st.lockNotice = key; depDone(); saveState();
+      st.lockNotice = key; depDone(); saveState('ends');
       const what = [...fresh.slice(0, 8), ...(pinsMoved ? ['the resolved dependency tree'] : [])].join(', ');
       process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: this turn changed what the lock holds: ${what}${fresh.length > 8 ? `, and ${fresh.length - 8} more` : ''}. If you did not ask for that, look before you commit. The gate needs your reason to pass it: promptwheel run --allow "<reason>". When more than one thing changed, the reason names each, and the check prints the line.${depSaid ? ` ${depSaid}` : ''}` }));
       process.exit(0);
@@ -297,7 +324,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE && st.turnBaseline && st.turnBaselin
 
 // 3a, said alone when the lock had nothing to say
 if (depSaid) {
-  depDone(); saveState();
+  depDone(); saveState('ends');
   process.stdout.write(JSON.stringify({ systemMessage: depSaid }));
   process.exit(0);
 }
@@ -305,7 +332,7 @@ if (depSaid) {
 // 3c) the record was removed during this turn and nothing above sent the turn back: the person is told, once (the
 // state file is written again below, so the next end of turn does not come here)
 if (recordRemoved) {
-  st.shownTotal = total; saveState();
+  st.shownTotal = total; saveState('ends');
   process.stdout.write(JSON.stringify({ systemMessage: 'Sawbuck: its record for this repo (.sawbuck/) was removed or made unreadable during this turn. It was rebuilt from a second copy, and the turn was checked again from the commit it began at. If you did not do that, look at what this turn did.' }));
   process.exit(0);
 }
@@ -316,4 +343,4 @@ if (total > (st.shownTotal || 0)) {
   process.stdout.write(`Sawbuck caught a ${L && L.kind === 'gamed' ? 'gamed change' : 'problem'}${L && L.file ? ` in ${L.file}` : ''}${L && L.reason ? `: ${L.reason}` : ''}\n`);
   st.shownTotal = total;
 }
-saveState();
+saveState('ends');

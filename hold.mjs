@@ -4,10 +4,42 @@
 // Bash: a matching command is turned into a question to the person ("ask"); everything else passes untouched. The list is
 // the default below plus `holds.outward` in sawbuck.config.json; `{"holds":{"off":true}}` turns it off for a repo.
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, dirname, sep } from 'node:path';
 import { homedir } from 'node:os';
+import { guardPath } from './guard.mjs';
 
 export const ALLOW = /\b(sawbuck|promptwheel)(\.mjs)?\b[^|;&]*\s--allow\b/;
+// Sawbuck's own record (.sawbuck/) and the second copy its hooks keep (.git/sawbuck/) are what the end of a turn is
+// checked from, and both are out of git status: a write there shows in no diff. So a command that detaches sawbuck, a
+// command that names either folder, and an edit tool pointed into one each become a question to the person. Asked
+// whether the outward holds are on or off, like --allow: it is how the check itself is taken away. Reading is not
+// asked. It is a question, not a wall: a command that reaches those files without naming them is not seen here.
+// The folder of the same name in a person's home (~/.sawbuck/: their own holds, and what `rules` and `shape` gather)
+// is not a repo's record, and the plugin's own commands name it: never asked here.
+export const DETACH = /\bsawbuck(?:\.mjs)?["']?(?:@[\w.-]+)?["']?\s+detach\b/;
+const PLAIN_READ = /^\s*(?:cat|ls|head|tail|wc|stat|file|less|more)\b[^;&|<>`$]*$/;
+export function namesRepoRecord(command, home = process.env.HOME || homedir()) {
+  const c = String(command || '');
+  if (/\.git\/sawbuck(?![\w-])/.test(c)) return true;
+  const re = /(?:^|[^\w.-])\.sawbuck(?![\w.-])/g; let m;
+  while ((m = re.exec(c))) {
+    const before = c.slice(0, m.index + m[0].indexOf('.sawbuck'));
+    if (['~', '$HOME', '${HOME}', home].filter(Boolean).some((h) => before.endsWith(`${h}/`))) continue;   // the home folder
+    return true;
+  }
+  return false;
+}
+const OWN_WHY = 'Sawbuck: this detaches Sawbuck or touches its own record (.sawbuck/, or .git/sawbuck/), which is what the end of a turn is checked from. Approve only if you asked for it, not the agent.';
+const askOwn = () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: OWN_WHY } });
+// the edit tools (Edit, Write and the like): a file under either folder
+export function ownRecordEdit(hookJson, repo) {
+  let h = {}; try { h = JSON.parse(hookJson || '{}'); } catch {}
+  if (h.hook_event_name !== 'PreToolUse' || !h.tool_input || typeof h.tool_input !== 'object' || !repo) return null;
+  const f = String(h.tool_input.file_path || h.tool_input.notebook_path || ''); if (!f) return null;
+  const abs = resolve(repo, f); const gp = guardPath(repo);
+  const under = (dir) => !!dir && (abs === dir || abs.startsWith(dir + sep));
+  return (under(join(resolve(repo), '.sawbuck')) || under(gp ? dirname(gp) : '')) ? askOwn() : null;
+}
 export const OUTWARD = [
   ['npm publish', /\bnpm\s+publish\b/], ['pnpm publish', /\bpnpm\s+publish\b/], ['yarn publish', /\byarn\s+(npm\s+)?publish\b/],
   ['gh release', /\bgh\s+release\s+(create|upload|edit|delete)\b/], ['gh pr merge', /\bgh\s+pr\s+merge\b/],
@@ -41,6 +73,7 @@ export function holdDecision(hookJson, repo) {
   const cmd = h.tool_input && typeof h.tool_input.command === 'string' ? h.tool_input.command : '';
   // --allow records a person's decision to accept what the check could not prove; the agent typing it is not that.
   // Always asked, holds off or not: it is how a gamed verdict is cleared.
+  if (DETACH.test(cmd) || (namesRepoRecord(cmd) && !PLAIN_READ.test(cmd))) return askOwn();
   if (ALLOW.test(cmd)) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'Sawbuck: --allow records that a person accepts a change the check could not prove (a test, config or protected file changed). Approve only if you decided it, not the agent.' } };
   const name = outwardHold(cmd, repo);
   if (!name) return null;
