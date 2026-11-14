@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
+import { localDay } from './day.mjs';
 
 export const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
 export const EDIT_MATCHER = EDIT_TOOLS.join('|');
@@ -113,7 +114,7 @@ export function undoneLines(repo, changed) {
   for (const e of readUndone(repo).reverse()) {
     if (!touched.has(e.file)) continue;
     const k = `${e.file}\n${e.first}`; if (seen.has(k)) continue; seen.add(k);
-    out.push(`    - ${e.kind === 'part' ? 'partly undone' : 'undone'} here at your request (${String(e.at).slice(0, 10)}): ${e.added} line${e.added === 1 ? '' : 's'} starting \`${e.first}\` in ${e.file}${e.why ? `. Your words: "${e.why}"` : ''}`);
+    out.push(`    - ${e.kind === 'part' ? 'partly undone' : 'undone'} here at your request (${localDay(e.at)}): ${e.added} line${e.added === 1 ? '' : 's'} starting \`${e.first}\` in ${e.file}${e.why ? `. Your words: "${e.why}"` : ''}`);
     if (out.length === 3) break;
   }
   return out;

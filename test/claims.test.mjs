@@ -745,6 +745,22 @@ test('claim: a reason given with --allow is kept, and comes back with the prompt
   assert.equal(allowedLog(d).length, 2, 'kept under --json, and the output is still only the report');
   assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /kept in `\.sawbuck\/allowed\.jsonl`/, 'the README says where it is kept');
 });
+// A record keeps the instant in UTC. Shown as its first ten characters it read a day ahead for anyone west of Greenwich
+// in the evening: at 20:29 on the 13th in Los Angeles an agent was told a decision was made on the 14th, and remarked on
+// it (2026-11-13, a real session). The day shown is the day on the clock of the machine the hook runs on.
+test('claim: the day shown with a past decision is the day on this machine, not the day in UTC', () => {
+  const d = repo(); const w = wired(d);
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  w.prompt('look at the tests');   // a turn has begun here, so the record is being kept
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed: add subtracts now').code, 0);
+  const f = join(d, '.sawbuck', 'allowed.jsonl'); const was = readFileSync(f, 'utf8'); assert.match(was, /"at":"[^"]+"/);
+  writeFileSync(f, was.replace(/"at":"[^"]+"/, '"at":"2026-11-14T04:29:00.000Z"'));   // 20:29 on the 13th in Los Angeles
+  const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.UserPromptSubmit[0].hooks[0].command;
+  const prompt = (TZ) => spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: { ...ENV, TZ }, input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', cwd: d, session_id: 'tz-' + TZ, prompt: 'tighten test/add.test.js' }) }).stdout || '';
+  assert.match(prompt('America/Los_Angeles'), /let through here by a person[\s\S]*\(2026-11-13, /, 'the day on the clock in Los Angeles');
+  assert.match(prompt('UTC'), /let through here by a person[\s\S]*\(2026-11-14, /);
+  assert.match(prompt('Asia/Tokyo'), /let through here by a person[\s\S]*\(2026-11-14, /);
+});
 test('claim: a protected path let through with --allow is kept under the rule\'s name, and comes back with the prompt that names the path', () => {
   const d = signed(true); const w = wired(d);
   json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); save(d, 'more repeats');

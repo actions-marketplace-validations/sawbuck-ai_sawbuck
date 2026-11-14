@@ -18,6 +18,7 @@ import { readSteers, groupSteers } from './steers.mjs';
 import { ledgerState } from './ledger.mjs';
 import { readUndone } from './undo.mjs';
 import { readAllowed } from './allowed.mjs';
+import { localDay } from './day.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
@@ -41,7 +42,7 @@ const tally = { verified: 0, gamed: 0, regression: 0, inconclusive: 0, allowed: 
 for (const e of feed) if (e && tally[e.kind] != null) tally[e.kind]++;
 const seen = feed.length;
 const latest = results.latest || (feed.length ? feed[feed.length - 1] : null);
-const since = feed.length ? (feed[0].at || '').slice(0, 10) : null;
+const since = feed.length ? localDay(feed[0].at) : null;
 
 // --- 2) the armed state: what it can measure here (shared with the statusline) ---
 const isGit = !!existsSync(join(repo, '.git'));
@@ -102,7 +103,7 @@ if (seen || catchesAllTime) {
   }
   if (latest) {
     const k = latest.kind || '';
-    const when = (latest.at || '').slice(0, 10);
+    const when = localDay(latest.at);
     const why = String(latest.reason || '').replace(/^sawbuck:\s*/i, '').slice(0, 90);
     out.push(`     latest: ${ICON[k] || '·'} ${k}${latest.file ? ` · ${latest.file}` : ''}${why ? ` · ${why}` : ''}${when ? `  (${when})` : ''}`);
   }

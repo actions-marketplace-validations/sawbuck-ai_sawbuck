@@ -8,6 +8,7 @@ import { join, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { readSteers, steerKey } from './steers.mjs';
+import { localDay } from './day.mjs';
 
 const HOUR = 3600_000;
 const lines = (p) => { try { return readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { return []; } };
@@ -87,7 +88,7 @@ export function ripplesReport({ home, repo, json = false } = {}) {
   const recent = rs.filter((r) => r.commits || r.undone || r.partly || r.reverts || r.cameBack).slice(-5).reverse();
   if (recent.length) {
     out.push('', 'Recent steers that left a ring:');
-    for (const r of recent) out.push(`  ${String(r.at).slice(0, 10)} ${r.nudge}  (${basename(r.repo)}${r.across ? `, across ${r.across} repos` : ''})`, `      ${[r.commits ? `${r.commits} commit${r.commits === 1 ? '' : 's'}${r.files.length ? ` (${r.files.slice(0, 3).join(', ')})` : ''}` : '', r.undone ? `${r.undone} undone` : '', r.partly ? `${r.partly} partly undone` : '', r.verdicts.length ? `check: ${[...new Set(r.verdicts)].join(', ')}` : '', r.reverts ? `${r.reverts} revert${r.reverts === 1 ? '' : 's'}` : '', r.cameBack ? `you said it again ${String(r.cameBack).slice(0, 10)}` : ''].filter(Boolean).join(' · ')}`);
+    for (const r of recent) out.push(`  ${localDay(r.at)} ${r.nudge}  (${basename(r.repo)}${r.across ? `, across ${r.across} repos` : ''})`, `      ${[r.commits ? `${r.commits} commit${r.commits === 1 ? '' : 's'}${r.files.length ? ` (${r.files.slice(0, 3).join(', ')})` : ''}` : '', r.undone ? `${r.undone} undone` : '', r.partly ? `${r.partly} partly undone` : '', r.verdicts.length ? `check: ${[...new Set(r.verdicts)].join(', ')}` : '', r.reverts ? `${r.reverts} revert${r.reverts === 1 ? '' : 's'}` : '', r.cameBack ? `you said it again ${String(r.cameBack).slice(0, 10)}` : ''].filter(Boolean).join(' · ')}`);
   }
   if (lostLine) out.push('', lostLine);
   out.push('', 'A push that keeps coming back is a rule to write down (/sawbuck-reins:rules). One that moved nothing may not have landed.');
