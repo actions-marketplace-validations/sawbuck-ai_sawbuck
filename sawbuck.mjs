@@ -401,7 +401,11 @@ switch (cmd) {
           const stoppedSince = st.lastStopAt && st.lastPromptAt && Date.parse(st.lastStopAt) >= Date.parse(st.lastPromptAt);
           // a baseline attach wrote is not a prompt: it covers the turn that ran attach, if there was one. Set up from
           // a terminal, nothing is in flight, and the commits made before this prompt are the person's.
-          const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince && prev.by !== 'attach';
+          // a notice from the harness is not a person. When a background task the agent started reports back, Claude
+          // Code hands the hooks a prompt whose text begins <task-notification> (seen on 2.1.318). The commits made while
+          // that task ran are the agent's own: the turn that started the task is still the turn, with its baseline.
+          const notice = /^\s*<task-notification>/.test(promptText);
+          const unfinished = (!!prev && !!st.lastPromptAt && !stoppedSince && prev.by !== 'attach') || (notice && !!prev);
           if (!unfinished) {
             const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
             const before = (st.lastViolation && st.lastViolation.before && typeof st.lastViolation.before === 'object') ? st.lastViolation.before : {};

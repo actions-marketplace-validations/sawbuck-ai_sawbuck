@@ -917,6 +917,33 @@ test('claim: the hold asks a person before sawbuck is detached, and before a com
   put(d, 'sawbuck.config.json', JSON.stringify({ holds: { off: true } }) + '\n');
   assert.equal(w.pre('npm publish'), '', 'the outward hold is off'); assert.match(w.pre('sawbuck detach'), ask); assert.match(w.pre('rm -rf .sawbuck'), ask);
 });
+// Found in a real session before the 0.1.69 release (2026-11-14, Claude Code 2.1.318). An agent told to wait had its
+// `sleep` moved to a background task and ended its turn. When the task finished, Claude Code gave the hooks a prompt
+// whose text begins <task-notification>. The prompt hook took that for a person and started the turn's baseline again
+// at the commit a job had made meanwhile, so that commit was read as the person's own and never checked. A notice
+// from the harness is not a person: the turn that started the task is still the turn.
+const NOTICE = '<task-notification>\n<task-id>b78a1k37k</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n<summary>Background command "wait" completed (exit code 0)</summary>\n</task-notification>';
+test('claim: a commit made while a background task of the agent ran is still the agent\'s when the task reports back', () => {
+  const d = repo(); const w = wired(d); w.prompt('wait for the build, then make the add test pass');
+  assert.ok(!blocked(w.stop()), 'the turn ends with the task still running');
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');   // the job's commit, after that end of turn
+  w.prompt(NOTICE); assert.ok(blocked(w.stop()), 'checked when the task reports back, and sent back');
+  // a protected path committed the same way
+  const e = signed(true); const x = wired(e); x.prompt('speed up CI in the background'); assert.ok(!blocked(x.stop()));
+  put(e, '.github/workflows/ci.yml', 'on: push\n'); save(e, 'ci'); x.prompt(NOTICE); assert.ok(blocked(x.stop()), 'a workflow change a job committed is sent back too');
+  // and what has not changed: a commit made between a person's own prompts is the person's
+  const f = repo(); const y = wired(f); y.prompt('look at the add test'); assert.ok(!blocked(y.stop()));
+  edit(f, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(f, 'the spec changed: add subtracts');
+  y.prompt('thanks. now add a sub function'); assert.ok(!blocked(y.stop()), 'the person\'s own commit is not laid on the agent');
+});
+test('claim: the hold asks a person before a background command that commits', () => {
+  const d = signed(true); wired(d); const ask = /"permissionDecision":"ask"/;
+  const h = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks;
+  const pre = (command, bg) => spawnSync('sh', ['-c', h.PreToolUse.find((x) => x.matcher === 'Bash').hooks[0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, ...(bg ? { run_in_background: true } : {}) }, cwd: d, session_id: 's' }) }).stdout || '';
+  for (const c of ['sleep 60 && git commit -am wip', 'sh -c "sleep 5; git add -A; git commit -m later"', 'npm test && git -C . commit -qam green']) assert.match(pre(c, true), ask, c);
+  for (const c of ['git commit -am wip', 'git add -A && git commit -m "the rules"']) assert.equal(pre(c, false), '', `in the turn, where the end of it checks the commit: ${c}`);
+  for (const c of ['npm run dev', 'sleep 60', 'npm test', 'git status', 'git log --oneline']) assert.equal(pre(c, true), '', `a background command that commits nothing: ${c}`);
+});
 test('claim: detach run inside a turn, then the state file rewritten, is still sent back in that turn', () => {
   const t = openTurn(); assert.equal(sb(t.d, 'detach').code, 0);   // the session read its hooks when it began, so they still run
   stateFile(t.d, (o) => { o.lastSha = t.head; });

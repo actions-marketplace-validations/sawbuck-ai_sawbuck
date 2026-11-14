@@ -17,6 +17,7 @@ export const ALLOW = /\b(sawbuck|promptwheel)(\.mjs)?\b[^|;&]*\s--allow\b/;
 // The folder of the same name in a person's home (~/.sawbuck/: their own holds, and what `rules` and `shape` gather)
 // is not a repo's record, and the plugin's own commands name it: never asked here.
 export const DETACH = /\bsawbuck(?:\.mjs)?["']?(?:@[\w.-]+)?["']?\s+detach\b/;
+const BG_COMMIT = /\bgit\b[^|;&]*\s(?:commit|merge|rebase|cherry-pick|am|revert)\b/;
 const PLAIN_READ = /^\s*(?:cat|ls|head|tail|wc|stat|file|less|more)\b[^;&|<>`$]*$/;
 export function namesRepoRecord(command, home = process.env.HOME || homedir()) {
   const c = String(command || '');
@@ -74,6 +75,9 @@ export function holdDecision(hookJson, repo) {
   // --allow records a person's decision to accept what the check could not prove; the agent typing it is not that.
   // Always asked, holds off or not: it is how a gamed verdict is cleared.
   if (DETACH.test(cmd) || (namesRepoRecord(cmd) && !PLAIN_READ.test(cmd))) return askOwn();
+  // a commit made by a background task lands after the end of the turn, where a commit is read as the person's own
+  // (unless the task reports back first: then the prompt hook keeps the turn's baseline). Asked like the two above.
+  if (h.tool_input && h.tool_input.run_in_background === true && BG_COMMIT.test(cmd)) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'Sawbuck: this runs in the background and commits. A commit that lands after the turn has ended is not checked with the turn. Approve only if you asked for it; or have the agent commit in the turn.' } };
   if (ALLOW.test(cmd)) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'Sawbuck: --allow records that a person accepts a change the check could not prove (a test, config or protected file changed). Approve only if you decided it, not the agent.' } };
   const name = outwardHold(cmd, repo);
   if (!name) return null;
