@@ -578,14 +578,57 @@ const commit = (d, msg, path = '/usr/bin:/bin') => { git(d, 'add', '-A'); const 
 const record = (d, f = 'results.json') => { try { return JSON.parse(readFileSync(join(d, '.sawbuck', f), 'utf8')); } catch { return {}; } };
 const cheat = (s) => s.replace('add(2,2),4', 'add(2,2),0');
 test('claim: attach --git checks every commit, whatever made it, starting with the first one', () => { const d = hookRepo(); assert.equal(sb(d, 'attach', '--git').code, 0); assert.ok(!existsSync(join(d, '.claude')), 'no Claude settings'); edit(d, 'test/add.test.js', cheat); commit(d, 'make it green'); assert.ok((record(d).gamed || 0) >= 1, 'the first commit after attach was caught by the hook, with no sawbuck on PATH'); });
-test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 6); for (const c of cmds) assert.match(c, /^npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop|hold --hook|undo --hook)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
+test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 8); for (const c of cmds) assert.match(c, /^npx (--prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop|hold --hook|undo --hook)|--fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __warm)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
 test('claim: a team file with the old plain npx form is upgraded in place by attach --shared, with no second copy of any hook', () => {
   const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0); const f = join(d, '.claude/settings.json');
   put(d, '.claude/settings.json', readFileSync(f, 'utf8').replace(/npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y /g, 'npx -y '));   // as an older version wrote it
   assert.match(readFileSync(f, 'utf8'), /"npx -y sawbuck@/);
   assert.equal(sb(d, 'attach', '--shared').code, 0);
   const cmds = Object.values(JSON.parse(readFileSync(f, 'utf8')).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command));
-  assert.equal(cmds.length, 6, 'one of each'); for (const c of cmds) assert.match(c, /^npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@/);
+  assert.equal(cmds.length, 8, 'one of each'); for (const c of cmds) assert.match(c, /^npx (--prefer-offline )?--fetch-retries=0 --fetch-timeout=10000 -y sawbuck@/);
+  assert.equal(cmds.filter((c) => !c.includes('--prefer-offline')).length, 2, 'only the two session-start lines ask npm');
+});
+// A team file moves to a newer sawbuck by a commit. A teammate's npm has kept a list of versions that ends before it,
+// and `--prefer-offline` tells npm to use that list without asking: every hook then fails with "No matching version"
+// (measured 2026-11-13, npm 10.8, 10.9 and 11.x). So the file asks npm once, where a session starts, on a line with no
+// such flag and a command that prints nothing; a real Claude Code finishes that line before the first prompt's hook
+// (measured 2026-11-14, in a window and under `claude -p`). Every other line keeps the flag: they run on each prompt
+// and tool call, and without it each would wait out the fetch timeout on a network that hangs.
+test('claim: a team file asks npm for its pinned version once, where a session starts, and on no other line', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0);
+  const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks;
+  const of = (matcher) => (h.SessionStart || []).filter((e) => e.matcher === matcher).flatMap((e) => e.hooks.map((x) => x.command));
+  for (const source of ['startup', 'resume']) { const c = of(source); assert.equal(c.length, 1, `one line for a session that begins by ${source}`); assert.match(c[0], /^npx --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __warm$/); }
+  assert.match(of('compact')[0], /^npx --prefer-offline .* turn --hook$/, 'the line after a compaction is as it was');
+  const rest = Object.entries(h).flatMap(([ev, list]) => list.filter((e) => !(ev === 'SessionStart' && ['startup', 'resume'].includes(e.matcher))).flatMap((e) => e.hooks.map((x) => x.command)));
+  assert.equal(rest.length, 6); for (const c of rest) assert.ok(c.includes('--prefer-offline'), `a line that runs on every prompt or tool call must not wait on the network: ${c}`);
+  // the same pinned version on every line
+  assert.equal(new Set(Object.values(h).flat().flatMap((e) => e.hooks.map((x) => /sawbuck@([\d.]+)/.exec(x.command)[1]))).size, 1);
+  // attached twice is attached once
+  assert.match(sb(d, 'attach', '--shared').out, /already attached/);
+  assert.equal(Object.values(JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks).flat().length, 8);
+});
+test('claim: the session-start line prints nothing, whatever it is fed, so nothing of it reaches the agent', () => {
+  const d = repo(true);
+  for (const input of ['', JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', cwd: d, session_id: 's' }), 'not json']) {
+    const r = spawnSync(process.execPath, [CLI, '__warm'], { cwd: d, encoding: 'utf8', env: ENV, input });
+    assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(r.stderr, '');
+  }
+  const out = spawnSync(process.execPath, [CLI, '__warm'], { cwd: tmpdir(), encoding: 'utf8', env: ENV, input: '' });   // and outside any repo
+  assert.equal(out.status, 0); assert.equal(out.stdout + out.stderr, '');
+});
+test('claim: the hooks one person attaches hold no session-start line that asks npm (their version is the one already here)', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach').code, 0);
+  const text = readFileSync(join(d, '.claude/settings.local.json'), 'utf8');
+  assert.ok(!text.includes('__warm')); assert.deepEqual(JSON.parse(text).hooks.SessionStart.map((e) => e.matcher), ['compact']);
+});
+test('claim: doctor says a team file written before the session-start line is incomplete, and attach --shared completes it', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0); const f = join(d, '.claude/settings.json');
+  const cfg = JSON.parse(readFileSync(f, 'utf8')); cfg.hooks.SessionStart = cfg.hooks.SessionStart.filter((e) => e.matcher === 'compact');   // as 0.1.68 wrote it
+  writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  const r = sb(d, 'doctor'); assert.match(r.out, /PART\s+claude-shared/); assert.match(r.out, /missing: SessionStart\[startup\], SessionStart\[resume\]/); assert.match(r.out, /sawbuck attach --shared again/);
+  assert.match(sb(d, 'attach', '--shared').out, /updated the shared project Claude Code hooks/);
+  assert.equal(JSON.parse(readFileSync(f, 'utf8')).hooks.SessionStart.length, 3);
 });
 test('claim: shared hooks find the repo from where they run, and block a protected path', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach', '--shared').code, 0); const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks; const run = (cmd, ev) => { const args = cmd.replace(/^npx (?:--\S+ )*-y sawbuck@[\d.]+ /, '').split(' '); return spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'shared', prompt: 'x' }) }).stdout || ''; }; run(h.UserPromptSubmit[0].hooks[0].command, 'UserPromptSubmit'); put(d, '.github/workflows/x.yml', 'on: push\n'); assert.ok(blocked(run(h.Stop[0].hooks[0].command, 'Stop'))); });
 test('claim: detach --all takes sawbuck out of every repo, and doctor --all lists them first', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home }; const run = (d, ...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env }); return (r.stdout || '') + (r.stderr || ''); }; const a = repo(true), b = repo(true); run(a, 'attach'); run(b, 'attach', '--git'); const list = run(a, 'doctor', '--all'); assert.ok(list.includes(a) && list.includes(b), list); assert.match(run(a, 'detach', '--all'), /detached everywhere/); assert.ok(!existsSync(join(a, '.claude/settings.local.json')) && !existsSync(join(b, '.git/hooks/post-commit'))); assert.match(run(a, 'doctor', '--all'), /not attached anywhere/); });

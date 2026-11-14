@@ -33,9 +33,17 @@ import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lo
 
 const SELF = fileURLToPath(import.meta.url);
 // the npx form a hook runs: offline or on a bad network a plain `npx -y` asks the registry first and retries for about
-// 70 s before it uses the cached copy, on every prompt and every stop; these flags use the cache when it holds the
-// version, fail in a fraction of a second when it does not (the hook then fails open), and still download when online
+// 70 s before it uses the cached copy, on every prompt and every stop; these flags use what npm has kept when that
+// holds the version, and download it when npm has kept nothing for this package. One case they do not cover: npm has
+// kept a list of versions that ends before this one (a machine that ran an older sawbuck). --prefer-offline uses that
+// list without asking whether it is still right, and the line fails with "No matching version" (measured 2026-11-13
+// on npm 10.8, 10.9 and 11.x). A line written on this machine pins the version that is already here, so it cannot
+// meet that. A team file can: NPX_ASK, below, is its line for it.
 export const NPX = 'npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y';
+// the same without --prefer-offline: npm asks the registry whether its kept list is still right, so it finds a version
+// newer than the list. The cost is why only one line has it: on a network that takes the connection and never answers
+// it waits out the fetch timeout, ten seconds, before it runs what is installed.
+export const NPX_ASK = 'npx --fetch-retries=0 --fetch-timeout=10000 -y';
 const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
@@ -187,6 +195,10 @@ const there = (p) => existsSync(p) && !planned.gone.has(p);
 const say = (s) => { if (!dry) out(s); };
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
+// what a team file runs where a session starts. Being run is the whole job: npx has by now asked npm for this version
+// and installed it, so the lines that run on every prompt and tool call find it. It prints nothing, because Claude
+// Code shows a session-start hook's output to the agent.
+if (cmd === '__warm') process.exit(0);
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   out(flags.has('--all') ? help : `sawbuck ${version}: write down the rules your agent follows, and prove they held
 
@@ -839,6 +851,10 @@ function wireClaude(repo, opts) {
     return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else ${NPX} sawbuck@${version} ${args}; fi` : direct;
   };
   const here = user || shared;   // no repo path in the command: the hook works out the repo from where it runs
+  // a team file reaches machines whose npm last saw an older sawbuck: where a session starts (and Claude Code finishes
+  // that hook before the first prompt's), one line asks npm for the pinned version, without --prefer-offline
+  const warm = `${NPX_ASK} sawbuck@${version} __warm`;
+  const WARM_AT = ['startup', 'resume'];
   const ctx = run(here ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
   const chk = run(here ? '__hook --by claude --stop' : `__hook --repo ${JSON.stringify(repo)} --by claude --stop`);
   const hold = run(here ? 'hold --hook' : `hold --hook ${JSON.stringify(repo)}`);
@@ -848,7 +864,7 @@ function wireClaude(repo, opts) {
   let upgrading = false;
   if (OURS.test(JSON.stringify(cfg))) {
     const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
-    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { if (!dry) regAdd(repo, user ? 'user' : shared ? 'claude-shared' : 'claude'); out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }   // the entry is refreshed: the list drops gone folders and gets back one it lost
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER) && (!shared || WARM_AT.every((s) => has('SessionStart', warm, s)))) { if (!dry) regAdd(repo, user ? 'user' : shared ? 'claude-shared' : 'claude'); out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }   // the entry is refreshed: the list drops gone folders and gets back one it lost
     upgrading = true;
   }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
@@ -861,7 +877,7 @@ function wireClaude(repo, opts) {
   const baseline = !user && existsSync(join(repo, 'promptwheel.config.json')) && !st.turnBaseline;
   if (dry) {
     out(dryText([
-      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + PreToolUse/PostToolUse[edit tools] hooks: the per-turn block, the check, the hold on outward commands, and the undo ledger)`,
+      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + PreToolUse/PostToolUse[edit tools] hooks: the per-turn block, the check, the hold on outward commands, and the undo ledger${shared ? '; and SessionStart[startup, resume]: one line that asks npm for this version where a session starts' : ''})`,
       !user && ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       baseline ? `write   ${stPath}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
@@ -879,6 +895,7 @@ function wireClaude(repo, opts) {
   // right after a compaction the summary has just dropped detail: re-impress the contract frame there too
   // (SessionStart with the `compact` source injects stdout into context).
   put('SessionStart', ctx, 'compact');
+  if (shared) for (const s of WARM_AT) put('SessionStart', warm, s);
   put('Stop', chk);
   // the hold on outward commands: a publish, a release, a merge, a public comment, a force push ask a person first
   put('PreToolUse', hold, 'Bash');
@@ -904,7 +921,7 @@ function wireClaude(repo, opts) {
   regAdd(repo, mode);
   const kind = user ? 'USER-LEVEL' : shared ? 'shared project' : 'project';
   out(upgrading ? `sawbuck: updated the ${kind} Claude Code hooks in ${f} to this version` : `sawbuck: wired ${kind} Claude Code hooks in ${f}`);
-  if (shared) out(`  commit ${relative(repo, f)} so the team gets the check. It runs sawbuck ${version} through npx on every machine.`);
+  if (shared) out(`  commit ${relative(repo, f)} so the team gets the check. It runs sawbuck ${version} through npx on every machine, and asks npm for that version once where a session starts.`);
   if (shared && protectedAmong(repo, [relative(repo, f)]).length) out(`  That file is a protected path in this repo, so the check on its commit reads "sent back" unless a person passes --allow "team hooks" (on a pull request: a comment, sawbuck-allow: team hooks).`);
   if (!user && !existsSync(join(repo, 'AGENTS.md')) && !existsSync(join(repo, 'CLAUDE.md'))) out('  no written rule here yet, and that is what changes the agent: run sawbuck contract.');
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
@@ -1075,7 +1092,9 @@ function doctorRepo(repo) {
     if (!cmds.length) continue;
     // the set attach writes, each under its own event: the rule on a prompt and after a compaction, the check on Stop
     const at = (event, re, matcher) => ours(((cfg.hooks || {})[event] || []).filter((h) => !matcher || (h && h.matcher === matcher))).some((c) => re.test(c));
-    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold', at('PreToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PreToolUse[edit tools] with undo', at('PostToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PostToolUse[edit tools] with undo'].filter(Boolean);
+    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold', at('PreToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PreToolUse[edit tools] with undo', at('PostToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PostToolUse[edit tools] with undo',
+      // a team file also asks npm for its version where a session starts (the other two files pin what is already here)
+      ...(mode === 'claude-shared' ? ['startup', 'resume'].map((s) => (at('SessionStart', /\b__warm\b/, s) ? '' : `SessionStart[${s}]`)) : [])].filter(Boolean);
     checks.push({ mode, file: f, ok: !missing.length && [...new Set(cmds)].every(hookRuns), missing });
   }
   // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded, or under .git)
