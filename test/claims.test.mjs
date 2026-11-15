@@ -11,6 +11,7 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = process.env.CLAIMS_SAWBUCK || join(HERE, '..', 'sawbuck.mjs');
@@ -1287,13 +1288,21 @@ test('claim: the check says so when the environment it runs in can change which 
 // a service account opens its pull requests from that account and can post the comment (measured with the Action's
 // own steps on the engine 0.1.69 pinned: proof-bench/pr-shapes, 2026-11-14). The engine this release pins leaves the
 // opener out, unless the contract on the base branch says a repo with one person in it wants that.
-// the engine the sawbuck under test runs, found the way bins.mjs finds it: PW_BIN, then the package beside it, then the sibling checkout
-const ENGINE_HERE = (() => { const beside = join(dirname(CLI), '..', 'promptwheel', 'bin', 'promptwheel.mjs'); return process.env.PW_BIN || (existsSync(beside) ? beside : join(HERE, '..', '..', 'promptwheel', 'bin', 'promptwheel.mjs')); })();
+// the engine the sawbuck under test runs, found the way bins.mjs finds it: PW_BIN, then the installed package as Node
+// resolves it from that sawbuck (its own node_modules, or the folder it sits in), then the sibling checkout. The first
+// cut looked beside it and in the sibling only. On GitHub's runner the engine is in the checkout's own node_modules,
+// so this claim ran a file that was not there and failed on the published 0.1.70 commit, where every run of mine
+// had passed (2026-11-15). It also passed two of its three checks with no engine at all: empty output read as "no".
+const ENGINE_HERE = (() => {
+  if (process.env.PW_BIN) return process.env.PW_BIN;
+  try { return createRequire(CLI).resolve('promptwheel/bin/promptwheel.mjs'); } catch { /* not installed beside this sawbuck */ }
+  return join(dirname(CLI), '..', 'promptwheel', 'bin', 'promptwheel.mjs');
+})();
 test('claim: on a pull request the account that opened it cannot let a change through; another person can; a repo with one person in it says so in its contract', () => {
   const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0); save(d, 'sign');
   const base = git(d, 'rev-parse', 'HEAD').trim();
   const comment = (login, assoc = 'COLLABORATOR') => JSON.stringify({ body: 'sawbuck-allow: the old assertion was wrong', author_association: assoc, user: { type: 'User', login } });
-  const prAllow = (input, ...a) => spawnSync(process.execPath, [ENGINE_HERE, 'pr-allow', ...a], { cwd: d, encoding: 'utf8', env: ENV, input }).stdout;
+  const prAllow = (input, ...a) => { const r = spawnSync(process.execPath, [ENGINE_HERE, 'pr-allow', ...a], { cwd: d, encoding: 'utf8', env: ENV, input }); assert.equal(r.status, 0, `the engine ran (${ENGINE_HERE}): ${r.stderr}`); return r.stdout; };
   assert.equal(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'the opener');
   assert.equal(prAllow(comment('ACME-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'in another letter case');
   assert.match(prAllow(comment('pat', 'MEMBER') + '\n' + comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), /approved by pat/, 'another person, with a newer comment from the opener after theirs');
