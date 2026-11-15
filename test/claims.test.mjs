@@ -1326,6 +1326,7 @@ test('claim: a CI check that pins an older engine keeps it; contract says so, gi
   assert.ok(r.out.includes(`uses: ${line}`), 'with the line to change it to');
   assert.ok(readFileSync(wf, 'utf8').includes(OLD_PIN[0]), 'and the file is left as it was');
   assert.match(r.out, /That is a workflow change, so it takes a person's reason: sawbuck check --allow "<reason>", or on a pull request a comment from someone who did not open it\./);
+  assert.match(r.out, /Change it yourself: at the end of a turn an agent's own change to a protected path is sent back, with a reason or without\./);
   assert.doesNotMatch(r.out, /takes no reason/);
   assert.match(sb(d, 'contract').out, /runs an older engine/, 'plain contract says it too');
   edit(d, '.github/workflows/sawbuck.yml', (x) => x.replace(PINNED, `promptwheel-ai/promptwheel@${'a'.repeat(40)} # v99.0.0`));
@@ -1360,6 +1361,27 @@ test('claim: a workflow change is sent back until a person gives a reason; --all
   o = sb(d, 'check', '--allow', 'CI runs on pull requests now'); assert.equal(o.code, 0, o.out); assert.match(o.out, /CI runs on pull requests now/, 'the reason shows in the result');
   put(d, '.npmrc', 'registry=https://example.invalid/\n'); save(d, 'npmrc');
   o = sb(d, 'check', '--allow', 'I want this registry'); assert.equal(o.code, 1, o.out); assert.match(o.out, /"registry-config-frozen" takes no --allow/); assert.doesNotMatch(o.out, /allowable/, 'the hint about workflows is for workflows');
+});
+// A stated limit. The reason is for the check on a commit and on a pull request. The end of a turn is stricter with the
+// agent's own edits: a person's reason does not make an agent's change to a protected path the person's, and neither
+// does the person committing it, because the hooks cannot tell who ran a command between two turns.
+test('claim: in a session a workflow the agent changed is sent back at the end of the turn three times, then the person is told; a reason does not lift it; undone and made by the person, it is theirs', () => {
+  const d = repo(true); const was = 'name: ci\non: push\njobs: {}\n', now = 'name: ci\non: [push, pull_request]\njobs: {}\n';
+  put(d, '.github/workflows/ci.yml', was); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach').code, 0);
+  const hook = (args, ev) => spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify(ev) }).stdout || '';
+  let n = 0;
+  const prompt = (text) => { n++; hook(['turn', '--hook', d], { hook_event_name: 'UserPromptSubmit', prompt: text, session_id: 's', prompt_id: 'p' + n, cwd: d }); };
+  const stop = () => hook(['__hook', '--by', 'claude', '--stop'], { hook_event_name: 'Stop', cwd: d, session_id: 's', prompt_id: 'p' + n });
+  const sentBack = (o) => /"decision":"block"/.test(o) && /workflows-frozen/.test(o);
+  const work = () => { edit(d, 'src/add.js', (x) => x + `exports.f${n}=()=>${n}\n`); save(d, 'source only'); };
+  prompt('run CI on pull requests too'); put(d, '.github/workflows/ci.yml', now); save(d, 'ci: on pull requests too');
+  for (let i = 1; i <= 3; i++) assert.ok(sentBack(stop()), `sent back, time ${i}`);
+  const told = stop(); assert.doesNotMatch(told, /"decision":"block"/); assert.match(told, /Sawbuck stopped blocking after 3 tries: protected paths are still changed/, 'then the person is told, and the turn ends');
+  assert.equal(sb(d, 'check', '--allow', 'I asked for this CI change').code, 0, 'the check on the commit takes the reason');
+  prompt('thanks, now something else'); work(); assert.ok(sentBack(stop()), 'and the next turn is still sent back for it: the reason did not make the agent\'s edit the person\'s');
+  put(d, '.github/workflows/ci.yml', was); save(d, 'undo the CI change'); assert.ok(!sentBack(stop()), 'the agent undoes it, and the turn ends');
+  put(d, '.github/workflows/ci.yml', now);   // the person makes the same change by hand, before their next prompt
+  prompt('and one more thing'); work(); assert.ok(!sentBack(stop()), 'a change that was there when the prompt began is the person\'s');
 });
 test('claim: signing with --full says who may let a pull request through, and names the setting for a repo with one person in it', () => {
   const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0);

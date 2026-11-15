@@ -98,6 +98,8 @@ Exit codes: `0` pass (verified, held, or allowed) · `1` sent back (a regression
 | `publish-scripts-frozen` | `scripts/release*`, `scripts/publish*` | remove the rule first |
 | `codeowners-frozen` | `CODEOWNERS` | remove the rule first |
 
+A reason is for the check on a commit and on a pull request. In a Claude Code session the end of a turn is stricter with the agent's own edits: a protected path the agent changed is sent back three times (the default), then you are told, and it is sent back again in later turns for as long as the change stands. A reason does not lift that, and neither does committing the agent's edit yourself. To keep such a change, have the agent undo it and make it yourself: a change that was already there when your prompt began is yours.
+
 A workflow change is ordinary upkeep (a version bump of an action, a new job), so since 0.1.70 it takes a person's reason like the rules file does: on 340 real commits from 17 public repos, 64 of the 65 sent back for a protected path were a workflow change. A contract written before 0.1.70 holds its own copy of the rule, and an update does not change it: add `"allowable": "flag"` to the `workflows-frozen` entry in `promptwheel.config.json` to get the same (that edit takes `--allow`).
 
 To remove a rule, delete its entry under `mandates` in `promptwheel.config.json`, in a commit of its own. That file is protected too, so that commit takes `--allow`. Then make the change. When one change touches more than one thing that takes a reason, the reason names each: `sawbuck check --allow "contract-frozen, hooks-frozen: <reason>"`. To protect another path, add an entry the same way: `{"name": "billing-frozen", "paths": ["src/billing/**"], "reason": "billing changes go through review"}`.
