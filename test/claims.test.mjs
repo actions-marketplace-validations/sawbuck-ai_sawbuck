@@ -1269,6 +1269,19 @@ test('claim: signing does not move any of the repo\'s own counts: the tool\'s co
   const rep = check(d);
   for (const n of ['test_count', 'skipped_tests', 'suppressions', 'assertions']) { const m = rep.metrics.find((x) => x.name === n); assert.equal(m.before, m.after, `${n} moved from ${m.before} to ${m.after} by signing`); }
 });
+// 0.1.70: the check says what it borrowed. It runs the test command in the environment it is run in, and no diff shows
+// that. A `PYTEST_ADDOPTS` that deselects the red test, or a preload in `NODE_OPTIONS`, read pass while a fresh install
+// was red (proof-bench/outside-git, 2026-11-11); the README said so and the check said nothing. Now it says it: a note.
+test('claim: the check says so when the environment it runs in can change which tests run, as a note beside the verdict', () => {
+  const d = repo(true); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub');
+  const clean = { ...ENV }; for (const k of ['PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'NODE_OPTIONS']) delete clean[k];
+  const run = (env) => { const r = spawnSync(process.execPath, [CLI, 'check'], { cwd: d, encoding: 'utf8', env: { ...clean, ...env } }); return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }; };
+  const plain = run({}); assert.equal(plain.code, 0, plain.out); assert.doesNotMatch(plain.out, /the environment this ran in/);
+  const set = run({ PYTEST_ADDOPTS: '--deselect tests/test_a.py::test_red' });
+  assert.equal(set.code, 0, 'a note, never a verdict'); assert.match(set.out, /sawbuck: note: the environment this ran in can change which tests run, or load code into them: PYTEST_ADDOPTS/);
+  assert.doesNotMatch(run({ NODE_OPTIONS: '--max-old-space-size=4096' }).out, /the environment this ran in/, 'a NODE_OPTIONS that loads no file is not one');
+  assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /the check says so when one of them is set/);
+});
 // 0.1.70: who may let a pull request through. The CI check took a person's yes from a `sawbuck-allow:` comment by any
 // account of type User with write access, the account that opened the pull request included. A coding agent run from
 // a service account opens its pull requests from that account and can post the comment (measured with the Action's
@@ -1421,6 +1434,7 @@ test('limit: a variable in the environment that changes how a test run ends is t
   const pre = join(mkdtempSync(join(tmpdir(), 'claims-pre-')), 'force0.cjs');
   writeFileSync(pre, "const r = process.reallyExit; process.reallyExit = function () { return r.call(process, 0) }\nprocess.on('exit', () => { process.exitCode = 0 })\n");
   const r = sbE(d, { NODE_OPTIONS: `--require ${pre}` }, 'check', '--json'); assert.equal(JSON.parse(r.out).verdict, 'pass', r.out.slice(0, 300));
+  assert.ok((JSON.parse(r.out).explained || []).some((x) => x.metric === 'environment' && x.noted && x.items.includes('NODE_OPTIONS')), 'still trusted; since 0.1.70 the report says the preload is there');
 });
 test('limit: a git filter set in the repo\'s local config rewrites the clean copy too, so a test it rewrites reads as passing at both commits', () => {
   const d = repo(); const bin = mkdtempSync(join(tmpdir(), 'claims-filter-'));
