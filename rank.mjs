@@ -25,7 +25,7 @@ const asJson = process.argv.includes('--json');
 const git = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim(); } catch { return ''; } };
 
 let paths = multi('--file');
-if (!paths.length) paths = git('diff', '--name-only', base, head).split('\n').filter(Boolean);
+if (!paths.length) paths = git('diff', '--name-only', '-z', base, head).split('\0').filter(Boolean);
 if (!paths.length) { console.log(asJson ? '[]' : 'rank: no paths to rank'); process.exit(0); }
 
 // the full event record (Logbook's facts), ranked client-side below

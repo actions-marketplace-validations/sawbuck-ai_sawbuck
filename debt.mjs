@@ -51,7 +51,7 @@ const bare = live.filter((it) => !it.documented && it.content).length;
 // the shared ref a teammate pushed (sawbuck ledger push); the Action fetches that ref. Information, never the gate.
 const erasedOnBranch = (ref) => {
   try {
-    const changed = execFileSync('git', ['-C', repo, 'diff', '--name-only', `${ref}...HEAD`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean);
+    const changed = execFileSync('git', ['-C', repo, 'diff', '--name-only', '-z', `${ref}...HEAD`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter(Boolean);
     const block = changed.length ? erasedBlock(repo, changed) : '';
     return block ? ['', '   ' + block.replace('(recovered locally, leads)', '(from the ledger, leads)').split('\n').join('\n   ')] : [];
   } catch { return []; }

@@ -16,7 +16,7 @@ const inWin = (at, a, b) => { const t = Date.parse(at); return t >= a && t < b; 
 
 function commitsIn(repo, a, b) {
   try {
-    const raw = execFileSync('git', ['-C', repo, 'log', '--all', `--since=${new Date(a).toISOString()}`, `--until=${new Date(b).toISOString()}`, '--format=%x00%h%x09%cI%x09%s', '--name-only', '--no-renames'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8 << 20 });
+    const raw = execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', 'log', '--no-show-signature', '--all', `--since=${new Date(a).toISOString()}`, `--until=${new Date(b).toISOString()}`, '--format=%x00%h%x09%cI%x09%s', '--name-only', '--no-renames'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8 << 20 });
     return raw.split('\0').slice(1).map((c) => { const [head, ...files] = c.split('\n'); const [sha, at, subject] = head.split('\t'); return { sha, at, subject, files: files.filter(Boolean) }; });
   } catch { return []; }
 }

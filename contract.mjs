@@ -6,6 +6,11 @@ import { join, dirname, resolve, isAbsolute, posix } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const gitOut = (repo, args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+// File names from git, NUL-separated (the command must take -z). Read as lines, a name that holds a byte above 127, a
+// double quote, a backslash or a tab comes back inside quotes with the bytes escaped ("a\303\261adir.yml", git's
+// core.quotePath), and that string is no file: a new workflow named so matched no protected path, at the end of a turn
+// or on a commit. Throws as git does.
+export const gitNames = (repo, args) => execFileSync('git', [...args, '-z'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
 const validMandate = (m) => m && Array.isArray(m.paths) && m.paths.some((s) => typeof s === 'string' && s.trim());
 const pathsOf = (m) => m.paths.filter((s) => typeof s === 'string' && s.trim());
 
@@ -72,7 +77,7 @@ export function hashOf(repo, file, { store = false } = {}) {
 // `store` keeps each file's content in the object database (see hashOf), which the baseline does.
 export function protectedDirty(repo, { store = false } = {}) {
   let changed = [];
-  try { changed = [...new Set([...gitOut(repo, ['diff', '--name-only', '--no-renames', 'HEAD']).split('\n'), ...gitOut(repo, ['ls-files', '--others', '--exclude-standard']).split('\n')].filter(Boolean))]; }
+  try { changed = [...new Set([...gitNames(repo, ['diff', '--name-only', '--no-renames', 'HEAD']), ...gitNames(repo, ['ls-files', '--others', '--exclude-standard'])])]; }
   catch { return {}; }
   const res = mandatesInForce(repo).flatMap((m) => pathsOf(m).map(globToRe));
   const out = {};
@@ -112,7 +117,7 @@ export function mandateHits(repo, changedPaths, opts = {}) {
       if (m.committed) prev.committed = true;   // the committed version of the rule hit too: say so
       continue;
     }
-    out.push({ name: String(m.name), reason: m.reason ? String(m.reason).slice(0, 300) : '', files: files.slice(0, 20), ...(m.committed ? { committed: true } : {}) });
+    out.push({ name: String(m.name), reason: m.reason ? String(m.reason).slice(0, 300) : '', files: files.slice(0, 20), ...(m.committed ? { committed: true } : {}), ...(m.allowable ? { allowable: m.allowable } : {}) });
   }
   return out;
 }

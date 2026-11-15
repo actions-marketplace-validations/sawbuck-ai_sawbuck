@@ -1525,3 +1525,102 @@ test('limit: a git filter set in the repo\'s local config rewrites the clean cop
   edit(d, 'src/add.js', (s) => s + '// reviewed\n'); save(d, 'note');
   assert.equal(check(d).verdict, 'pass');   // add is still wrong; the committed test would fail; every checkout of it is rewritten
 });
+
+// ---------------------- a person's own git settings, and file names git quotes (found 2026-11-15, proof-bench/own-git)
+// Every claim above runs with a blank git config (ENV), and every fixture file has a plain name. A real person has a
+// ~/.gitconfig, and some repos have a file named in Spanish.
+const ownHooks = (d) => {
+  const hook = (args, ev) => spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify(ev) }).stdout || '';
+  let n = 0;
+  return {
+    prompt: (text) => { n++; hook(['turn', '--hook', d], { hook_event_name: 'UserPromptSubmit', prompt: text, session_id: 's', prompt_id: 'p' + n, cwd: d }); },
+    stop: () => hook(['__hook', '--by', 'claude', '--stop'], { hook_event_name: 'Stop', cwd: d, session_id: 's', prompt_id: 'p' + n }),
+  };
+};
+test('claim: a new workflow file is a protected path whatever its name holds: with a byte above 127, a double quote or a tab in it, the turn is sent back while it sits in the folder and after it is committed, and the check on the commit fails', { skip: process.platform === 'win32' && 'a double quote and a tab are not file-name characters on Windows' }, () => {
+  for (const name of ['añadir.yml', 'it"s.yml', 'a\tb.yml']) {
+    const d = repo(true); put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach').code, 0);
+    const { prompt, stop } = ownHooks(d); const sentBack = (o) => /"decision":"block"/.test(o) && /workflows-frozen/.test(o);
+    prompt('add a deploy job'); put(d, `.github/workflows/${name}`, 'name: x\non: push\njobs: {}\n');
+    assert.ok(sentBack(stop()), `sent back while it sits in the folder: ${JSON.stringify(name)}`);
+    save(d, 'a new workflow'); assert.ok(sentBack(stop()), `and after it is committed: ${JSON.stringify(name)}`);
+    const c = check(d); assert.equal(c.code, 1, `the check on the commit fails: ${JSON.stringify(name)}`); assert.ok((c.mandates || []).some((m) => m.name === 'workflows-frozen'), JSON.stringify(c.mandates));
+  }
+});
+test('claim: in a file whose name has a byte above 127 an honest fix is not sent back and the check says the source earned it; a gamed test there is sent back, and the message names the file as it is on disk', () => {
+  const mk = () => {
+    const d = mkdtempSync(join(tmpdir(), 'claims-')); git(d, 'init', '-q', '-b', 'main');
+    put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
+    put(d, 'src/añadir.js', 'exports.add=(a,b)=>a-b\n'); put(d, 'test/añadir.test.js', "const t=require('node:test'),a=require('node:assert');const {add}=require('../src/añadir.js')\nt.test('add',()=>a.equal(add(2,2),4))\n");
+    put(d, '.gitignore', 'node_modules\n'); put(d, 'promptwheel.config.json', NODE_TESTS); save(d, 'base'); assert.equal(sb(d, 'attach').code, 0); return d;
+  };
+  const a = mk(), ha = ownHooks(a);
+  ha.prompt('make the add test pass'); edit(a, 'src/añadir.js', fixAdd); save(a, 'fix add');
+  assert.doesNotMatch(ha.stop(), /"decision":"block"/, 'the honest fix is not sent back'); assert.equal(check(a).verdict, 'pass');
+  const b = mk(), hb = ownHooks(b);
+  hb.prompt('make the add test pass'); edit(b, 'test/añadir.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(b, 'make it pass');
+  const o = hb.stop(); assert.match(o, /"decision":"block"/, 'the gamed test is sent back'); assert.match(o, /test\/añadir\.test\.js/, 'named as it is on disk'); assert.doesNotMatch(o, /\\\\303/, 'not as git quotes it');
+});
+// a person's settings arrive through their ~/.gitconfig: a home with one in it, in place of the blank config above
+const ownHome = (lines) => { const h = mkdtempSync(join(tmpdir(), 'claims-home-')); writeFileSync(join(h, '.gitconfig'), `[user]\n\tname = a\n\temail = a@b.c\n${lines}`); return { ...ENV, HOME: h, XDG_CONFIG_HOME: join(h, 'cfg'), GIT_CONFIG_GLOBAL: join(h, '.gitconfig') }; };
+const tool = (h, name, body) => { const f = join(h, name); writeFileSync(f, `#!/bin/sh\n${body}\n`); chmodSync(f, 0o755); return f; };
+test('claim: contract --dry-run asks nothing of your gpg and runs none of your git hooks: its preview is committed in a throwaway copy, and a key that needs a passphrase does not stop it', { skip: process.platform === 'win32' }, () => {
+  const d = repo(true); const t = mkdtempSync(join(tmpdir(), 'claims-tools-'));
+  const gpg = tool(t, 'gpg', `echo asked >> "${t}/gpg.log"; cat > /dev/null; echo "gpg: signing failed: Inappropriate ioctl for device" >&2; exit 2`);
+  mkdirSync(join(t, 'hooks')); tool(join(t, 'hooks'), 'pre-commit', `echo ran >> "${t}/hooks.log"; exit 1`); tool(join(t, 'hooks'), 'post-commit', `echo ran >> "${t}/hooks.log"`);
+  const env = ownHome(`[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = ${gpg}\n[core]\n\thooksPath = ${join(t, 'hooks')}\n`);
+  const r = spawnSync(process.execPath, [CLI, 'contract', '--dry-run'], { cwd: d, encoding: 'utf8', env });
+  assert.equal(r.status, 0, (r.stdout || '') + (r.stderr || '')); assert.match(r.stdout, /nothing was written/);
+  assert.ok(!existsSync(join(t, 'gpg.log')), 'gpg was not asked to sign anything'); assert.ok(!existsSync(join(t, 'hooks.log')), 'and no hook of the person\'s ran');
+});
+test('claim: with log.showSignature set and a signed history, the hooks and the check ask gpg to verify nothing (each look at the log would start gpg once for every commit it shows)', { skip: process.platform === 'win32' }, () => {
+  const t = mkdtempSync(join(tmpdir(), 'claims-tools-'));
+  const gpg = tool(t, 'gpg', `case " $* " in *" --verify "*) echo verify >> "${t}/gpg.log"; cat > /dev/null; printf '[GNUPG:] GOODSIG 0000000000000000 a\\n'; exit 0 ;; esac
+cat > /dev/null; printf '[GNUPG:] BEGIN_SIGNING H8\\n[GNUPG:] SIG_CREATED D 1 8 00 1700000000 0000000000000000000000000000000000000000\\n' >&2
+printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nc3RhbmQtaW4=\\n-----END PGP SIGNATURE-----\\n'`);
+  const env = ownHome(`[commit]\n\tgpgsign = true\n[log]\n\tshowSignature = true\n[gpg]\n\tprogram = ${gpg}\n`);
+  const g = (d, ...a) => execFileSync('git', a, { cwd: d, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const d = mkdtempSync(join(tmpdir(), 'claims-')); g(d, 'init', '-q', '-b', 'main');
+  put(d, 'package.json', JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a-b\nexports.mul=(a,b)=>a*b\n'); put(d, 'test/add.test.js', TEST); put(d, '.gitignore', 'node_modules\n'); put(d, 'promptwheel.config.json', NODE_TESTS);
+  const commit = (m) => { g(d, 'add', '-A'); g(d, 'commit', '-qm', m); };
+  commit('base'); for (let i = 0; i < 4; i++) { put(d, `docs/n${i}.md`, `${i}\n`); commit(`note ${i}`); }
+  g(d, 'commit', '-q', '--amend', '-m', 'note 3, reworded');   // so the reflog holds a commit no branch reaches, as after any amend
+  assert.match(g(d, 'log', '-1', '--format=%G?'), /^[GUXYREBN]$/); assert.ok(readFileSync(join(t, 'gpg.log'), 'utf8').includes('verify'), 'the stand-in gpg is asked when git itself shows a signature');
+  rmSync(join(t, 'gpg.log'));
+  const run = (args, ev) => spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env, input: ev ? JSON.stringify(ev) : undefined });
+  assert.equal(run(['attach']).status, 0);
+  run(['turn', '--hook', d], { hook_event_name: 'UserPromptSubmit', prompt: 'make test/add.test.js pass', session_id: 's', prompt_id: 'p1', cwd: d });
+  put(d, 'test/add.test.js', TEST.replace('add(2,2),4', 'add(2,2),0')); commit('make it pass');
+  const o = run(['__hook', '--by', 'claude', '--stop'], { hook_event_name: 'Stop', cwd: d, session_id: 's', prompt_id: 'p1' }).stdout || '';
+  assert.match(o, /"decision":"block"/, 'the gamed commit is still sent back'); assert.equal(run(['check']).status, 2);
+  assert.ok(!existsSync(join(t, 'gpg.log')), `gpg was asked to verify ${existsSync(join(t, 'gpg.log')) ? readFileSync(join(t, 'gpg.log'), 'utf8').trim().split('\n').length : 0} times`);
+});
+
+// ---------------------- what a real agent did with the 0.1.70 words (proof-bench/live/after-0.1.70, 2026-11-15)
+// Asked for an ordinary workflow bump, one agent was sent back and then told the person "grant --allow, then ask me
+// again", which is sent back again. The send-back said only "change the rule in the contract or revert the path". And
+// the hold's question came before the edit: a person who answers yes there is still sent back at the end of the turn.
+test('claim: the send-back for a path that takes a reason says who can make the change: undo it, the person makes the edit and gives the reason; for a path with no way through it still says to change the rule', () => {
+  const d = repo(true); put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach').code, 0);
+  const { prompt, stop } = ownHooks(d);
+  prompt('run CI on pull requests too'); put(d, '.github/workflows/ci.yml', 'name: ci\non: [push, pull_request]\njobs: {}\n'); save(d, 'ci: on pull requests too');
+  const wf = stop(); assert.match(wf, /"decision":"block"/); assert.match(wf, /workflows-frozen/);
+  assert.match(wf, /takes a person's reason/); assert.match(wf, /tell them to make the edit themselves and run: sawbuck check --allow/);
+  assert.match(wf, /Running --allow yourself does not end this/);
+  assert.doesNotMatch(wf, /change the rule in the contract or revert the path/, 'the old last line sent an agent, and through it a person, to a way that is sent back again');
+  put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'undo'); assert.doesNotMatch(stop(), /"decision":"block"/);
+  prompt('use our own registry'); put(d, '.npmrc', 'registry=https://example.invalid/\n'); save(d, 'npmrc');
+  const hard = stop(); assert.match(hard, /"decision":"block"/); assert.match(hard, /registry-config-frozen/);
+  assert.match(hard, /To accept this change on purpose, change the rule in the contract or revert the path/); assert.doesNotMatch(hard, /takes a person's reason/);
+});
+test('claim: the hold\'s question before --allow says what a yes does: it is kept as the reason for the check on the commit, and it does not let an agent\'s own edit to a protected path stand at the end of the turn', () => {
+  const { w } = gamedTurn(); const q = w.pre('npx sawbuck check --allow "the spec changed"');
+  assert.match(q, /"permissionDecision":"ask"/); assert.match(q, /Approve only if you decided it, not the agent/);
+  assert.match(q, /kept as your reason for the check on the commit/); assert.match(q, /does not let an agent's own edit to a protected path stand at the end of the turn/); assert.match(q, /make that edit yourself/);
+});
+test('claim: contract --dry-run works inside a linked git worktree, where .git is a file', () => {
+  const d = repo(true); const w = join(mkdtempSync(join(tmpdir(), 'claims-')), 'wt'); git(d, 'worktree', 'add', '-q', w, '-b', 'side');
+  const r = sb(w, 'contract', '--dry-run'); assert.equal(r.code, 0, r.out); assert.match(r.out, /nothing was written/); assert.match(r.out, /AGENTS\.md/);
+  assert.equal(git(w, 'status', '--porcelain'), '', 'and it wrote nothing there');
+});

@@ -90,7 +90,7 @@ const kind = verdict === 'gamed' ? 'gamed' : 'regression';
 
 // --- 2) build the finding from the result ----------------------------------
 const sha = git('rev-parse', head);
-const changed = git('diff', '--name-only', base, head).split('\n').filter(Boolean);
+const changed = git('diff', '--name-only', '-z', base, head).split('\0').filter(Boolean);
 const testish = (f) => /(\.test\.|\.spec\.|__tests__|\/tests?\/|\.config\.|golden|fixture|snapshot)/i.test(f);
 const srcFiles = changed.filter((f) => !testish(f));
 // a gamed win is named by the goalpost that moved (a test first, then config or a golden file); a regression by the source
@@ -136,7 +136,7 @@ function appendActivity(v, rep, standing = false) {
   let sha = '', file = '';
   try { sha = git('rev-parse', head).slice(0, 8); } catch {}
   const hit = k === 'regression' ? protectedHit(rep) : null;
-  try { file = (hit && hit.file) || git('diff', '--name-only', base, head).split('\n').filter(Boolean)[0] || ''; } catch {}
+  try { file = (hit && hit.file) || git('diff', '--name-only', '-z', base, head).split('\0').filter(Boolean)[0] || ''; } catch {}
   const gm = (rep.metrics || []).find((m) => m.gamed === true);
   const why = k === 'gamed' ? (gm?.gamingReason || 'the win came from editing the goalposts')
     : k === 'regression' ? (hit ? `the change ${hit.why}` : 'a guarded metric regressed beyond noise')

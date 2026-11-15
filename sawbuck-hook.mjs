@@ -11,7 +11,7 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-import { mandateHits, hashOf, protectedAmong, lockState } from './contract.mjs';
+import { mandateHits, hashOf, protectedAmong, lockState, gitNames } from './contract.mjs';
 import { dependencyEditsSince, dependencyNotice } from './deps.mjs';
 import { readGuard, writeGuard, clearGuard, OWN, ownOf } from './guard.mjs';
 import { readAllowed } from './allowed.mjs';
@@ -215,10 +215,11 @@ const sendBack = (idKey, countKey, reason, stillOpen) => {
 // edit COMMITTED since the baseline's commit counts too: a commit mid-turn does not walk through.
 if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
   const now = new Date().toISOString();
-  const dirty = [...new Set([...git('diff', '--name-only', '--no-renames', 'HEAD').split('\n'), ...git('ls-files', '--others', '--exclude-standard').split('\n')].filter(Boolean))];
+  const names = (...a) => { try { return gitNames(repo, a); } catch { return []; } };   // NUL-separated: a name git would quote is still a path
+  const dirty = [...new Set([...names('diff', '--name-only', '--no-renames', 'HEAD'), ...names('ls-files', '--others', '--exclude-standard')])];
   const base = (st.turnBaseline && typeof st.turnBaseline === 'object') ? st.turnBaseline : null;
   const baseline = (base && base.files && typeof base.files === 'object') ? base.files : {};
-  const committedSince = (base && base.sha && head && base.sha !== head) ? git('diff', '--name-only', '--no-renames', base.sha, 'HEAD').split('\n').filter(Boolean) : [];
+  const committedSince = (base && base.sha && head && base.sha !== head) ? names('diff', '--name-only', '--no-renames', base.sha, 'HEAD') : [];
   const hashNow = {}; for (const f of dirty) if (Object.prototype.hasOwnProperty.call(baseline, f)) hashNow[f] = hashOf(repo, f);
   const untouched = (f) => Object.prototype.hasOwnProperty.call(baseline, f) && hashNow[f] === baseline[f];
   // a person's own uncommitted file (in the baseline) that the turn only committed, content unchanged, is still theirs:
@@ -254,7 +255,13 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     const before = (st.lastViolation && st.lastViolation.before) || {};
     const restore = Object.keys(before).length ? ' To put back what you overwrote: ' + Object.entries(before).map(([f, h]) => `restore ${f} to the content it had when the prompt began: git cat-file -p ${h} > ${f}`).join('; ') + '.' : '';
     const committedHit = hits.some((h) => h.files.some((f) => committedSince.includes(f)));
-    const accept = committedHit ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
+    // A rule that takes a reason (the contract's own file, the hooks, a workflow) has a way through that is not the
+    // agent's: the person makes the edit and gives the reason. The old last line said only "change the rule in the
+    // contract or revert the path", and a real agent then told its person to grant --allow and ask again, which is
+    // sent back again (proof-bench/live/after-0.1.70). So say who can make the change, and what to tell them.
+    const reasoned = hits.filter((h) => h.allowable).map((h) => `"${h.name}"`);
+    const person = reasoned.length ? ` ${reasoned.join(', ')} ${reasoned.length === 1 ? 'takes' : 'take'} a person's reason, and a reason is for the person's own edit: it does not make your edit theirs. After you undo yours, tell them to make the edit themselves and run: sawbuck check --allow "<their reason>". Running --allow yourself does not end this.` : '';
+    const accept = (committedHit && hits.some((h) => !h.allowable)) ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach again, which upgrades the hooks.)';
     // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
     // a block must not replace a gamed verdict that is still standing.
@@ -266,7 +273,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
       writeRec(r);
       logActivity({ kind: 'mandate', file: hits[0].files[0], reason: `mandate ${hits[0].name} violated in the working tree`, by: by || 'hook' });
     }
-    sendBack('mandatePromptId', 'mandateBlocks', `Sawbuck: a protected path in the contract was touched, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${accept}${upgrade}`, `protected paths are still changed (${desc}).`);
+    sendBack('mandatePromptId', 'mandateBlocks', `Sawbuck: a protected path in the contract was touched, the turn is not done. Protected paths changed in this turn: ${desc}. Undo the changes YOU made under the protected paths and make the fix elsewhere; do not revert anything you did not change (the rule is a wall, not a reminder; the gate fails any change that touches them).${spared}${restore}${person}${accept}${upgrade}`, `protected paths are still changed (${desc}).`);
   }
 }
 
