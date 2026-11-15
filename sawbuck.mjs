@@ -29,7 +29,7 @@ import { basename, join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { PW } from './bins.mjs';
-import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lockState, gitNames } from './contract.mjs';
+import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lockState, gitNames, gitRefuses } from './contract.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 // the npx form a hook runs: offline or on a bad network a plain `npx -y` asks the registry first and retries for about
@@ -233,7 +233,7 @@ if (KNOWN[cmd]) { const bad = rest.filter((a) => a.startsWith('-') && !KNOWN[cmd
 switch (cmd) {
   case 'contract': {
     const top = gitTop(repoArg());
-    if (!top) usage(`${repoArg()} is not a git repository (run it inside your project)`);
+    if (!top) usage(gitRefuses(repoArg()) || `${repoArg()} is not a git repository (run it inside your project)`);
     try { execFileSync(process.execPath, [join(HERE, 'contract-cmd.mjs'), top, ...rest.filter((a) => KNOWN.contract.includes(a))], { stdio: 'inherit' }); }
     catch (e) { process.exit(e.status || 1); }
     break;
@@ -272,7 +272,7 @@ switch (cmd) {
     // leak a scary "fatal:" line before sawbuck's own message.
     const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
     // 64 (EX_USAGE) for every "could not run" below, never a verdict code: a script or CI must not read it as gamed (2).
-    if (!g('rev-parse', '--git-dir')) { out(`sawbuck: ${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`); process.exit(64); }
+    if (!g('rev-parse', '--git-dir')) { out(`sawbuck: ${gitRefuses(repo) || `${repo} is not a git repo. The check re-proves a change against git history, so run it inside one (git init, then commit).`}`); process.exit(64); }
     if (!g('rev-parse', '--verify', 'HEAD')) { out('sawbuck: no commit yet. Make one, then `sawbuck check` verifies your next change against it.'); process.exit(64); }
     const uncommitted = g('status', '--porcelain').length > 0;
     const dirty = !base && !head && uncommitted;
@@ -465,7 +465,7 @@ switch (cmd) {
     const user = flags.has('--user'), shared = flags.has('--shared'), git = flags.has('--git'), codex = flags.has('--codex'), cursor = flags.has('--cursor');
     if (user + shared + git + codex + cursor > 1) usage('attach takes one of --user, --shared, --git, --codex or --cursor');
     const top = gitTop(repoArg());
-    if (!top && !user) usage(`${repoArg()} is not a git repository (attach wires one; run it inside your project, or name its path)`);
+    if (!top && !user) usage(gitRefuses(repoArg()) || `${repoArg()} is not a git repository (attach wires one; run it inside your project, or name its path)`);
     const repo = top || repoArg();
     if (codex) { wireCodex(repo); break; }
     if (cursor) { wireCursor(repo); break; }

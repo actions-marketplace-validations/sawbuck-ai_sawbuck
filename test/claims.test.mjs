@@ -1624,3 +1624,15 @@ test('claim: contract --dry-run works inside a linked git worktree, where .git i
   const r = sb(w, 'contract', '--dry-run'); assert.equal(r.code, 0, r.out); assert.match(r.out, /nothing was written/); assert.match(r.out, /AGENTS\.md/);
   assert.equal(git(w, 'status', '--porcelain'), '', 'and it wrote nothing there');
 });
+// Git refuses a repo another user owns (a dev container with a mounted repo). Every git call fails there, and Sawbuck
+// said "not a git repo ... git init, then commit" while `status` said "checkable ... try sawbuck check".
+test('claim: in a repo git refuses because another user owns it, check, contract, attach and status say that and give git\'s own line for it; none says it is not a git repo', (t) => {
+  const d = repo(false); const own = { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' };
+  if (spawnSync('git', ['-C', d, 'rev-parse', '--git-dir'], { env: { ...ENV, ...own }, encoding: 'utf8' }).status === 0) return t.skip('this git does not ask who owns a repo');
+  for (const a of [['check'], ['contract', '--dry-run'], ['attach', '--claude'], ['status']]) {
+    const r = sbE(d, own, ...a);
+    assert.match(r.out, /another user owns it/, `${a.join(' ')}: ${r.out}`); assert.match(r.out, /git config --global --add safe\.directory \S/, a.join(' '));
+    assert.doesNotMatch(r.out, /not a git repo|git init|Try it now/i, `${a.join(' ')}: ${r.out}`);
+  }
+  assert.ok(!existsSync(join(d, '.claude')), 'and attach wrote nothing');
+});
