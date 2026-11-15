@@ -1269,6 +1269,33 @@ test('claim: signing does not move any of the repo\'s own counts: the tool\'s co
   const rep = check(d);
   for (const n of ['test_count', 'skipped_tests', 'suppressions', 'assertions']) { const m = rep.metrics.find((x) => x.name === n); assert.equal(m.before, m.after, `${n} moved from ${m.before} to ${m.after} by signing`); }
 });
+// 0.1.70: who may let a pull request through. The CI check took a person's yes from a `sawbuck-allow:` comment by any
+// account of type User with write access, the account that opened the pull request included. A coding agent run from
+// a service account opens its pull requests from that account and can post the comment (measured with the Action's
+// own steps on the engine 0.1.69 pinned: proof-bench/pr-shapes, 2026-11-14). The engine this release pins leaves the
+// opener out, unless the contract on the base branch says a repo with one person in it wants that.
+// the engine the sawbuck under test runs, found the way bins.mjs finds it: PW_BIN, then the package beside it, then the sibling checkout
+const ENGINE_HERE = (() => { const beside = join(dirname(CLI), '..', 'promptwheel', 'bin', 'promptwheel.mjs'); return process.env.PW_BIN || (existsSync(beside) ? beside : join(HERE, '..', '..', 'promptwheel', 'bin', 'promptwheel.mjs')); })();
+test('claim: on a pull request the account that opened it cannot let a change through; another person can; a repo with one person in it says so in its contract', () => {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0); save(d, 'sign');
+  const base = git(d, 'rev-parse', 'HEAD').trim();
+  const comment = (login, assoc = 'COLLABORATOR') => JSON.stringify({ body: 'sawbuck-allow: the old assertion was wrong', author_association: assoc, user: { type: 'User', login } });
+  const prAllow = (input, ...a) => spawnSync(process.execPath, [ENGINE_HERE, 'pr-allow', ...a], { cwd: d, encoding: 'utf8', env: ENV, input }).stdout;
+  assert.equal(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'the opener');
+  assert.equal(prAllow(comment('ACME-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'in another letter case');
+  assert.match(prAllow(comment('pat', 'MEMBER') + '\n' + comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), /approved by pat/, 'another person, with a newer comment from the opener after theirs');
+  // the pull request adds the setting: the contract on the base still decides
+  json(d, 'promptwheel.config.json', (c) => { c.allowFromAuthor = true; }); save(d, 'the opener may approve');
+  assert.equal(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'turned on in the same pull request, it does not count for it');
+  assert.match(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', git(d, 'rev-parse', 'HEAD').trim()), /approved by acme-agent-svc/, 'once it is on the base branch, the opener counts');
+  // and that change to the contract is itself sent back by the check, as a protected path
+  assert.equal(check(d).verdict, 'fail');
+});
+test('claim: signing with --full says who may let a pull request through, and names the setting for a repo with one person in it', () => {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0);
+  assert.match(r.out, /Added \.github\/workflows\/sawbuck\.yml/); assert.match(r.out, /someone with write access who did not open it/); assert.match(r.out, /"allowFromAuthor": true/);
+  const readme = readFileSync(join(HERE, '..', 'README.md'), 'utf8'); assert.match(readme, /who did not open it comments `sawbuck-allow: <reason>`/); assert.match(readme, /"allowFromAuthor": true/);
+});
 test('claim: the CI workflow --full writes pins every action by commit, the check\'s own included, at the engine version this release pins', () => {
   const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0);
   const wf = readFileSync(join(d, '.github/workflows/sawbuck.yml'), 'utf8');
