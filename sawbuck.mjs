@@ -324,11 +324,12 @@ switch (cmd) {
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
       out('✗ sent back: a protected path changed, however green the rest is.');
       many();
-      // the way through, for a person who meant it: two of the default rules take a reason, the rest are lifted first
+      // the way through, for a person who meant it: the rules file, the hooks, the lock and (in a contract written
+      // from 0.1.70 on) a workflow change take a reason; the rest are lifted first
       const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
       const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
       if (soft.length && !left.length) out(`sawbuck: if a person meant this: sawbuck check ${allowHow} accepts ${allowNames ? 'each thing it names' : names(soft)}, and the result shows the reason.`);
-      if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
+      if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.${hard.some((x) => x.name === 'workflows-frozen') ? ' A contract written from 0.1.70 on lets a workflow change through with a reason: add "allowable": "flag" to the "workflows-frozen" rule here to get the same.' : ''}`);
     }
     else if (rep.verdict === 'fail') out('✗ sent back: this change made something worse.');
     else out(`≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
@@ -338,7 +339,7 @@ switch (cmd) {
     if (left.length) out(`sawbuck: your reason${(rep.allowed.cleared || []).length ? ` let ${rep.allowed.cleared.map(bare).join(', ')} through, and` : ''} did not let ${left.map(bare).join(', ')} through: a reason covers only what it names. To accept them all: sawbuck check ${allowHow}`);
     if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
-    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? `. If you meant this: ${allowHow}, or on a pull request comment sawbuck-allow: ${allowNames}<reason>` : ''}`);
+    for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? `. If you meant this: ${allowHow}, or on a pull request someone who did not open it comments sawbuck-allow: ${allowNames}<reason>` : ''}`);
     if (rep.gate && rep.gate.changed) out(`⚠ the gate definition changed in this change (fingerprint ${rep.gate.fingerprint.base} -> ${rep.gate.fingerprint.head}): a metric, guard, evaluatorPath or mandate was added, removed or edited.`);
     process.exit(code);
   }
@@ -943,7 +944,7 @@ function wireClaude(repo, opts) {
   const kind = user ? 'USER-LEVEL' : shared ? 'shared project' : 'project';
   out(upgrading ? `sawbuck: updated the ${kind} Claude Code hooks in ${f} to this version` : `sawbuck: wired ${kind} Claude Code hooks in ${f}`);
   if (shared) out(`  commit ${relative(repo, f)} so the team gets the check. It runs sawbuck ${version} through npx on every machine, and asks npm for that version once where a session starts.`);
-  if (shared && protectedAmong(repo, [relative(repo, f)]).length) out(`  That file is a protected path in this repo, so the check on its commit reads "sent back" unless a person passes --allow "team hooks" (on a pull request: a comment, sawbuck-allow: team hooks).`);
+  if (shared && protectedAmong(repo, [relative(repo, f)]).length) out(`  That file is a protected path in this repo, so the check on its commit reads "sent back" unless a person passes --allow "team hooks" (on a pull request: a comment from someone who did not open it, sawbuck-allow: team hooks).`);
   if (!user && !existsSync(join(repo, 'AGENTS.md')) && !existsSync(join(repo, 'CLAUDE.md'))) out('  no written rule here yet, and that is what changes the agent: run sawbuck contract.');
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
 }

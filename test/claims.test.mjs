@@ -1269,6 +1269,125 @@ test('claim: signing does not move any of the repo\'s own counts: the tool\'s co
   const rep = check(d);
   for (const n of ['test_count', 'skipped_tests', 'suppressions', 'assertions']) { const m = rep.metrics.find((x) => x.name === n); assert.equal(m.before, m.after, `${n} moved from ${m.before} to ${m.after} by signing`); }
 });
+// 0.1.70: the check says what it borrowed. It runs the test command in the environment it is run in, and no diff shows
+// that. A `PYTEST_ADDOPTS` that deselects the red test, or a preload in `NODE_OPTIONS`, read pass while a fresh install
+// was red (proof-bench/outside-git, 2026-11-11); the README said so and the check said nothing. Now it says it: a note.
+test('claim: the check says so when the environment it runs in can change which tests run, as a note beside the verdict', () => {
+  const d = repo(true); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub');
+  const clean = { ...ENV }; for (const k of ['PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'NODE_OPTIONS']) delete clean[k];
+  const run = (env) => { const r = spawnSync(process.execPath, [CLI, 'check'], { cwd: d, encoding: 'utf8', env: { ...clean, ...env } }); return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }; };
+  const plain = run({}); assert.equal(plain.code, 0, plain.out); assert.doesNotMatch(plain.out, /the environment this ran in/);
+  const set = run({ PYTEST_ADDOPTS: '--deselect tests/test_a.py::test_red' });
+  assert.equal(set.code, 0, 'a note, never a verdict'); assert.match(set.out, /sawbuck: note: the environment this ran in can change which tests run, or load code into them: PYTEST_ADDOPTS/);
+  assert.doesNotMatch(run({ NODE_OPTIONS: '--max-old-space-size=4096' }).out, /the environment this ran in/, 'a NODE_OPTIONS that loads no file is not one');
+  assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /the check says so when one of them is set/);
+});
+// 0.1.70: who may let a pull request through. The CI check took a person's yes from a `sawbuck-allow:` comment by any
+// account of type User with write access, the account that opened the pull request included. A coding agent run from
+// a service account opens its pull requests from that account and can post the comment (measured with the Action's
+// own steps on the engine 0.1.69 pinned: proof-bench/pr-shapes, 2026-11-14). The engine this release pins leaves the
+// opener out, unless the contract on the base branch says a repo with one person in it wants that.
+// the engine the sawbuck under test runs, found the way bins.mjs finds it: PW_BIN, then the package beside it, then the sibling checkout
+const ENGINE_HERE = (() => { const beside = join(dirname(CLI), '..', 'promptwheel', 'bin', 'promptwheel.mjs'); return process.env.PW_BIN || (existsSync(beside) ? beside : join(HERE, '..', '..', 'promptwheel', 'bin', 'promptwheel.mjs')); })();
+test('claim: on a pull request the account that opened it cannot let a change through; another person can; a repo with one person in it says so in its contract', () => {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0); save(d, 'sign');
+  const base = git(d, 'rev-parse', 'HEAD').trim();
+  const comment = (login, assoc = 'COLLABORATOR') => JSON.stringify({ body: 'sawbuck-allow: the old assertion was wrong', author_association: assoc, user: { type: 'User', login } });
+  const prAllow = (input, ...a) => spawnSync(process.execPath, [ENGINE_HERE, 'pr-allow', ...a], { cwd: d, encoding: 'utf8', env: ENV, input }).stdout;
+  assert.equal(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'the opener');
+  assert.equal(prAllow(comment('ACME-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'in another letter case');
+  assert.match(prAllow(comment('pat', 'MEMBER') + '\n' + comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), /approved by pat/, 'another person, with a newer comment from the opener after theirs');
+  // the pull request adds the setting: the contract on the base still decides
+  json(d, 'promptwheel.config.json', (c) => { c.allowFromAuthor = true; }); save(d, 'the opener may approve');
+  assert.equal(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', base), '', 'turned on in the same pull request, it does not count for it');
+  assert.match(prAllow(comment('acme-agent-svc') + '\n', '--author', 'acme-agent-svc', '--base', git(d, 'rev-parse', 'HEAD').trim()), /approved by acme-agent-svc/, 'once it is on the base branch, the opener counts');
+  // and that change to the contract is itself sent back by the check, as a protected path
+  assert.equal(check(d).verdict, 'fail');
+});
+// A fix in the engine reaches a pull-request check only through the commit its workflow pins. `contract --full` writes
+// that workflow once and never rewrites it (a workflow file is a protected path, and the person's). So a repo signed
+// by an older sawbuck would keep the old engine, and the old rule about who may approve, with nothing said.
+const OLD_PIN = ['81b965aa7e150a4e4eb722631ae34def37380c39', '0.8.9'];
+const PINNED = /promptwheel-ai\/promptwheel@[0-9a-f]{40} # v[\d.]+/;
+const pinOf = () => { const pkg = JSON.parse(readFileSync(join(dirname(CLI), 'package.json'), 'utf8')); return `promptwheel-ai/promptwheel@${pkg.promptwheelAction} # v${pkg.dependencies.promptwheel}`; };
+// A repo as an earlier sawbuck left it: its CI check pinned to the engine of that day and, with `before`, its workflow
+// rule with no way through (a contract written from 0.1.70 on carries "allowable": "flag" on that rule).
+function leftByAnOlder(before) {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0); save(d, 'sign');
+  assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'the workflow this release writes is current');
+  edit(d, '.github/workflows/sawbuck.yml', (x) => x.replace(PINNED, `promptwheel-ai/promptwheel@${OLD_PIN[0]} # v${OLD_PIN[1]}`));
+  if (before) json(d, 'promptwheel.config.json', (c) => { const m = c.mandates.find((x) => x.name === 'workflows-frozen'); delete m.allowable; m.reason = 'workflows run with the repository secrets; change them in a separate, reviewed change'; });
+  save(d, 'as an older sawbuck left it'); return d;
+}
+test('claim: a CI check that pins an older engine keeps it; contract says so, gives the line, leaves the file alone, and the change takes one reason', () => {
+  const d = leftByAnOlder(false); const wf = join(d, '.github/workflows/sawbuck.yml'); const line = pinOf();
+  const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /\.github\/workflows\/sawbuck\.yml runs an older engine \(v0\.8\.9\); this sawbuck pins v/);
+  assert.ok(r.out.includes(`uses: ${line}`), 'with the line to change it to');
+  assert.ok(readFileSync(wf, 'utf8').includes(OLD_PIN[0]), 'and the file is left as it was');
+  assert.match(r.out, /That is a workflow change, so it takes a person's reason: sawbuck check --allow "<reason>", or on a pull request a comment from someone who did not open it\./);
+  assert.match(r.out, /Change it yourself: at the end of a turn an agent's own change to a protected path is sent back, with a reason or without\./);
+  assert.doesNotMatch(r.out, /takes no reason/);
+  assert.match(sb(d, 'contract').out, /runs an older engine/, 'plain contract says it too');
+  edit(d, '.github/workflows/sawbuck.yml', (x) => x.replace(PINNED, `promptwheel-ai/promptwheel@${'a'.repeat(40)} # v99.0.0`));
+  assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'a newer one, set by hand, is not called older'); git(d, 'checkout', '-q', '--', '.');
+  edit(d, '.github/workflows/sawbuck.yml', (x) => x.replace(PINNED, line)); save(d, 'ci: the newer check');
+  assert.equal(sb(d, 'check').code, 1, 'the change needs a reason'); assert.equal(sb(d, 'check', '--allow', 'the newer pinned check').code, 0, 'and one reason is enough');
+  assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'after which nothing is called older');
+});
+test('claim: under a contract written before 0.1.70 that line change is sent back whatever the reason, and the two changes the notice gives get it through', () => {
+  const d = leftByAnOlder(true); const line = pinOf(); const move = () => edit(d, '.github/workflows/sawbuck.yml', (x) => x.replace(PINNED, line));
+  const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0, r.out); assert.match(r.out, /runs an older engine \(v0\.8\.9\)/);
+  assert.match(r.out, /The "workflows-frozen" rule here takes no reason \(contracts written before 0\.1\.70 do not\), so the change is sent back as it stands\. It takes two changes, each with a person's reason: first add "allowable": "flag" to the "workflows-frozen" rule in promptwheel\.config\.json, as new contracts have it; then change the line\./);
+  move(); save(d, 'ci: the newer check'); const o = sb(d, 'check').out; assert.match(o, /sent back/, 'as it stands: sent back');
+  assert.match(o, /"workflows-frozen" takes no --allow\..* add "allowable": "flag" to the "workflows-frozen" rule here to get the same\./s, 'and the check gives the same way through');
+  assert.equal(sb(d, 'check', '--allow', 'the newer pinned check').code, 1, 'no reason clears it'); git(d, 'reset', '-q', '--hard', 'HEAD~1');
+  json(d, 'promptwheel.config.json', (c) => { c.mandates.find((m) => m.name === 'workflows-frozen').allowable = 'flag'; }); save(d, 'contract: a workflow change takes a reason');
+  assert.equal(sb(d, 'check').code, 1, 'the first change needs a reason'); assert.equal(sb(d, 'check', '--allow', 'workflow changes take a reason here, as new contracts have it').code, 0, 'and takes one');
+  move(); save(d, 'ci: the newer check');
+  assert.equal(sb(d, 'check').code, 1, 'the second needs a reason too'); assert.equal(sb(d, 'check', '--allow', 'the newer pinned check').code, 0, 'and takes one');
+  assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'after which nothing is called older');
+});
+// A workflow change is ordinary upkeep: a version bump of an action, a new job. On 340 real commits from 17 public
+// repos, 64 of the 65 sent back for a protected path were one (proof-bench/contract-replay). A rule with no way through
+// but deleting it teaches people to delete it, so since 0.1.70 it takes a person's reason, like the rules file.
+test('claim: a workflow change is sent back until a person gives a reason; --allow lets it through, a commit message does not, and the registry file keeps no way through', () => {
+  const d = repo(true); put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign');
+  put(d, '.github/workflows/ci.yml', 'name: ci\non: [push, pull_request]\njobs: {}\n'); save(d, 'ci: on pull requests too');
+  let o = sb(d, 'check'); assert.equal(o.code, 1, o.out); assert.match(o.out, /protected path "workflows-frozen" touched/); assert.match(o.out, /sent back/);
+  assert.match(o.out, /if a person meant this: sawbuck check --allow "<reason>" accepts "workflows-frozen"/); assert.doesNotMatch(o.out, /takes no --allow/);
+  git(d, 'commit', '-q', '--amend', '-m', 'ci: on pull requests too\n\nSawbuck-Allow: I meant it');
+  assert.equal(sb(d, 'check').code, 1, 'a commit message is not a person');
+  o = sb(d, 'check', '--allow', 'CI runs on pull requests now'); assert.equal(o.code, 0, o.out); assert.match(o.out, /CI runs on pull requests now/, 'the reason shows in the result');
+  put(d, '.npmrc', 'registry=https://example.invalid/\n'); save(d, 'npmrc');
+  o = sb(d, 'check', '--allow', 'I want this registry'); assert.equal(o.code, 1, o.out); assert.match(o.out, /"registry-config-frozen" takes no --allow/); assert.doesNotMatch(o.out, /allowable/, 'the hint about workflows is for workflows');
+});
+// A stated limit. The reason is for the check on a commit and on a pull request. The end of a turn is stricter with the
+// agent's own edits: a person's reason does not make an agent's change to a protected path the person's, and neither
+// does the person committing it, because the hooks cannot tell who ran a command between two turns.
+test('claim: in a session a workflow the agent changed is sent back at the end of the turn three times, then the person is told; a reason does not lift it; undone and made by the person, it is theirs', () => {
+  const d = repo(true); const was = 'name: ci\non: push\njobs: {}\n', now = 'name: ci\non: [push, pull_request]\njobs: {}\n';
+  put(d, '.github/workflows/ci.yml', was); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach').code, 0);
+  const hook = (args, ev) => spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify(ev) }).stdout || '';
+  let n = 0;
+  const prompt = (text) => { n++; hook(['turn', '--hook', d], { hook_event_name: 'UserPromptSubmit', prompt: text, session_id: 's', prompt_id: 'p' + n, cwd: d }); };
+  const stop = () => hook(['__hook', '--by', 'claude', '--stop'], { hook_event_name: 'Stop', cwd: d, session_id: 's', prompt_id: 'p' + n });
+  const sentBack = (o) => /"decision":"block"/.test(o) && /workflows-frozen/.test(o);
+  const work = () => { edit(d, 'src/add.js', (x) => x + `exports.f${n}=()=>${n}\n`); save(d, 'source only'); };
+  prompt('run CI on pull requests too'); put(d, '.github/workflows/ci.yml', now); save(d, 'ci: on pull requests too');
+  for (let i = 1; i <= 3; i++) assert.ok(sentBack(stop()), `sent back, time ${i}`);
+  const told = stop(); assert.doesNotMatch(told, /"decision":"block"/); assert.match(told, /Sawbuck stopped blocking after 3 tries: protected paths are still changed/, 'then the person is told, and the turn ends');
+  assert.equal(sb(d, 'check', '--allow', 'I asked for this CI change').code, 0, 'the check on the commit takes the reason');
+  prompt('thanks, now something else'); work(); assert.ok(sentBack(stop()), 'and the next turn is still sent back for it: the reason did not make the agent\'s edit the person\'s');
+  put(d, '.github/workflows/ci.yml', was); save(d, 'undo the CI change'); assert.ok(!sentBack(stop()), 'the agent undoes it, and the turn ends');
+  put(d, '.github/workflows/ci.yml', now);   // the person makes the same change by hand, before their next prompt
+  prompt('and one more thing'); work(); assert.ok(!sentBack(stop()), 'a change that was there when the prompt began is the person\'s');
+});
+test('claim: signing with --full says who may let a pull request through, and names the setting for a repo with one person in it', () => {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0);
+  assert.match(r.out, /Added \.github\/workflows\/sawbuck\.yml/); assert.match(r.out, /someone with write access who did not open it/); assert.match(r.out, /"allowFromAuthor": true/);
+  const readme = readFileSync(join(HERE, '..', 'README.md'), 'utf8'); assert.match(readme, /who did not open it comments `sawbuck-allow: <reason>`/); assert.match(readme, /"allowFromAuthor": true/);
+});
 test('claim: the CI workflow --full writes pins every action by commit, the check\'s own included, at the engine version this release pins', () => {
   const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0);
   const wf = readFileSync(join(d, '.github/workflows/sawbuck.yml'), 'utf8');
@@ -1394,6 +1513,7 @@ test('limit: a variable in the environment that changes how a test run ends is t
   const pre = join(mkdtempSync(join(tmpdir(), 'claims-pre-')), 'force0.cjs');
   writeFileSync(pre, "const r = process.reallyExit; process.reallyExit = function () { return r.call(process, 0) }\nprocess.on('exit', () => { process.exitCode = 0 })\n");
   const r = sbE(d, { NODE_OPTIONS: `--require ${pre}` }, 'check', '--json'); assert.equal(JSON.parse(r.out).verdict, 'pass', r.out.slice(0, 300));
+  assert.ok((JSON.parse(r.out).explained || []).some((x) => x.metric === 'environment' && x.noted && x.items.includes('NODE_OPTIONS')), 'still trusted; since 0.1.70 the report says the preload is there');
 });
 test('limit: a git filter set in the repo\'s local config rewrites the clean copy too, so a test it rewrites reads as passing at both commits', () => {
   const d = repo(); const bin = mkdtempSync(join(tmpdir(), 'claims-filter-'));
