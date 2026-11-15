@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mandateHits } from './contract.mjs';
+import { localDay } from './day.mjs';
 
 const MAX = 500;
 export const allowedPath = (repo) => join(repo, '.sawbuck', 'allowed.jsonl');
@@ -77,7 +78,7 @@ export function allowedLines(repo, changed) {
   for (const e of readAllowed(repo).reverse()) {
     const f = (e.files || []).filter((x) => touched.has(x)); if (!f.length) continue;
     const what = (Array.isArray(e.what) && e.what.length) ? e.what.join(', and ') : 'a change the check would have sent back';
-    out.push(`    - ${f.slice(0, 3).join(', ')}: ${what} (${String(e.at).slice(0, 10)}, ${e.sha ? e.sha : 'before it was committed'}). The reason given: "${e.reason}"`);
+    out.push(`    - ${f.slice(0, 3).join(', ')}: ${what} (${localDay(e.at)}, ${e.sha ? e.sha : 'before it was committed'}). The reason given: "${e.reason}"`);
     if (out.length === 3) break;
   }
   return out;

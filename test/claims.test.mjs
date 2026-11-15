@@ -578,14 +578,57 @@ const commit = (d, msg, path = '/usr/bin:/bin') => { git(d, 'add', '-A'); const 
 const record = (d, f = 'results.json') => { try { return JSON.parse(readFileSync(join(d, '.sawbuck', f), 'utf8')); } catch { return {}; } };
 const cheat = (s) => s.replace('add(2,2),4', 'add(2,2),0');
 test('claim: attach --git checks every commit, whatever made it, starting with the first one', () => { const d = hookRepo(); assert.equal(sb(d, 'attach', '--git').code, 0); assert.ok(!existsSync(join(d, '.claude')), 'no Claude settings'); edit(d, 'test/add.test.js', cheat); commit(d, 'make it green'); assert.ok((record(d).gamed || 0) >= 1, 'the first commit after attach was caught by the hook, with no sawbuck on PATH'); });
-test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 6); for (const c of cmds) assert.match(c, /^npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop|hold --hook|undo --hook)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
+test('claim: attach --shared writes a team file with no path from this machine, and removing the hooks shows in git', () => { const d = repo(true); const r = sb(d, 'attach', '--shared'); assert.equal(r.code, 0); assert.match(r.out, /commit \.claude\/settings\.json/); const f = join(d, '.claude/settings.json'); const text = readFileSync(f, 'utf8'); const cmds = Object.values(JSON.parse(text).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command)); assert.equal(cmds.length, 8); for (const c of cmds) assert.match(c, /^npx (--prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ (turn --hook|__hook --by claude --stop|hold --hook|undo --hook)|--fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __warm)$/); assert.ok(!text.includes(d) && !text.includes(HOME) && !text.includes('sawbuck.mjs'), 'nothing machine-specific'); assert.match(git(d, 'status', '--porcelain'), /\.claude\//, 'the file is visible to git'); save(d, 'share the hooks'); put(d, '.claude/settings.json', '{}\n'); assert.match(git(d, 'status', '--porcelain'), /M \.claude\/settings\.json/, 'a removal shows'); git(d, 'checkout', '.claude/settings.json'); assert.equal(sb(d, 'detach').code, 0); assert.ok(!/sawbuck/.test(existsSync(f) ? readFileSync(f, 'utf8') : '')); });
 test('claim: a team file with the old plain npx form is upgraded in place by attach --shared, with no second copy of any hook', () => {
   const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0); const f = join(d, '.claude/settings.json');
   put(d, '.claude/settings.json', readFileSync(f, 'utf8').replace(/npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y /g, 'npx -y '));   // as an older version wrote it
   assert.match(readFileSync(f, 'utf8'), /"npx -y sawbuck@/);
   assert.equal(sb(d, 'attach', '--shared').code, 0);
   const cmds = Object.values(JSON.parse(readFileSync(f, 'utf8')).hooks).flat().flatMap((h) => h.hooks.map((x) => x.command));
-  assert.equal(cmds.length, 6, 'one of each'); for (const c of cmds) assert.match(c, /^npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@/);
+  assert.equal(cmds.length, 8, 'one of each'); for (const c of cmds) assert.match(c, /^npx (--prefer-offline )?--fetch-retries=0 --fetch-timeout=10000 -y sawbuck@/);
+  assert.equal(cmds.filter((c) => !c.includes('--prefer-offline')).length, 2, 'only the two session-start lines ask npm');
+});
+// A team file moves to a newer sawbuck by a commit. A teammate's npm has kept a list of versions that ends before it,
+// and `--prefer-offline` tells npm to use that list without asking: every hook then fails with "No matching version"
+// (measured 2026-11-13, npm 10.8, 10.9 and 11.x). So the file asks npm once, where a session starts, on a line with no
+// such flag and a command that prints nothing; a real Claude Code finishes that line before the first prompt's hook
+// (measured 2026-11-14, in a window and under `claude -p`). Every other line keeps the flag: they run on each prompt
+// and tool call, and without it each would wait out the fetch timeout on a network that hangs.
+test('claim: a team file asks npm for its pinned version once, where a session starts, and on no other line', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0);
+  const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks;
+  const of = (matcher) => (h.SessionStart || []).filter((e) => e.matcher === matcher).flatMap((e) => e.hooks.map((x) => x.command));
+  for (const source of ['startup', 'resume']) { const c = of(source); assert.equal(c.length, 1, `one line for a session that begins by ${source}`); assert.match(c[0], /^npx --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __warm$/); }
+  assert.match(of('compact')[0], /^npx --prefer-offline .* turn --hook$/, 'the line after a compaction is as it was');
+  const rest = Object.entries(h).flatMap(([ev, list]) => list.filter((e) => !(ev === 'SessionStart' && ['startup', 'resume'].includes(e.matcher))).flatMap((e) => e.hooks.map((x) => x.command)));
+  assert.equal(rest.length, 6); for (const c of rest) assert.ok(c.includes('--prefer-offline'), `a line that runs on every prompt or tool call must not wait on the network: ${c}`);
+  // the same pinned version on every line
+  assert.equal(new Set(Object.values(h).flat().flatMap((e) => e.hooks.map((x) => /sawbuck@([\d.]+)/.exec(x.command)[1]))).size, 1);
+  // attached twice is attached once
+  assert.match(sb(d, 'attach', '--shared').out, /already attached/);
+  assert.equal(Object.values(JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks).flat().length, 8);
+});
+test('claim: the session-start line prints nothing, whatever it is fed, so nothing of it reaches the agent', () => {
+  const d = repo(true);
+  for (const input of ['', JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', cwd: d, session_id: 's' }), 'not json']) {
+    const r = spawnSync(process.execPath, [CLI, '__warm'], { cwd: d, encoding: 'utf8', env: ENV, input });
+    assert.equal(r.status, 0); assert.equal(r.stdout, ''); assert.equal(r.stderr, '');
+  }
+  const out = spawnSync(process.execPath, [CLI, '__warm'], { cwd: tmpdir(), encoding: 'utf8', env: ENV, input: '' });   // and outside any repo
+  assert.equal(out.status, 0); assert.equal(out.stdout + out.stderr, '');
+});
+test('claim: the hooks one person attaches hold no session-start line that asks npm (their version is the one already here)', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach').code, 0);
+  const text = readFileSync(join(d, '.claude/settings.local.json'), 'utf8');
+  assert.ok(!text.includes('__warm')); assert.deepEqual(JSON.parse(text).hooks.SessionStart.map((e) => e.matcher), ['compact']);
+});
+test('claim: doctor says a team file written before the session-start line is incomplete, and attach --shared completes it', () => {
+  const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0); const f = join(d, '.claude/settings.json');
+  const cfg = JSON.parse(readFileSync(f, 'utf8')); cfg.hooks.SessionStart = cfg.hooks.SessionStart.filter((e) => e.matcher === 'compact');   // as 0.1.68 wrote it
+  writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
+  const r = sb(d, 'doctor'); assert.match(r.out, /PART\s+claude-shared/); assert.match(r.out, /missing: SessionStart\[startup\], SessionStart\[resume\]/); assert.match(r.out, /sawbuck attach --shared again/);
+  assert.match(sb(d, 'attach', '--shared').out, /updated the shared project Claude Code hooks/);
+  assert.equal(JSON.parse(readFileSync(f, 'utf8')).hooks.SessionStart.length, 3);
 });
 test('claim: shared hooks find the repo from where they run, and block a protected path', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.equal(sb(d, 'attach', '--shared').code, 0); const h = JSON.parse(readFileSync(join(d, '.claude/settings.json'), 'utf8')).hooks; const run = (cmd, ev) => { const args = cmd.replace(/^npx (?:--\S+ )*-y sawbuck@[\d.]+ /, '').split(' '); return spawnSync(process.execPath, [CLI, ...args], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: 'shared', prompt: 'x' }) }).stdout || ''; }; run(h.UserPromptSubmit[0].hooks[0].command, 'UserPromptSubmit'); put(d, '.github/workflows/x.yml', 'on: push\n'); assert.ok(blocked(run(h.Stop[0].hooks[0].command, 'Stop'))); });
 test('claim: detach --all takes sawbuck out of every repo, and doctor --all lists them first', () => { const home = mkdtempSync(join(tmpdir(), 'claims-home-')); const env = { ...ENV, HOME: home }; const run = (d, ...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env }); return (r.stdout || '') + (r.stderr || ''); }; const a = repo(true), b = repo(true); run(a, 'attach'); run(b, 'attach', '--git'); const list = run(a, 'doctor', '--all'); assert.ok(list.includes(a) && list.includes(b), list); assert.match(run(a, 'detach', '--all'), /detached everywhere/); assert.ok(!existsSync(join(a, '.claude/settings.local.json')) && !existsSync(join(b, '.git/hooks/post-commit'))); assert.match(run(a, 'doctor', '--all'), /not attached anywhere/); });
@@ -702,6 +745,22 @@ test('claim: a reason given with --allow is kept, and comes back with the prompt
   assert.equal(allowedLog(d).length, 2, 'kept under --json, and the output is still only the report');
   assert.match(readFileSync(join(HERE, '..', 'README.md'), 'utf8'), /kept in `\.sawbuck\/allowed\.jsonl`/, 'the README says where it is kept');
 });
+// A record keeps the instant in UTC. Shown as its first ten characters it read a day ahead for anyone west of Greenwich
+// in the evening: at 20:29 on the 13th in Los Angeles an agent was told a decision was made on the 14th, and remarked on
+// it (2026-11-13, a real session). The day shown is the day on the clock of the machine the hook runs on.
+test('claim: the day shown with a past decision is the day on this machine, not the day in UTC', () => {
+  const d = repo(); const w = wired(d);
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  w.prompt('look at the tests');   // a turn has begun here, so the record is being kept
+  assert.equal(sb(d, 'check', '--allow', 'the spec changed: add subtracts now').code, 0);
+  const f = join(d, '.sawbuck', 'allowed.jsonl'); const was = readFileSync(f, 'utf8'); assert.match(was, /"at":"[^"]+"/);
+  writeFileSync(f, was.replace(/"at":"[^"]+"/, '"at":"2026-11-14T04:29:00.000Z"'));   // 20:29 on the 13th in Los Angeles
+  const cmd = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks.UserPromptSubmit[0].hooks[0].command;
+  const prompt = (TZ) => spawnSync('sh', ['-c', cmd], { cwd: d, encoding: 'utf8', env: { ...ENV, TZ }, input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', cwd: d, session_id: 'tz-' + TZ, prompt: 'tighten test/add.test.js' }) }).stdout || '';
+  assert.match(prompt('America/Los_Angeles'), /let through here by a person[\s\S]*\(2026-11-13, /, 'the day on the clock in Los Angeles');
+  assert.match(prompt('UTC'), /let through here by a person[\s\S]*\(2026-11-14, /);
+  assert.match(prompt('Asia/Tokyo'), /let through here by a person[\s\S]*\(2026-11-14, /);
+});
 test('claim: a protected path let through with --allow is kept under the rule\'s name, and comes back with the prompt that names the path', () => {
   const d = signed(true); const w = wired(d);
   json(d, 'promptwheel.config.json', (o) => { o.repeat = 2; }); save(d, 'more repeats');
@@ -786,10 +845,109 @@ test('claim: a turn that removed the record and did nothing wrong still ends, an
   const out = w.stop(); assert.ok(!blocked(out), out); assert.match(out, /record for this repo \(\.sawbuck\/\) was removed or made unreadable during this turn/);
   assert.doesNotMatch(w.stop(), /was removed or made unreadable/, 'said once');
 });
-test('claim: detach takes the second copy with it', () => {
-  const { d } = sentBackTurn(); assert.ok(existsSync(guardFile(d)));
-  assert.equal(sb(d, 'detach', '--purge').code, 0); assert.ok(!existsSync(guardFile(d)), 'gone with the record');
-  const e = sentBackTurn().d; assert.equal(sb(e, 'detach').code, 0); assert.ok(!existsSync(guardFile(e)), 'gone when the hooks go, record kept or not');
+test('claim: detach takes the second copy with it: at once when no turn is open, and when the turn ends if one is', () => {
+  // no turn open (the last end of turn let it end): gone with the hooks, record kept or not
+  const ended = () => { const d = repo(true); const w = wired(d); w.prompt('add a sub function'); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub'); assert.ok(!blocked(w.stop())); assert.ok(existsSync(guardFile(d))); return d; };
+  let d = ended(); assert.equal(sb(d, 'detach').code, 0); assert.ok(!existsSync(guardFile(d)), 'gone when the hooks go');
+  d = ended(); assert.equal(sb(d, 'detach', '--purge').code, 0); assert.ok(!existsSync(guardFile(d)), 'gone with the record');
+  // a turn open (it was just sent back): the session read its hooks when it began and still runs them, so the copy
+  // stays for that turn, the turn is still checked, and the copy goes when the turn ends
+  const t = sentBackTurn(); const r = sb(t.d, 'detach'); assert.equal(r.code, 0); assert.match(r.out, /a turn is open in this repo/);
+  assert.ok(existsSync(guardFile(t.d)), 'kept while the turn is open'); assert.ok(blocked(t.w.stop()), 'and the turn is still sent back');
+  edit(t.d, 'src/add.js', fixAdd); edit(t.d, 'test/add.test.js', (s) => s.replace('add(2,2),0', 'add(2,2),4')); save(t.d, 'fix add, put the test back');
+  assert.ok(!blocked(t.w.stop()), 'the real fix ends the turn'); assert.ok(!existsSync(guardFile(t.d)), 'and the copy goes with it');
+  // attached again while it waited: the wait is off, and the copy stays
+  const u = sentBackTurn(); assert.equal(sb(u.d, 'detach').code, 0); assert.equal(sb(u.d, 'attach').code, 0);
+  assert.ok(blocked(u.w.stop())); assert.ok(existsSync(guardFile(u.d)));
+});
+// ------------------------------------------------------------ "what a turn is checked from is the hooks' own"
+// Measured on 0.1.68 (proof-bench/record-tamper, amendments 2 and 3, 2026-11-13 and 14). The second copy held where a
+// turn began and a verdict that was sent back. Everything else the end of a turn decides by was still read from the
+// state file, which an agent can rewrite with nothing showing in git: the last commit looked at, the commit and the
+// tips the turn began with, how many times this prompt was already sent back, and how many times it may be. One field
+// edited, and the turn ended on a gamed commit with nothing said, or with a note to the person in place of a send-back.
+// All of it is now read from the second copy, and the setting is the one that stood when the prompt began.
+const openTurn = (make = repo) => { const d = make(); const w = wired(d); w.prompt('make the add test pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green'); return { d, w, head: git(d, 'rev-parse', 'HEAD') }; };
+const stateFile = (d, fn) => json(d, '.sawbuck/state.json', fn);
+test('claim: a state file rewritten during a turn to say the commit was already looked at does not skip the check', () => {
+  let t = openTurn(); stateFile(t.d, (o) => { o.lastSha = t.head; }); assert.ok(blocked(t.w.stop()), '"last commit looked at" set to the gamed commit');
+  t = openTurn(); stateFile(t.d, (o) => { o.turnBaseline.sha = t.head; }); assert.ok(blocked(t.w.stop()), 'the commit the turn began at set to the gamed commit');
+  t = openTurn(); stateFile(t.d, (o) => { o.turnBaseline.refs = [...(o.turnBaseline.refs || []), t.head]; }); assert.ok(blocked(t.w.stop()), 'the gamed commit added to the tips the turn began with');
+  t = openTurn(); stateFile(t.d, (o) => { o.lastSha = t.head; o.lastPromptAt = new Date(Date.now() + 60000).toISOString(); }); assert.ok(blocked(t.w.stop()), 'the same with the prompt time moved a minute ahead');
+  assert.equal(git(t.d, 'status', '--porcelain'), '', 'none of it shows in git status');
+  // in a later turn, when "last commit looked at" in the second copy is one an end of turn wrote
+  const d = repo(); const w = wired(d); w.prompt('add a sub function'); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub'); assert.ok(!blocked(w.stop()), 'a turn that touched no test ends');
+  w.prompt('make the add test pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
+  stateFile(d, (o) => { o.lastSha = git(d, 'rev-parse', 'HEAD'); }); assert.ok(blocked(w.stop()), 'in a later turn too');
+});
+test('claim: an honest turn after a state file was rewritten is not sent back, and a commit is still looked at once', () => {
+  const d = repo(true); const w = wired(d); w.prompt('add a sub function'); edit(d, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(d, 'sub');
+  stateFile(d, (o) => { o.lastSha = ''; delete o.turnBaseline.refs; });   // edits that would only widen what is looked at
+  assert.ok(!blocked(w.stop()), 'the honest commit passes');
+  const runs = () => readFileSync(join(d, '.sawbuck', 'activity.jsonl'), 'utf8').trim().split('\n').length;
+  const n = runs(); assert.ok(!blocked(w.stop())); assert.ok(!blocked(w.stop())); assert.equal(runs(), n, 'a second and third end of turn with no new commit look at nothing');
+  // the next turn starts where this one ended
+  w.prompt('rename sub'); edit(d, 'src/add.js', (s) => s.replace('exports.sub', 'exports.minus')); save(d, 'minus'); assert.ok(!blocked(w.stop()));
+});
+test('claim: how many times a turn is sent back cannot be spent or set to zero from inside the turn', () => {
+  let t = openTurn(); stateFile(t.d, (o) => { o.blockPromptId = o.lastPromptAt; o.blockCount = 3; }); assert.ok(blocked(t.w.stop()), 'the count set to its limit in the state file');
+  assert.ok(blocked(t.w.stop())); assert.ok(blocked(t.w.stop())); assert.ok(!blocked(t.w.stop()), 'three times, as before, and then the person is told');
+  // the setting written during the turn: with no contract, where that file is no protected path, and with one
+  const zero = JSON.stringify({ enforce: { maxBlocks: 0 } }) + '\n';
+  t = openTurn(); put(t.d, 'sawbuck.config.json', zero); assert.ok(blocked(t.w.stop()), 'enforce.maxBlocks 0 written during the turn, in a repo with no rules');
+  t = openTurn(() => signed(false)); put(t.d, 'sawbuck.config.json', zero); const out = t.w.stop(); assert.ok(blocked(out), 'and in a signed repo'); assert.match(out, /sawbuck\.config\.json/, 'where writing that file is itself what is sent back');
+  // a person's own setting counts from their next prompt
+  const d = repo(); put(d, 'sawbuck.config.json', zero); save(d, 'ask me first'); const w = wired(d); w.prompt('make the add test pass');
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green'); assert.ok(!blocked(w.stop()), 'set before the prompt, it holds');
+});
+test('claim: the hold asks a person before sawbuck is detached, and before a command or an edit that names its own record', () => {
+  const d = signed(true); const w = wired(d); const ask = /"permissionDecision":"ask"/;
+  for (const c of ['sawbuck detach', 'npx -y sawbuck@0.1.69 detach --purge', 'node "/x/y/sawbuck.mjs" detach', 'cd sub && sawbuck detach --all',
+    'rm -rf .sawbuck', 'rm .git/sawbuck/guard.json', `python3 -c "import shutil; shutil.rmtree('.sawbuck')"`, 'echo {} > .sawbuck/state.json', `sed -i s/gamed/verified/ ${d}/.sawbuck/results.json`]) assert.match(w.pre(c), ask, c);
+  for (const c of ['npm test', 'git status', 'sawbuck status', 'sawbuck check', 'sawbuck attach', 'ls -la', 'cat .sawbuck/results.json', 'ls .sawbuck', 'git add -A && git commit -m "the sawbuck rules"', 'cat docs/sawbuck.md',
+    // the folder of the same name in a person's home is not a repo's record: the plugin's own commands name it
+    'npx --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@0.1.69 shape --check ~/.sawbuck/shape-labels.json --png', `node x.mjs rules --check ${HOME}/.sawbuck/rule-labels.json`, 'mkdir -p $HOME/.sawbuck && echo {} > "${HOME}/.sawbuck/shape-labels.json"']) assert.equal(w.pre(c), '', c);
+  // an edit tool pointed into either folder
+  const h = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks;
+  const preEdit = (file) => spawnSync('sh', ['-c', h.PreToolUse.find((x) => String(x.matcher || '').includes('Edit')).hooks[0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: file.startsWith('/') ? file : join(d, file), content: '{}' }, cwd: d, session_id: 's' }) }).stdout || '';
+  assert.match(preEdit('.sawbuck/state.json'), ask); assert.match(preEdit('.git/sawbuck/guard.json'), ask); assert.equal(preEdit('src/add.js'), '');
+  assert.equal(preEdit(join(HOME, '.sawbuck', 'shape-labels.json')), '', 'a file in the home folder of the same name is the person\'s own');
+  assert.equal(preEdit('docs/.sawbuck-notes.md'), '', 'and a file that only looks alike is not the record');
+  // turning the outward holds off does not turn this off: it is how the check itself is taken away
+  put(d, 'sawbuck.config.json', JSON.stringify({ holds: { off: true } }) + '\n');
+  assert.equal(w.pre('npm publish'), '', 'the outward hold is off'); assert.match(w.pre('sawbuck detach'), ask); assert.match(w.pre('rm -rf .sawbuck'), ask);
+});
+// Found in a real session before the 0.1.69 release (2026-11-14, Claude Code 2.1.318). An agent told to wait had its
+// `sleep` moved to a background task and ended its turn. When the task finished, Claude Code gave the hooks a prompt
+// whose text begins <task-notification>. The prompt hook took that for a person and started the turn's baseline again
+// at the commit a job had made meanwhile, so that commit was read as the person's own and never checked. A notice
+// from the harness is not a person: the turn that started the task is still the turn.
+const NOTICE = '<task-notification>\n<task-id>b78a1k37k</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n<summary>Background command "wait" completed (exit code 0)</summary>\n</task-notification>';
+test('claim: a commit made while a background task of the agent ran is still the agent\'s when the task reports back', () => {
+  const d = repo(); const w = wired(d); w.prompt('wait for the build, then make the add test pass');
+  assert.ok(!blocked(w.stop()), 'the turn ends with the task still running');
+  edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');   // the job's commit, after that end of turn
+  w.prompt(NOTICE); assert.ok(blocked(w.stop()), 'checked when the task reports back, and sent back');
+  // a protected path committed the same way
+  const e = signed(true); const x = wired(e); x.prompt('speed up CI in the background'); assert.ok(!blocked(x.stop()));
+  put(e, '.github/workflows/ci.yml', 'on: push\n'); save(e, 'ci'); x.prompt(NOTICE); assert.ok(blocked(x.stop()), 'a workflow change a job committed is sent back too');
+  // and what has not changed: a commit made between a person's own prompts is the person's
+  const f = repo(); const y = wired(f); y.prompt('look at the add test'); assert.ok(!blocked(y.stop()));
+  edit(f, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(f, 'the spec changed: add subtracts');
+  y.prompt('thanks. now add a sub function'); assert.ok(!blocked(y.stop()), 'the person\'s own commit is not laid on the agent');
+});
+test('claim: the hold asks a person before a background command that commits', () => {
+  const d = signed(true); wired(d); const ask = /"permissionDecision":"ask"/;
+  const h = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks;
+  const pre = (command, bg) => spawnSync('sh', ['-c', h.PreToolUse.find((x) => x.matcher === 'Bash').hooks[0].command], { cwd: d, encoding: 'utf8', env: ENV, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command, ...(bg ? { run_in_background: true } : {}) }, cwd: d, session_id: 's' }) }).stdout || '';
+  for (const c of ['sleep 60 && git commit -am wip', 'sh -c "sleep 5; git add -A; git commit -m later"', 'npm test && git -C . commit -qam green']) assert.match(pre(c, true), ask, c);
+  for (const c of ['git commit -am wip', 'git add -A && git commit -m "the rules"']) assert.equal(pre(c, false), '', `in the turn, where the end of it checks the commit: ${c}`);
+  for (const c of ['npm run dev', 'sleep 60', 'npm test', 'git status', 'git log --oneline']) assert.equal(pre(c, true), '', `a background command that commits nothing: ${c}`);
+});
+test('claim: detach run inside a turn, then the state file rewritten, is still sent back in that turn', () => {
+  const t = openTurn(); assert.equal(sb(t.d, 'detach').code, 0);   // the session read its hooks when it began, so they still run
+  stateFile(t.d, (o) => { o.lastSha = t.head; });
+  assert.ok(blocked(t.w.stop()), 'the turn that detached is checked from where it began');
 });
 test('claim: with gaming detection off, the check does not say the win was re-proved', () => { const d = gamedRepo(); const r = sb(d, 'check', '--no-detect-gaming'); assert.equal(r.code, 0); assert.match(r.out, /gaming detection is off/); assert.doesNotMatch(r.out, /verified|carried the win/); });
 for (const a of [['contract', '--help'], ['attach', '--help'], ['detach', '--help'], ['init', '-h'], ['check', '-h']]) {

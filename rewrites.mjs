@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { shareFinding } from './share.mjs';
 import { readLocal, readShared, merge as mergeLedgers } from './ledger.mjs';
 import { undoneLines } from './undo.mjs';
+import { localDay } from './day.mjs';
 
 const MAX = 300;
 const g = (repo, ...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 }); } catch { return ''; } };
@@ -84,8 +85,8 @@ export function erasedBlock(repo, changed) {
   const undone = undoneLines(repo, [...touched]);   // attempts the person had undone in a session, never committed
   if (!hits.length && !caught.length && !undone.length) return '';
   const lines = ['not in git history any more (recovered locally, leads):'];
-  for (const e of hits) lines.push(`    - ${e.revert ? 'reverted' : 'erased by a rewrite'}: ${e.subject} (${e.sha.slice(0, 12)}, ${String(e.at).slice(0, 10)})${e.versions.size > 1 ? ` · ${e.versions.size} versions, this is the newest` : ''}${e.why ? `: ${e.why}` : ''}`);
-  for (const e of caught) lines.push(`    - caught as gamed on ${e.file} (${e.sha}, ${String(e.at).slice(0, 10)})`);
+  for (const e of hits) lines.push(`    - ${e.revert ? 'reverted' : 'erased by a rewrite'}: ${e.subject} (${e.sha.slice(0, 12)}, ${localDay(e.at)})${e.versions.size > 1 ? ` · ${e.versions.size} versions, this is the newest` : ''}${e.why ? `: ${e.why}` : ''}`);
+  for (const e of caught) lines.push(`    - caught as gamed on ${e.file} (${e.sha}, ${localDay(e.at)})`);
   lines.push(...undone);
   return lines.join('\n');
 }

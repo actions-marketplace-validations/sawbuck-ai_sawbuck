@@ -13,12 +13,12 @@ import { erasedBlock, erasedCommits } from './rewrites.mjs';
 import { shareFinding } from './share.mjs';
 import { ledgerCli } from './ledger.mjs';
 import { recordAllowed, allowedBlock } from './allowed.mjs';
-import { writeGuard, clearGuard } from './guard.mjs';
+import { readGuard, writeGuard, detachGuard, ownOf, guardPath, turnOpen } from './guard.mjs';
 import { ripplesReport } from './ripples.mjs';
 import { profileCli } from './profile.mjs';
 import { undoHook, undoCodex, undoCursor, EDIT_MATCHER } from './undo.mjs';
 import { dependencyEditFromHook } from './deps.mjs';
-import { holdDecision } from './hold.mjs';
+import { holdDecision, ownRecordEdit } from './hold.mjs';
 import { steersReport } from './steers.mjs';
 import { rulesCli } from './rules.mjs';
 import { shapeCli } from './shape.mjs';
@@ -33,9 +33,17 @@ import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lo
 
 const SELF = fileURLToPath(import.meta.url);
 // the npx form a hook runs: offline or on a bad network a plain `npx -y` asks the registry first and retries for about
-// 70 s before it uses the cached copy, on every prompt and every stop; these flags use the cache when it holds the
-// version, fail in a fraction of a second when it does not (the hook then fails open), and still download when online
+// 70 s before it uses the cached copy, on every prompt and every stop; these flags use what npm has kept when that
+// holds the version, and download it when npm has kept nothing for this package. One case they do not cover: npm has
+// kept a list of versions that ends before this one (a machine that ran an older sawbuck). --prefer-offline uses that
+// list without asking whether it is still right, and the line fails with "No matching version" (measured 2026-11-13
+// on npm 10.8, 10.9 and 11.x). A line written on this machine pins the version that is already here, so it cannot
+// meet that. A team file can: NPX_ASK, below, is its line for it.
 export const NPX = 'npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y';
+// the same without --prefer-offline: npm asks the registry whether its kept list is still right, so it finds a version
+// newer than the list. The cost is why only one line has it: on a network that takes the connection and never answers
+// it waits out the fetch timeout, ten seconds, before it runs what is installed.
+export const NPX_ASK = 'npx --fetch-retries=0 --fetch-timeout=10000 -y';
 const HERE = dirname(SELF);
 const HOOK = join(HERE, 'sawbuck-hook.mjs');
 // run the engine and parse its JSON verdict (it prints JSON even when it exits nonzero)
@@ -187,6 +195,10 @@ const there = (p) => existsSync(p) && !planned.gone.has(p);
 const say = (s) => { if (!dry) out(s); };
 
 if (cmd === '--version' || cmd === '-v') { console.log(version); process.exit(0); }
+// what a team file runs where a session starts. Being run is the whole job: npx has by now asked npm for this version
+// and installed it, so the lines that run on every prompt and tool call find it. It prints nothing, because Claude
+// Code shows a session-start hook's output to the agent.
+if (cmd === '__warm') process.exit(0);
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   out(flags.has('--all') ? help : `sawbuck ${version}: write down the rules your agent follows, and prove they held
 
@@ -389,7 +401,11 @@ switch (cmd) {
           const stoppedSince = st.lastStopAt && st.lastPromptAt && Date.parse(st.lastStopAt) >= Date.parse(st.lastPromptAt);
           // a baseline attach wrote is not a prompt: it covers the turn that ran attach, if there was one. Set up from
           // a terminal, nothing is in flight, and the commits made before this prompt are the person's.
-          const unfinished = !!prev && !!st.lastPromptAt && !stoppedSince && prev.by !== 'attach';
+          // a notice from the harness is not a person. When a background task the agent started reports back, Claude
+          // Code hands the hooks a prompt whose text begins <task-notification> (seen on 2.1.318). The commits made while
+          // that task ran are the agent's own: the turn that started the task is still the turn, with its baseline.
+          const notice = /^\s*<task-notification>/.test(promptText);
+          const unfinished = (!!prev && !!st.lastPromptAt && !stoppedSince && prev.by !== 'attach') || (notice && !!prev);
           if (!unfinished) {
             const flagged = (st.lastViolation && st.lastViolation.files && typeof st.lastViolation.files === 'object') ? st.lastViolation.files : {};
             const before = (st.lastViolation && st.lastViolation.before && typeof st.lastViolation.before === 'object') ? st.lastViolation.before : {};
@@ -407,10 +423,14 @@ switch (cmd) {
             const stillInHead = moved && Object.entries(flagged).some(([f, h]) => { const b = blobAt(repo, sha, f); return h === 'deleted' ? b === '' : (!!h && b === h); });
             const pin = !!(st.lastViolation && st.lastViolation.sha);
             if (moved && !stillInHead && st.lastViolation) delete st.lastViolation.sha;
-            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo) };
+            st.turnBaseline = { at: now, sha: ((!moved || stillInHead) && pin && st.lastViolation.sha) || sha, files, lock: lockState(repo), rules: mandatesInForce(repo), refs: refTips(repo), maxBlocks: maxBlocksIn(repo) };
             writeGuard(repo, { baseline: st.turnBaseline });   // a second copy in the git folder: the record folder is out of git status, so its loss during a turn must not lose the turn's starting point (guard.mjs)
           }
         }
+        // a turn is open from here to an end of turn that lets it end. What that hook counts (the last commit it looked
+        // at, the send-backs spent) is kept in the second copy and read from there; it is started from the state file
+        // once, here, before the turn's first tool call, and never again (guard.mjs).
+        { const g = readGuard(repo); writeGuard(repo, { own: { ...((g.own && typeof g.own === 'object' && !Array.isArray(g.own)) ? g.own : ownOf(st)), turnOpen: true } }); }
         framed = !!session && st.framedSession === session;
         if (session) st.framedSession = session;
         st.lastPrompt = promptText.replace(/\s+/g, ' ').trim().slice(0, 240);   // the person's words, for an undo record (local, git-excluded)
@@ -472,7 +492,9 @@ switch (cmd) {
         unwireCodex(repo, { quiet: true }); unwireCursor(repo, { quiet: true });
       }
       if (purge) purgeRecord(repo); else markDetached(repo, true);   // the dry run lists the mark like every other change   // the record stays and says it is detached, so nothing reads it as watching
-      if (!dry) clearGuard(repo);   // the hooks are gone: nothing is checked from the second copy either
+      // the hooks are gone: nothing is checked from the second copy either. But a session that is in a turn read its
+      // hooks when it began and still runs them: that turn is checked to its end, and then the copy goes.
+      detachSecondCopy(repo);
       syncExclude(repo, readManifest(manifestPath(repo)));   // after a purge the exclude lines go too
       const left = recordLeft(repo);
       if (left.length) say(`sawbuck: still on disk: ${left.join(', ')}. It is the record, kept out of git status; \`sawbuck detach --purge\` removes it.`);
@@ -532,6 +554,7 @@ switch (cmd) {
     // is an undo; it is recorded with what the change had added and the person's words, and handed to the memory sinks.
     let body = ''; if (flags.has('--hook') && !process.stdin.isTTY) { try { body = readFileSync(0, 'utf8'); } catch {} }
     const r = gitTop(repoArg()) || repoArg();
+    { const q = ownRecordEdit(body, r); if (q) out(JSON.stringify(q)); }   // an edit tool pointed into sawbuck's own record: a person says yes first (hold.mjs)
     dependencyEditFromHook(body, r);   // an edit inside an installed dependency is in no diff: recorded for the notice at the end of the turn
     const found = flags.has('--codex') ? undoCodex(body, r) : [undoHook(body, r)].filter(Boolean);
     for (const e of found) shareFinding(r, { kind: 'undone', title: `${e.kind === 'part' ? 'partly undone' : 'undone'}: ${e.first || e.file} in ${e.file}`, text: e.why || `An edit to ${e.file} was undone at the person's request.`, files: [e.file] }).catch(() => {});
@@ -764,6 +787,7 @@ function wireGit(repo) {
       ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       base.sha ? `write   ${base.path}  (the commit to check from, so the first commit after this is checked)` : null,
+      base.sha && !readGuard(repo).own && !readGuard(repo).baseline ? `write   ${guardPath(repo)}  (the same commit a second time, in the git folder: the hook reads it from there)` : null,
       `write   ${regPath()}  (the list of attached repos, for detach --all)`,
     ].filter(Boolean)));
     return;
@@ -774,7 +798,10 @@ function wireGit(repo) {
   m.attachments = { ...m.attachments, git: { pc: { created: !existed, ...(existed && shebang ? { shebang } : {}), ...(nl ? { nl } : {}) } } };
   syncExclude(repo, m);
   writeManifest(mp, m);
-  if (base.sha) { try { mkdirSync(dirname(base.path), { recursive: true }); writeFileSync(base.path, JSON.stringify({ turns: 0, shownTotal: 0, ...base.st, lastSha: base.sha }, null, 2) + '\n'); } catch {} }
+  if (base.sha) { try { mkdirSync(dirname(base.path), { recursive: true }); writeFileSync(base.path, JSON.stringify({ turns: 0, shownTotal: 0, ...base.st, lastSha: base.sha }, null, 2) + '\n'); } catch {}
+    // the hook reads "last commit looked at" from the second copy. It is started here only when that copy holds
+    // nothing: with hooks already at work, attach --git must not be a way to say a commit was looked at.
+    const g = readGuard(repo); if (!g.own && !g.baseline) writeGuard(repo, { own: { seen: base.sha } }); }
   regAdd(repo, 'git');
   out(`sawbuck: attached (git post-commit) in ${repo}. Every commit is checked, whatever made it.`);
 }
@@ -839,6 +866,10 @@ function wireClaude(repo, opts) {
     return process.platform !== 'win32' && SELF.includes('/_npx/') ? `if [ -f ${JSON.stringify(SELF)} ]; then ${direct}; else ${NPX} sawbuck@${version} ${args}; fi` : direct;
   };
   const here = user || shared;   // no repo path in the command: the hook works out the repo from where it runs
+  // a team file reaches machines whose npm last saw an older sawbuck: where a session starts (and Claude Code finishes
+  // that hook before the first prompt's), one line asks npm for the pinned version, without --prefer-offline
+  const warm = `${NPX_ASK} sawbuck@${version} __warm`;
+  const WARM_AT = ['startup', 'resume'];
   const ctx = run(here ? 'turn --hook' : `turn --hook ${JSON.stringify(repo)}`);
   const chk = run(here ? '__hook --by claude --stop' : `__hook --repo ${JSON.stringify(repo)} --by claude --stop`);
   const hold = run(here ? 'hold --hook' : `hold --hook ${JSON.stringify(repo)}`);
@@ -848,7 +879,7 @@ function wireClaude(repo, opts) {
   let upgrading = false;
   if (OURS.test(JSON.stringify(cfg))) {
     const has = (event, command, matcher) => ((cfg.hooks || {})[event] || []).some((h) => h && (matcher ? h.matcher === matcher : !h.matcher) && Array.isArray(h.hooks) && h.hooks.some((x) => x && x.command === command));
-    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER)) { if (!dry) regAdd(repo, user ? 'user' : shared ? 'claude-shared' : 'claude'); out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }   // the entry is refreshed: the list drops gone folders and gets back one it lost
+    if (has('UserPromptSubmit', ctx) && has('SessionStart', ctx, 'compact') && has('Stop', chk) && has('PreToolUse', hold, 'Bash') && has('PreToolUse', undo, EDIT_MATCHER) && has('PostToolUse', undo, EDIT_MATCHER) && (!shared || WARM_AT.every((s) => has('SessionStart', warm, s)))) { if (!dry) regAdd(repo, user ? 'user' : shared ? 'claude-shared' : 'claude'); out(`sawbuck: already attached (${user ? 'user' : shared ? 'shared' : 'claude'}) in ${f}`); return; }   // the entry is refreshed: the list drops gone folders and gets back one it lost
     upgrading = true;
   }
   const mode = user ? 'user' : shared ? 'claude-shared' : 'claude';
@@ -861,10 +892,11 @@ function wireClaude(repo, opts) {
   const baseline = !user && existsSync(join(repo, 'promptwheel.config.json')) && !st.turnBaseline;
   if (dry) {
     out(dryText([
-      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + PreToolUse/PostToolUse[edit tools] hooks: the per-turn block, the check, the hold on outward commands, and the undo ledger)`,
+      `${upgrading ? 'update' : fileExisted ? 'modify' : 'create'}  ${f}  (UserPromptSubmit + SessionStart[compact] + Stop + PreToolUse[Bash] + PreToolUse/PostToolUse[edit tools] hooks: the per-turn block, the check, the hold on outward commands, and the undo ledger${shared ? '; and SessionStart[startup, resume]: one line that asks npm for this version where a session starts' : ''})`,
       !user && ensureExcluded(repo, true) ? `exclude ${excludeFile(repo)}  (${EXCLUDED.join(', ')})` : null,
       `${existsSync(mp) ? 'modify' : 'create'}  ${mp}  (attach receipt)`,
       baseline ? `write   ${stPath}  (the turn baseline, so this turn's own signing is not read as the agent's)` : null,
+      baseline && !readGuard(repo).baseline ? `write   ${guardPath(repo)}  (the same baseline a second time, in the git folder: what the end of a turn is checked from)` : null,
       `write   ${regPath()}  (the list of attached repos, for detach --all)`,
     ].filter(Boolean)));
     return;
@@ -879,6 +911,7 @@ function wireClaude(repo, opts) {
   // right after a compaction the summary has just dropped detail: re-impress the contract frame there too
   // (SessionStart with the `compact` source injects stdout into context).
   put('SessionStart', ctx, 'compact');
+  if (shared) for (const s of WARM_AT) put('SessionStart', warm, s);
   put('Stop', chk);
   // the hold on outward commands: a publish, a release, a merge, a public comment, a force push ask a person first
   put('PreToolUse', hold, 'Bash');
@@ -891,11 +924,16 @@ function wireClaude(repo, opts) {
     try {
       ensureExcluded(repo);
       let sha = ''; try { sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {}
-      st.turnBaseline = { sha, files: protectedDirty(repo, { store: true }), by: 'attach', refs: refTips(repo) };
-      st.lastPromptAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      st.turnBaseline = { at: now, sha, files: protectedDirty(repo, { store: true }), by: 'attach', refs: refTips(repo), maxBlocks: maxBlocksIn(repo) };
+      st.lastPromptAt = now;
       mkdirSync(dirname(stPath), { recursive: true }); writeFileSync(stPath, JSON.stringify(st, null, 2) + '\n');
+      // the second copy gets it only when it holds none: a baseline a prompt took is never replaced from here, so
+      // running attach inside a turn cannot move where that turn began
+      if (!readGuard(repo).baseline) writeGuard(repo, { baseline: st.turnBaseline });
     } catch {}
   }
+  if (!user && readGuard(repo).detached) writeGuard(repo, { detached: null });   // attached again: a detach that was waiting for a turn to end is off
   const m = readManifest(mp);
   const prev = (m.attachments || {})[mode];   // an upgrade keeps the receipt of what the first attach created
   m.attachments = { ...m.attachments, [mode]: { file: f, fileCreated: prev ? !!prev.fileCreated : !fileExisted, dirCreated: prev ? !!prev.dirCreated : !dirExisted } };
@@ -904,7 +942,7 @@ function wireClaude(repo, opts) {
   regAdd(repo, mode);
   const kind = user ? 'USER-LEVEL' : shared ? 'shared project' : 'project';
   out(upgrading ? `sawbuck: updated the ${kind} Claude Code hooks in ${f} to this version` : `sawbuck: wired ${kind} Claude Code hooks in ${f}`);
-  if (shared) out(`  commit ${relative(repo, f)} so the team gets the check. It runs sawbuck ${version} through npx on every machine.`);
+  if (shared) out(`  commit ${relative(repo, f)} so the team gets the check. It runs sawbuck ${version} through npx on every machine, and asks npm for that version once where a session starts.`);
   if (shared && protectedAmong(repo, [relative(repo, f)]).length) out(`  That file is a protected path in this repo, so the check on its commit reads "sent back" unless a person passes --allow "team hooks" (on a pull request: a comment, sawbuck-allow: team hooks).`);
   if (!user && !existsSync(join(repo, 'AGENTS.md')) && !existsSync(join(repo, 'CLAUDE.md'))) out('  no written rule here yet, and that is what changes the agent: run sawbuck contract.');
   if (user) out('  profile-switches by cwd: memory in any git repo, the check where a promptwheel.config.json exists.');
@@ -968,11 +1006,21 @@ function verifyClean(repo) {
   if (!left.length) out('sawbuck: verified, the hooks and the receipt are gone.');
   else { out('sawbuck: NOT clean, these remain:'); for (const it of left) out(`  ${it.state.padEnd(22)} ${it.what}`); process.exitCode = 1; }
 }
+// enforce.maxBlocks as sawbuck.config.json has it right now, or null. A baseline carries it, so the end of a turn uses
+// the setting that stood when the prompt began, not one written during the turn.
+// (a function declaration, like its neighbours: the command switch above runs before this line is reached)
+function maxBlocksIn(repo) { try { const e = JSON.parse(readFileSync(join(repo, 'sawbuck.config.json'), 'utf8')).enforce; return (e && e.maxBlocks !== undefined) ? e.maxBlocks : null; } catch { return null; } }
 // every ref tip at the start of a turn, so a rebase inside the turn can tell the agent's own commits from upstream's
 function refTips(repo) {
   try { return [...new Set(execFileSync('git', ['-C', repo, 'for-each-ref', '--format=%(objectname)'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean))].slice(0, 500); } catch { return []; }
 }
 // detach keeps .sawbuck/state.json as the record; this flag is how the plugin band and status tell "detached" from "watching"
+// the second copy of the hooks' state goes with the hooks, at once or when an open turn ends (guard.mjs)
+function detachSecondCopy(repo) {
+  const p = guardPath(repo); if (!p || !existsSync(p)) return;
+  if (dry) { const open = turnOpen(readGuard(repo)); planned.lines.set(p, open ? `modify  ${p}  (a turn is open here: the second copy of the hooks' state stays until it ends)` : `delete  ${p}  (the second copy of the hooks' state)`); return; }
+  if (detachGuard(repo)) say('sawbuck: a turn is open in this repo. It is still checked when it ends; the second copy of the hooks\' state (.git/sawbuck/guard.json) goes then.');
+}
 function markDetached(repo, detached) {
   const p = join(repo, '.sawbuck', 'state.json');
   if (!there(p)) return;
@@ -1075,7 +1123,9 @@ function doctorRepo(repo) {
     if (!cmds.length) continue;
     // the set attach writes, each under its own event: the rule on a prompt and after a compaction, the check on Stop
     const at = (event, re, matcher) => ours(((cfg.hooks || {})[event] || []).filter((h) => !matcher || (h && h.matcher === matcher))).some((c) => re.test(c));
-    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold', at('PreToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PreToolUse[edit tools] with undo', at('PostToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PostToolUse[edit tools] with undo'].filter(Boolean);
+    const missing = [at('UserPromptSubmit', /\bturn --hook\b/) ? '' : 'UserPromptSubmit', at('SessionStart', /\bturn --hook\b/, 'compact') ? '' : 'SessionStart[compact]', at('Stop', /__hook\b.*--stop\b/) ? '' : 'Stop with --stop', at('PreToolUse', /\bhold --hook\b/, 'Bash') ? '' : 'PreToolUse[Bash] with hold', at('PreToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PreToolUse[edit tools] with undo', at('PostToolUse', /\bundo --hook\b/, EDIT_MATCHER) ? '' : 'PostToolUse[edit tools] with undo',
+      // a team file also asks npm for its version where a session starts (the other two files pin what is already here)
+      ...(mode === 'claude-shared' ? ['startup', 'resume'].map((s) => (at('SessionStart', /\b__warm\b/, s) ? '' : `SessionStart[${s}]`)) : [])].filter(Boolean);
     checks.push({ mode, file: f, ok: !missing.length && [...new Set(cmds)].every(hookRuns), missing });
   }
   // the receipt says hooks were wired here, and they are gone: a removal git status cannot show (the file is excluded, or under .git)
@@ -1119,7 +1169,7 @@ function detachAll(purge) {
     else if (x.mode === 'user') unwireClaude(x.repo, { user: true });
     else unwireClaude(x.repo, {});
     if (purge) purgeRecord(x.repo);
-    if (!dry) clearGuard(x.repo);
+    detachSecondCopy(x.repo);
     syncExclude(x.repo, readManifest(manifestPath(x.repo)));
   }
   say('sawbuck: detached everywhere.');
