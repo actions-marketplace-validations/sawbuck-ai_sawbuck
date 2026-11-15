@@ -177,10 +177,11 @@ try {
       : `sawbuck: signed. ${counts(cfg)}, and the rule in AGENTS.md.\n  --full adds supply-chain guards, a repo lock and a CI check.\n`);
     if (full && !ci && !existsSync(wf)) process.stdout.write(`  No CI check added: ${!/github\.com/.test(remote) ? 'this repo has no github.com origin' : 'there is no real test command yet, and a placeholder would fail every pull request'}. Run sawbuck contract --full again once it has one.\n`);
     const old = ci ? '' : olderCi(wf);
-    // the contract refuses that very change (run both ways, proof-bench/pr-shapes: a pull request with only this line is
-    // sent back, with or without a comment), so the words carry the way through too, and a claim walks it
+    // The line is a workflow change. A contract written from 0.1.70 on lets one through with a person's reason. A contract
+    // written before it holds its own copy of the rule with no way through (proof-bench/pr-shapes: a pull request with
+    // only this line is sent back, with or without a comment), so the words carry the way through too. A claim walks both.
     const hard = (cfg.mandates || []).some((m) => m && m.name === 'workflows-frozen' && !m.allowable);
-    if (old) process.stdout.write(`  .github/workflows/sawbuck.yml runs an older engine (${old}); this sawbuck pins v${PKG.dependencies.promptwheel}. Sawbuck never rewrites a workflow file: it is a protected path, and yours. For the newer check on pull requests, change its line to:\n    uses: ${ACTION}\n${hard ? '  The contract here protects that file with "workflows-frozen", which takes no reason, so the change is sent back as it stands. It takes two changes, each with a person\'s reason: first take the "workflows-frozen" rule out of promptwheel.config.json; then change the line and put the rule back.\n' : ''}`);
+    if (old) process.stdout.write(`  .github/workflows/sawbuck.yml runs an older engine (${old}); this sawbuck pins v${PKG.dependencies.promptwheel}. Sawbuck never rewrites a workflow file: it is a protected path, and yours. For the newer check on pull requests, change its line to:\n    uses: ${ACTION}\n${hard ? '  The "workflows-frozen" rule here takes no reason (contracts written before 0.1.70 do not), so the change is sent back as it stands. It takes two changes, each with a person\'s reason: first add "allowable": "flag" to the "workflows-frozen" rule in promptwheel.config.json, as new contracts have it; then change the line.\n' : '  That is a workflow change, so it takes a person\'s reason: sawbuck check --allow "<reason>", or on a pull request a comment from someone who did not open it.\n'}`);
   }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 

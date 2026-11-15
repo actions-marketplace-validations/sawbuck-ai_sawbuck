@@ -324,11 +324,12 @@ switch (cmd) {
     else if (rep.verdict === 'fail' && (rep.mandates || []).length) {
       out('✗ sent back: a protected path changed, however green the rest is.');
       many();
-      // the way through, for a person who meant it: two of the default rules take a reason, the rest are lifted first
+      // the way through, for a person who meant it: the rules file, the hooks, the lock and (in a contract written
+      // from 0.1.70 on) a workflow change take a reason; the rest are lifted first
       const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
       const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
       if (soft.length && !left.length) out(`sawbuck: if a person meant this: sawbuck check ${allowHow} accepts ${allowNames ? 'each thing it names' : names(soft)}, and the result shows the reason.`);
-      if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.`);
+      if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.${hard.some((x) => x.name === 'workflows-frozen') ? ' A contract written from 0.1.70 on lets a workflow change through with a reason: add "allowable": "flag" to the "workflows-frozen" rule here to get the same.' : ''}`);
     }
     else if (rep.verdict === 'fail') out('✗ sent back: this change made something worse.');
     else out(`≈ inconclusive: ${inconclusiveWhy(rep, repo)}`);
