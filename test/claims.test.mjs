@@ -1304,6 +1304,38 @@ test('claim: on a pull request the account that opened it cannot let a change th
   // and that change to the contract is itself sent back by the check, as a protected path
   assert.equal(check(d).verdict, 'fail');
 });
+// A fix in the engine reaches a pull-request check only through the commit its workflow pins. `contract --full` writes
+// that workflow once and never rewrites it (a workflow file is a protected path, and the person's). So a repo signed
+// by an older sawbuck would keep the old engine, and the old rule about who may approve, with nothing said.
+test('claim: a CI check an older sawbuck wrote keeps its engine; contract says so, gives the line to change, and leaves the file alone', () => {
+  const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); assert.equal(sb(d, 'contract', '--full').code, 0); save(d, 'sign');
+  const wf = join(d, '.github/workflows/sawbuck.yml'); const now = readFileSync(wf, 'utf8'); const pkg = JSON.parse(readFileSync(join(dirname(CLI), 'package.json'), 'utf8'));
+  assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'the workflow this release writes is current');
+  const as = (sha, v) => now.replace(/promptwheel-ai\/promptwheel@[0-9a-f]{40} # v[\d.]+/, `promptwheel-ai/promptwheel@${sha} # v${v}`);
+  writeFileSync(wf, as('81b965aa7e150a4e4eb722631ae34def37380c39', '0.8.9')); save(d, 'as sawbuck 0.1.69 wrote it');
+  const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /\.github\/workflows\/sawbuck\.yml runs an older engine \(v0\.8\.9\); this sawbuck pins v/);
+  assert.ok(r.out.includes(`uses: promptwheel-ai/promptwheel@${pkg.promptwheelAction} # v${pkg.dependencies.promptwheel}`), 'with the line to change it to');
+  assert.ok(readFileSync(wf, 'utf8').includes('81b965aa7e150a4e4eb722631ae34def37380c39'), 'and the file is left as it was');
+  assert.match(sb(d, 'contract').out, /runs an older engine/, 'plain contract says it too');
+  writeFileSync(wf, as('a'.repeat(40), '99.0.0')); assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'a newer one, set by hand, is not called older');
+  // The contract refuses that very change, so the words give the way through, and here it is walked with the check itself.
+  assert.match(r.out, /"workflows-frozen", which takes no reason, so the change is sent back as it stands\. It takes two changes, each with a person's reason: first take the "workflows-frozen" rule out of promptwheel\.config\.json; then change the line and put the rule back\./);
+  git(d, 'checkout', '-q', '--', '.'); const line = `promptwheel-ai/promptwheel@${pkg.promptwheelAction} # v${pkg.dependencies.promptwheel}`;
+  const move = () => writeFileSync(wf, readFileSync(wf, 'utf8').replace(/promptwheel-ai\/promptwheel@[0-9a-f]{40} # v[\d.]+/, line));
+  move(); save(d, 'ci: the newer check'); assert.match(sb(d, 'check').out, /sent back/, 'as it stands: sent back');
+  assert.equal(sb(d, 'check', '--allow', 'the newer pinned check').code, 1, 'and no reason clears it'); git(d, 'reset', '-q', '--hard', 'HEAD~1');
+  const rule = JSON.parse(readFileSync(join(d, 'promptwheel.config.json'), 'utf8')).mandates.find((m) => m.name === 'workflows-frozen');
+  json(d, 'promptwheel.config.json', (c) => { c.mandates = c.mandates.filter((m) => m.name !== 'workflows-frozen'); }); save(d, 'contract: workflows-frozen out for one change');
+  assert.equal(sb(d, 'check').code, 1, 'the first change needs a reason'); assert.equal(sb(d, 'check', '--allow', 'making room to move the pinned check').code, 0, 'and takes one');
+  move(); json(d, 'promptwheel.config.json', (c) => { c.mandates.push(rule); }); save(d, 'ci: the newer check, and the rule back');
+  assert.equal(sb(d, 'check').code, 1, 'the second needs a reason too'); assert.equal(sb(d, 'check', '--allow', 'the rule goes back').code, 0, 'and takes one');
+  assert.doesNotMatch(sb(d, 'contract', '--full').out, /older engine/, 'after which nothing is called older');
+  put(d, '.github/workflows/other.yml', 'name: x\non: push\njobs: {}\n'); save(d, 'a workflow'); assert.match(sb(d, 'check').out, /sent back/, 'and the rule is back in force');
+  // a contract whose owner made that rule take a reason gets the line to change, and not the two-step
+  json(d, 'promptwheel.config.json', (c) => { c.mandates.find((m) => m.name === 'workflows-frozen').allowable = 'flag'; }); writeFileSync(wf, as('81b965aa7e150a4e4eb722631ae34def37380c39', '0.8.9'));
+  const s = sb(d, 'contract').out; assert.match(s, /runs an older engine/); assert.doesNotMatch(s, /takes no reason/);
+});
 test('claim: signing with --full says who may let a pull request through, and names the setting for a repo with one person in it', () => {
   const d = repo(true); git(d, 'remote', 'add', 'origin', 'https://github.com/a/b.git'); const r = sb(d, 'contract', '--full'); assert.equal(r.code, 0);
   assert.match(r.out, /Added \.github\/workflows\/sawbuck\.yml/); assert.match(r.out, /someone with write access who did not open it/); assert.match(r.out, /"allowFromAuthor": true/);
