@@ -286,17 +286,34 @@ switch (cmd) {
     const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
     const { rep, code, why } = gateReport(repo, [...args, ...pass]);
     if (!rep || !rep.verdict) { out(`sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
-    // a person's --allow on the last commit clears the gamed verdict standing there, so the end-of-turn check stops
-    // sending the turn back (the hold asks before an agent can type --allow). Only that commit, only a gamed verdict.
-    if (rep.verdict === 'pass' && rep.allowed && !dirty && !base && !head) {
-      const rp = join(repo, '.sawbuck', 'results.json');
+    // A person's --allow clears the gamed verdict standing here, so the end of a turn stops sending it back (the hold
+    // asks before an agent can type --allow). Three things changed in 0.1.73, each typed on 0.1.72 first
+    // (proof-bench/beside-guard):
+    // - The reason has to be for the span the verdict stands on: the last commit when that is the span, `--base <where
+    //   it begins>` when the turn made more commits. Before, a reason for the last commit cleared a verdict measured
+    //   over more, and one given with --base cleared nothing.
+    // - It counts when it let the gamed part through, even where something a reason cannot reach still fails this
+    //   check (a protected path the person's own file rode in on, a count of tests that went down). That is another
+    //   matter, said below, and the end of a turn has its own rule for it.
+    // - The record is found from the top of the repo, so the line works from a subfolder.
+    const top = g('rev-parse', '--show-toplevel') || repo;
+    const gateWeak = !!(rep.gate && Array.isArray(rep.gate.weakened) && rep.gate.weakened.length && !rep.gate.allowed);
+    const gamedLeft = (rep.metrics || []).some((x) => x.gamed === true || x.unprovable === true) || gateWeak;
+    const letGamedThrough = !!rep.allowed && (rep.allowed.cleared || []).some((l) => !l.startsWith('mandate:')) && !gamedLeft;
+    let cleared = false, standingHint = '';
+    if (!dirty && (!head || g('rev-parse', `${head}^{commit}`) === g('rev-parse', 'HEAD'))) {
+      const rp = join(top, '.sawbuck', 'results.json');
       try { const r = JSON.parse(readFileSync(rp, 'utf8')); const sha8 = g('rev-parse', 'HEAD').slice(0, 8);
-        if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); }
+        if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) {
+          const sameSpan = !r.latest.base || r.latest.base === g('rev-parse', `${base || 'HEAD~1'}^{commit}`);
+          if (letGamedThrough && sameSpan) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); cleared = true; }
+          else if (!sameSpan && pass.includes('--allow')) { const from = String(r.latest.base).slice(0, 12); standingHint = `sawbuck: a gamed verdict on ${r.latest.file} stands here over more than ${base ? 'that span' : 'the last commit'} (it begins at ${from}), and a reason covers only the span it is given for. To accept that test change: ${cli(`check --base ${from} --allow "<reason>"`)}`; }
+        }
       } catch { /* not attached here: nothing stands to clear */ }
     }
     // what a person let through, and why, joins the record where sawbuck is attached (allowed.mjs): kept, and shown
     // with the prompt that names the test or path, the way a revert is. Under --json too; the output stays the report.
-    const kept = (rep.verdict === 'pass' && rep.allowed) ? recordAllowed(g('rev-parse', '--show-toplevel') || repo, rep, { dirty, base: base || 'HEAD~1', head: head || 'HEAD' }) : null;
+    const kept = (rep.allowed && (rep.verdict === 'pass' || letGamedThrough)) ? recordAllowed(top, rep, { dirty, base: base || 'HEAD~1', head: head || 'HEAD' }) : null;
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     // --allow as a person should type it here: one thing needs no name; with more than one, the reason names each one
@@ -338,6 +355,12 @@ switch (cmd) {
     // cover them all) what it let through, what it did not, and the line that would
     if (rep.verdict !== 'pass') many();
     if (left.length) out(`sawbuck: your reason${(rep.allowed.cleared || []).length ? ` let ${rep.allowed.cleared.map(bare).join(', ')} through, and` : ''} did not let ${left.map(bare).join(', ')} through: a reason covers only what it names. To accept them all: ${cli(`check ${allowHow}`)}`);
+    // "sent back" for a protected path or a count, with a gamed win in the same change: say that too. Where only one thing
+    // takes a reason no list is printed above, so a person saw the path or the count and never the gamed test.
+    if (rep.verdict === 'fail' && gamedLeft) out('🚩 a win in this change was gamed as well: it came from editing the test, config, or grader, not the source, and does not survive a source-only re-run. At the end of a turn that is sent back whatever else the change holds.');
+    // the reason let the gamed part through and this check still fails for something a reason cannot reach here
+    if (rep.verdict !== 'pass' && letGamedThrough && (cleared || kept)) out(`✎ your reason is kept for ${(rep.allowed.cleared || []).filter((l) => !l.startsWith('mandate:')).map(bare).join(', ')}: "${rep.allowed.reason}". That part is a person's call now, not a proof${cleared ? ', and the end of a turn no longer sends it back' : ''}. What is left still fails this check.`);
+    if (standingHint) out(standingHint);
     if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
     for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? `. If you meant this: ${allowHow}, or on a pull request someone who did not open it comments sawbuck-allow: ${allowNames}<reason>` : ''}`);

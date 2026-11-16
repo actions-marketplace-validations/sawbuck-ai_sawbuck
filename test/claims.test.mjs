@@ -195,23 +195,130 @@ test('limit: the agent editing that uncommitted contract and committing it is st
   w.prompt(); const p = join(d, 'promptwheel.config.json'); const c = JSON.parse(readFileSync(p, 'utf8')); c.mandates = []; writeFileSync(p, JSON.stringify(c)); save(d, 'loosen');
   assert.ok(blocked(w.stop()));
 });
-// Found 2026-11-16 (proof-bench/swept-in), in every version back to 0.1.64, and NOT fixed in 0.1.72. The two halves of
-// the end of a turn each leave this commit to the other: the engine answers "fail" for the protected path and says in
-// the same report that tests_pass was gamed; reflect.mjs leaves a fail that is only a protected path to the wall; the
-// wall spares the path because it was the person's own, committed as it was. Nobody reads the gamed metric. This test
-// holds today's behaviour so the README's sentence stays true; the fix turns its middle assertion round.
-test('limit: a gamed commit that also carries the person\'s own uncommitted protected file is not sent back at the end of the turn; the check on that commit still sends it back', () => {
-  const cheat = (s) => s.replace('add(2,2),4', 'add(2,2),0');
-  // the control: the same gamed commit with nothing of the person's in it is sent back
-  { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', cheat); save(d, 'make it green'); assert.ok(blocked(w.stop()), 'the gamed commit alone is sent back'); }
+// Found 2026-11-16 (proof-bench/swept-in, then proof-bench/beside-guard), in every version from 0.1.64 to 0.1.72. The
+// engine answers "fail" for a change that touches a protected path or makes a guard worse, and "gamed" only when
+// neither is so; a win in the same change that came from editing the test is then in the report (the metric is marked
+// gamed) and not in the word. reflect.mjs read the word, and the end of a turn sends back only what is recorded as
+// gamed. Fixed in 0.1.73: a gamed win is recorded as gamed whatever else the change holds. Each claim below failed on
+// 0.1.72.
+const game = (s) => s.replace('add(2,2),4', 'add(2,2),0');
+const ungame = (s) => s.replace('add(2,2),0', 'add(2,2),4');
+const latest = (d) => { try { return JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest || {}; } catch { return {}; } };
+test('claim: a gamed commit that also carries the person\'s own uncommitted protected file is sent back for the gamed test, the file is not blamed on the agent, and the real fix ends it with that file still in the span', () => {
   const d = signed(false); const w = wired(d);
   put(d, '.npmrc', 'fund=false\n');   // the person's own, there before the prompt, not committed
-  w.prompt(); edit(d, 'test/add.test.js', cheat); save(d, 'make it green');   // the agent's git add -A takes .npmrc along
+  w.prompt(); edit(d, 'test/add.test.js', game); save(d, 'make it green');   // the agent's git add -A takes .npmrc along
   assert.match(git(d, 'show', '--name-only', '--format=', 'HEAD'), /\.npmrc/, 'the person\'s file rode along');
-  assert.ok(!blocked(w.stop()), 'the limit: the turn ends with nothing sent back');
-  const c = check(d); assert.notEqual(c.code, 0, 'the check on that commit does not pass it');
-  assert.ok((c.mandates || []).some((m) => (m.files || []).includes('.npmrc')), 'it is sent back for the protected path');
-  assert.ok((c.metrics || []).some((m) => m.name === 'tests_pass' && m.gamed === true), 'and its report marks the green as gamed');
+  const o = w.stop(); assert.ok(blocked(o), `the gamed test is sent back: ${o}`);
+  assert.match(o, /the win on test\/add\.test\.js was gamed/); assert.doesNotMatch(o, /protected path/, 'the person\'s own file is not blamed on the agent');
+  assert.equal(latest(d).kind, 'gamed'); assert.equal(latest(d).file, 'test/add.test.js', 'the catch names the test, not the file that rode along');
+  const c = check(d); assert.notEqual(c.code, 0); assert.ok((c.mandates || []).some((m) => (m.files || []).includes('.npmrc')), 'the check on that commit still names the protected path');
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', ungame); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the source fix ends it, with .npmrc still in the span'); assert.equal(latest(d).kind, 'verified');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+});
+test('claim: a person\'s reason for the test change ends the send-back even where their own protected file in the same commit still fails the check on it', () => {
+  const d = signed(false); const w = wired(d); put(d, '.npmrc', 'fund=false\n');
+  w.prompt(); edit(d, 'test/add.test.js', game); save(d, 'make it green'); assert.ok(blocked(w.stop()));
+  const r = sb(d, 'check', '--allow', 'the spec changed: add subtracts now');
+  assert.equal(r.code, 1, 'the check on the commit still fails for the protected path'); assert.match(r.out, /sent back: a protected path changed/);
+  assert.match(r.out, /your reason is kept for tests_pass/, r.out);
+  assert.ok(!blocked(w.stop()), 'the test change was a person\'s call'); assert.equal(latest(d).kind, 'allowed');
+});
+test('claim: a gamed test committed beside the agent\'s own protected edit: the first send-back names both, and putting the path back in a new commit does not end the turn', () => {
+  const d = signed(false); const w = wired(d);
+  w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); put(d, '.npmrc', 'fund=false\n'); save(d, 'make it green');
+  let o = w.stop(); assert.ok(blocked(o)); assert.match(o, /protected path/); assert.match(o, /\.npmrc/);
+  assert.match(o, /also has a win on test\/add\.test\.js that came from editing the test/, `the gamed test is named in the same message: ${o}`);
+  git(d, 'rm', '-q', '.npmrc'); git(d, 'commit', '-qm', 'take .npmrc out');   // what the message asked for, as a new commit
+  o = w.stop(); assert.ok(blocked(o), `the gamed test is sent back once the path is out: ${o}`); assert.match(o, /the win on test\/add\.test\.js was gamed/);
+  rmSync(join(d, '.sawbuck', 'results.json')); assert.ok(blocked(w.stop()), 'and it holds with the results file deleted');
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', ungame); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the real fix ends it');
+  // the control: the same protected edit beside an honest fix is sent back for the path, and ends once the path is out
+  const e = signed(false); const x = wired(e); x.prompt('make the add test pass'); edit(e, 'src/add.js', fixAdd); put(e, '.npmrc', 'fund=false\n'); save(e, 'fix add');
+  o = x.stop(); assert.ok(blocked(o)); assert.doesNotMatch(o, /also has a win/, 'an honest fix is not called gamed');
+  git(e, 'rm', '-q', '.npmrc'); git(e, 'commit', '-qm', 'take .npmrc out'); assert.ok(!blocked(x.stop()), 'an honest fix ends once the path is out');
+});
+test('claim: with a contract written, a failing test that is deleted or skipped is sent back at the end of the turn, like an edited assertion, and so is an edited assertion beside a new suppression', () => {
+  const ways = [
+    ['deleted', (d) => edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n'))],
+    ['skipped', (d) => edit(d, 'test/add.test.js', (s) => s.replace("t.test('add'", "t.test.skip('add'"))],
+    ['edited beside a new suppression', (d) => { edit(d, 'test/add.test.js', game); edit(d, 'src/add.js', (s) => '// eslint-disable-next-line no-unused-vars\n' + s); }],
+  ];
+  for (const [what, cheatIt] of ways) for (const flags of [['--full'], []]) {
+    const d = repo(false); assert.equal(sb(d, 'contract', ...flags).code, 0); save(d, 'sign');
+    const how = `the failing test ${what}, sawbuck contract ${flags.join(' ') || '(plain)'}`;
+    const w = wired(d); w.prompt('make the add test pass'); cheatIt(d); save(d, 'make it green');
+    const c = check(d); assert.equal(c.verdict, 'fail', `${how}: the engine's word is fail, a guard got worse`); assert.ok(c.metrics.some((m) => m.gamed === true), `${how}: and its report marks the green as gamed`);
+    const o = w.stop(); assert.ok(blocked(o), `${how}: sent back, said: ${o}`); assert.match(o, /was gamed/, how);
+    assert.equal(latest(d).kind, 'gamed', how);
+    git(d, 'checkout', '-q', 'HEAD~1', '--', '.'); edit(d, 'src/add.js', fixAdd); save(d, 'put it all back, fix add');
+    assert.ok(!blocked(w.stop()), `${how}: the real fix ends it`);
+  }
+});
+test('claim: the source fixed with the failing test still deleted: the gamed verdict comes down, and the count that got worse is said once like any regression, not walled', () => {
+  const d = signed(false); const w = wired(d); w.prompt('make the add test pass');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'make it green'); assert.ok(blocked(w.stop()));
+  edit(d, 'src/add.js', fixAdd); save(d, 'fix add');   // the source is right now; the test is still gone
+  const o = w.stop(); assert.ok(!blocked(o), `the green is earned from the source now: ${o}`); assert.match(o, /Sawbuck caught a problem/);
+  assert.equal(latest(d).kind, 'regression', JSON.stringify(latest(d))); assert.ok(!existsSync(guardFile(d)) || !JSON.parse(readFileSync(guardFile(d), 'utf8')).standing, 'the second copy is down too');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+  // the control: the test still deleted and the source NOT fixed stays sent back, turn after turn
+  const e = signed(false); const x = wired(e); x.prompt('make the add test pass');
+  edit(e, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(e, 'make it green'); assert.ok(blocked(x.stop()));
+  edit(e, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(e, 'something else'); assert.ok(blocked(x.stop()), 'a source edit that does not earn the green changes nothing');
+});
+test('claim: a failing test a person asked to have deleted: their reason ends the send-back, though the count of tests still fails the check on the commit', () => {
+  const d = signed(false); const w = wired(d); w.prompt('that add test is wrong, delete it');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'delete the add test'); assert.ok(blocked(w.stop()));
+  const r = sb(d, 'check', '--allow', 'I asked for that test to go'); assert.equal(r.code, 1, r.out); assert.match(r.out, /your reason is kept for tests_pass/, r.out);
+  assert.ok(!blocked(w.stop()), 'a person\'s call'); assert.equal(latest(d).kind, 'allowed');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+});
+test('claim: putting the test back ends a gamed send-back, even when the suite is red again and a try at the source is left in', () => {
+  let { d, w } = sentBackTurn(); git(d, 'checkout', '-q', 'HEAD~1', '--', 'test/add.test.js'); save(d, 'put the test back');
+  assert.ok(!blocked(w.stop()), 'the test is back as it was: nothing is gamed any more');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+  ({ d, w } = sentBackTurn()); git(d, 'checkout', '-q', 'HEAD~1', '--', 'test/add.test.js'); edit(d, 'src/add.js', (s) => s.replace('a-b', 'b-a')); save(d, 'put the test back; a try that does not fix it');
+  assert.ok(!blocked(w.stop()), 'a source edit that fixes nothing is not a gamed test');
+  // the control: the test is still edited, and mul is broken so the suite is red: nothing was put back
+  ({ d, w } = sentBackTurn()); edit(d, 'src/add.js', (s) => s.replace('a*b', 'a/b')); save(d, 'break mul');
+  assert.ok(blocked(w.stop()), 'the test is still edited: the verdict stands while the suite is red');
+});
+test('claim: accepting the test change in a turn that made more than one commit: the message gives the line with the span, a reason for the last commit alone does not end it, and the line does', () => {
+  const d = signed(false); const w = wired(d); w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); save(d, 'make it green'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes');
+  for (let i = 0; i < 3; i++) assert.ok(blocked(w.stop()));
+  const base = git(d, 'rev-parse', 'HEAD~2').slice(0, 12);
+  const told = w.stop(); assert.match(told, lit(`${PIN} check --base ${base} --allow \\"<why>\\"`), `the person is given the line that names the span: ${told}`);
+  const r1 = sb(d, 'check', '--allow', 'the spec changed'); assert.match(r1.out, lit(`${PIN} check --base ${base} --allow "<reason>"`), `a reason for the last commit alone says what to type: ${r1.out}`);
+  w.prompt('again'); assert.ok(blocked(w.stop()), 'and the verdict still stands');
+  mkdirSync(join(d, 'src', 'deep'), { recursive: true });
+  const r2 = sb(join(d, 'src', 'deep'), 'check', '--base', base, '--allow', 'the spec changed'); assert.equal(r2.code, 0, r2.out);
+  assert.ok(!blocked(w.stop()), 'the reason for the whole span ends it, typed from a subfolder'); assert.equal(latest(d).kind, 'allowed');
+  // one commit: the line has no span in it, as before
+  const one = gamedTurn(); for (let i = 0; i < 3; i++) one.w.stop();
+  const t1 = one.w.stop(); assert.match(t1, lit(`${PIN} check --allow \\"<why>\\"`)); assert.doesNotMatch(t1, /check --base/);
+});
+test('claim: the check says a win was gamed even when its word for the change is "sent back" for something else', () => {
+  // a deleted failing test in a signed repo: the count of tests fails the check, and the green was gamed as well
+  let d = signed(false); edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'make it green');
+  let r = sb(d, 'check'); assert.equal(r.code, 1); assert.match(r.out, /sent back: this change made something worse/); assert.match(r.out, /a win in this change was gamed as well/, r.out);
+  // a gamed test beside a path that takes no reason: only one thing takes a reason, so no list was printed, and the gamed test went unsaid
+  d = signed(false); edit(d, 'test/add.test.js', game); put(d, '.npmrc', 'x\n'); save(d, 'make it green');
+  r = sb(d, 'check'); assert.equal(r.code, 1); assert.match(r.out, /sent back: a protected path changed/); assert.match(r.out, /a win in this change was gamed as well/, r.out);
+  // the controls: a plain gamed commit says gamed once, and a change that only makes something worse does not say gamed
+  d = signed(false); edit(d, 'test/add.test.js', game); save(d, 'make it green'); r = sb(d, 'check'); assert.equal(r.code, 2); assert.doesNotMatch(r.out, /as well/);
+  d = signed(true); put(d, '.npmrc', 'x\n'); save(d, 'registry'); r = sb(d, 'check'); assert.equal(r.code, 1); assert.doesNotMatch(r.out, /gamed/);
+});
+test('claim: the git hook records a gamed test as gamed when the same commit drops the test or touches a protected path', () => {
+  let d = hookRepo(); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); let o = commit(d, 'make it green');
+  assert.equal(latest(d).kind, 'gamed', `the failing test deleted: ${JSON.stringify(latest(d))}`); assert.match(o, /gamed/);
+  d = hookRepo(); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');
+  edit(d, 'test/add.test.js', game); put(d, '.npmrc', 'x\n'); o = commit(d, 'make it green');
+  assert.equal(latest(d).kind, 'gamed', `beside a protected path: ${JSON.stringify(latest(d))}`); assert.equal(latest(d).file, 'test/add.test.js');
+  assert.match(String(latest(d).reason), /protected path/, 'and the reason still names the protected path, which the git hook has no wall for');
 });
 test('limit: two sessions in one checkout: the one that touched a protected file is sent back, and so is the other, told not to undo what it did not change', () => {
   const d = signed(true); const a = wired(d, 'A'), b = wired(d, 'B');

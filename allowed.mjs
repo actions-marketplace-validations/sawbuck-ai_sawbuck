@@ -48,7 +48,8 @@ function thing(label, rep, changed, hits) {
   return { what: PLAIN[label] || `the guard "${label}"`, files: among(changed, MANIFEST) };
 }
 
-// Keep a change a person let through. `rep` is the engine's report for the run that passed with their reason. Returns
+// Keep a change a person let through. `rep` is the engine's report for the run their reason was given to: one that
+// passed with it, or (0.1.73) one where it let the gamed part through and something a reason cannot reach still fails. Returns
 // the entry (new, or the one already kept for the same reason on the same commit), or null when nothing is kept: no
 // reason, nothing let through, or a repo sawbuck is not attached to. Never throws.
 export function recordAllowed(repo, rep, { dirty = false, base = 'HEAD~1', head = 'HEAD' } = {}) {
@@ -63,7 +64,9 @@ export function recordAllowed(repo, rep, { dirty = false, base = 'HEAD~1', head 
     const hits = cleared.some((l) => l.startsWith('mandate:')) ? mandateHits(repo, changed, { ref: dirty ? 'HEAD' : base }) : [];
     const things = cleared.map((l) => thing(l, rep, changed, hits));
     const files = [...new Set(things.flatMap((t) => t.files))].slice(0, 20);
-    const entry = { at: new Date().toISOString(), sha: dirty ? '' : g(repo, 'rev-parse', head).slice(0, 12), reason, cleared, what: [...new Set(things.map((t) => t.what))], files };
+    // `base` (0.1.73 on): where the span the reason was given for begins, so a reason for the last commit is not
+    // read as one for a longer span a verdict stands on
+    const entry = { at: new Date().toISOString(), sha: dirty ? '' : g(repo, 'rev-parse', head).slice(0, 12), ...(dirty ? {} : { base: g(repo, 'rev-parse', `${base}^{commit}`) }), reason, cleared, what: [...new Set(things.map((t) => t.what))], files };
     const same = (e) => e.sha === entry.sha && e.reason === reason && JSON.stringify(e.cleared) === JSON.stringify(cleared) && JSON.stringify(e.files) === JSON.stringify(files);
     const had = readAllowed(repo); const already = had.find(same);
     if (already) return already;
