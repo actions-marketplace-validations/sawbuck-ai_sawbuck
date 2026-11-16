@@ -279,12 +279,33 @@ test('claim: a failing test a person asked to have deleted: their reason ends th
 test('claim: putting the test back ends a gamed send-back, even when the suite is red again and a try at the source is left in', () => {
   let { d, w } = sentBackTurn(); git(d, 'checkout', '-q', 'HEAD~1', '--', 'test/add.test.js'); save(d, 'put the test back');
   assert.ok(!blocked(w.stop()), 'the test is back as it was: nothing is gamed any more');
+  assert.equal(latest(d).kind, 'put back', 'the record says what happened in the words the message uses');
   w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
   ({ d, w } = sentBackTurn()); git(d, 'checkout', '-q', 'HEAD~1', '--', 'test/add.test.js'); edit(d, 'src/add.js', (s) => s.replace('a-b', 'b-a')); save(d, 'put the test back; a try that does not fix it');
   assert.ok(!blocked(w.stop()), 'a source edit that fixes nothing is not a gamed test');
   // the control: the test is still edited, and mul is broken so the suite is red: nothing was put back
   ({ d, w } = sentBackTurn()); edit(d, 'src/add.js', (s) => s.replace('a*b', 'a/b')); save(d, 'break mul');
   assert.ok(blocked(w.stop()), 'the test is still edited: the verdict stands while the suite is red');
+});
+// Found by the rehearsal of 2026-11-16 (proof-bench/live/rehearse-0.1.73): the person said "put the test back and stop
+// there", the agent restored the file and did not commit, and the turn was sent back three times for a gamed green that
+// was no longer in the tree. The verdict stays up until a commit settles it, so throwing the restore away brings it back.
+test('claim: the test put back in the working tree and not committed yet: the turn is not sent back, the person is told the commit settles it, and throwing the restore away brings the send-back back', () => {
+  const { d, w } = sentBackTurn(); const base = git(d, 'rev-parse', 'HEAD~1');
+  git(d, 'checkout', '-q', base, '--', 'test/add.test.js'); git(d, 'reset', '-q');   // back as it was, in the working tree only
+  assert.match(git(d, 'status', '--porcelain'), /M test\/add\.test\.js/);
+  const o = w.stop(); assert.ok(!blocked(o), `not sent back: ${o}`);
+  assert.match(o, /test\/add\.test\.js is back as it was in your working tree, not committed yet/); assert.match(o, /commit/);
+  assert.equal(latest(d).kind, 'gamed', 'the verdict stays up until a commit settles it');
+  assert.doesNotMatch(w.stop(), /back as it was/, 'said once for this state');
+  git(d, 'checkout', '-q', '--', 'test/add.test.js');   // the restore thrown away: the gamed test is in the tree again
+  w.prompt('next'); assert.ok(blocked(w.stop()), 'the gamed test is in the tree again: sent back');
+  git(d, 'checkout', '-q', base, '--', 'test/add.test.js'); save(d, 'put the test back'); assert.ok(!blocked(w.stop()), 'committed: settled');
+  assert.equal(latest(d).kind, 'put back'); assert.equal(latest(d).takenBack, true);
+});
+test('claim: the gamed send-back asks the agent for a direct question to the person, the form the end of a turn waits for', () => {
+  const { w } = gamedTurn(); const o = w.stop(); assert.ok(blocked(o));
+  assert.match(o, /end your turn by showing the person the test change and asking them what to do, as a direct question/);
 });
 test('claim: accepting the test change in a turn that made more than one commit: the message gives the line with the span, a reason for the last commit alone does not end it, and the line does', () => {
   const d = signed(false); const w = wired(d); w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); save(d, 'make it green'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes');
@@ -317,6 +338,16 @@ test('limit: a test deleted from a green suite, a count worse with nothing gamed
   const c = check(d); assert.equal(c.code, 1, JSON.stringify(c.metrics)); assert.ok(!c.metrics.some((m) => m.gamed === true), 'nothing was won, so nothing is gamed');
   const o = w.stop(); assert.ok(!blocked(o), o); assert.match(o, /Sawbuck caught a problem/); assert.equal(latest(d).kind, 'regression');
   assert.doesNotMatch(w.stop(), /Sawbuck caught/, 'said once');
+});
+// Found in the same rehearsal, and NOT fixed in 0.1.73 (roadmap L41). In Claude Code 2.1.318 a line the person runs with
+// `!` starts a model turn of its own, and no prompt event reaches the hooks for it: the baseline is the one the last
+// typed prompt took. This holds today's behaviour so the README's sentence stays true; the fix turns its middle round.
+test('limit: a shell line a person runs inside a session starts a turn with no prompt event, so their own protected edit made that way is sent back as the agent\'s; made between two typed prompts it is theirs', () => {
+  const d = signed(true); const w = wired(d); w.prompt('look around'); assert.ok(!blocked(w.stop()), 'a quiet turn ends');
+  put(d, '.npmrc', 'fund=false\n');   // the person's own edit, by a `!` line: the next thing the hooks see is the end of a turn
+  const o = w.stop(); assert.ok(blocked(o), 'the limit: read as the agent\'s'); assert.match(o, /Undo the changes YOU made/);
+  const e = signed(true); const x = wired(e); x.prompt('look around'); x.stop(); put(e, '.npmrc', 'fund=false\n');
+  x.prompt('next'); assert.ok(!blocked(x.stop()), 'with a typed prompt after it, the same edit is the person\'s');
 });
 test('claim: the git hook records a gamed test as gamed when the same commit drops the test or touches a protected path', () => {
   let d = hookRepo(); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');

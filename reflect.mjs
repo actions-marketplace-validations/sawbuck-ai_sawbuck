@@ -111,7 +111,7 @@ if (standing) {
     // as it was before, the engine can certify nothing ("inconclusive"), and until 0.1.73 that kept the verdict up for
     // good: the message's own "put the test back" did not end it. What the span holds now is an ordinary change, read
     // below like any other.
-    settle('unverified', 'the test change was taken back: this span moves no test, config or grader any more', { takenBack: true });
+    settle('put back', 'the test change was taken back: this span moves no test, config or grader any more', { takenBack: true });
   } else {
     // gamed again, or a span that cannot be certified with the test still edited: the source has not earned the green
     // over the span the verdict was measured on, so the gamed record holds, advanced to this head (the Stop hook keeps
@@ -167,7 +167,8 @@ memRecord(repo, { sha, reason: reason.slice(0, 280), by: 'sawbuck' });
 if (kind === 'gamed') rec.gamed += 1; else rec.regressions += 1;
 rec.latest = { sha: sha.slice(0, 8), kind, base: baseSha || null, file: evidenceFile, reason: reason.replace(/^sawbuck: /, '').slice(0, kind === 'gamed' && alsoProtected ? 280 : 140), at: new Date().toISOString(), by: by || null,
   ...(kind === 'gamed' ? { metrics: metrics.filter((m) => m.gamed === true).map((m) => m.name).slice(0, 8) } : {}),
-  ...(kind === 'gamed' && moved.length ? { goalposts: moved.slice(0, 6) } : {}), ...(kind === 'gamed' && failedGuards.length ? { also: failedGuards.slice(0, 8) } : {}) };
+  // every goalpost the change moved (the Stop hook compares the working tree with them; `goalpostsMore` when the list was cut)
+  ...(kind === 'gamed' && moved.length ? { goalposts: moved.slice(0, 50), ...(moved.length > 50 ? { goalpostsMore: true } : {}) } : {}), ...(kind === 'gamed' && failedGuards.length ? { also: failedGuards.slice(0, 8) } : {}) };
 writeRec();
 
 // --- 5) quiet by default; one line to stderr -

@@ -316,10 +316,25 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   // Each way out as a line that works (each was typed on 0.1.72, and two did not: proof-bench/beside-guard). The files
   // to put back are the goalposts the engine named, when it named them. A reason has to be for the span the verdict
   // stands on: one commit needs no span, and a turn that made more names where the span begins.
-  const posts = (Array.isArray(rec.latest.goalposts) && rec.latest.goalposts.length) ? rec.latest.goalposts : [where];
+  const listed = (Array.isArray(rec.latest.goalposts) && rec.latest.goalposts.length) ? rec.latest.goalposts : null;
+  const posts = listed ? listed.slice(0, 6) : [where];
+  const morePosts = listed && (listed.length > 6 || rec.latest.goalpostsMore) ? ` (the first of ${rec.latest.goalpostsMore ? 'more than 50' : listed.length} test and config files this change moved)` : '';
   const oneCommit = !rec.latest.base || git('rev-parse', '--verify', '-q', 'HEAD~1') === rec.latest.base;
   const accept = cli(oneCommit ? 'check --allow "<why>"' : `check --base ${back} --allow "<why>"`);
-  const choices = `Your call: (1) fix the source and keep the test as it was; (2) put the test back: git checkout ${back} -- ${posts.join(' ')}, then commit; (3) if the test change is right, accept it: ${accept}.`;
+  const choices = `Your call: (1) fix the source and keep the test as it was; (2) put the test back: git checkout ${back} -- ${posts.join(' ')}${morePosts}, then commit; (3) if the test change is right, accept it: ${accept}.`;
+  // THE TEST PUT BACK IN THE WORKING TREE, NOT COMMITTED YET. Every goalpost the engine named for this verdict reads in
+  // the working tree as it did where the span began, so no gamed green is left in the tree, and sending the turn back
+  // "to fix the source" would be for a change that is gone (the rehearsal of 2026-11-16: a person said "put the test
+  // back and stop there", the agent did, and was sent back three times). The turn may end and the person is told, once
+  // for this commit. The verdict stays up, here and in the second copy: the last commit still holds the changed test,
+  // so throwing the restore away is sent back again, and only a commit settles it. Only for a record that lists all
+  // its goalposts (0.1.73 on).
+  const sameAsBase = () => { try { execFileSync('git', ['-C', repo, 'diff', '--quiet', rec.latest.base, '--', ...listed], { stdio: 'ignore' }); return true; } catch { return false; } };
+  if (listed && !rec.latest.goalpostsMore && rec.latest.base && hasCommit(rec.latest.base) && sameAsBase()) {
+    const told = st.restoredTold === head; st.restoredTold = head; saveState('ends');
+    if (!told) process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: ${posts.join(', ')} ${listed.length === 1 ? 'is' : 'are'} back as ${listed.length === 1 ? 'it was' : 'they were'} in your working tree, not committed yet. The last commit still holds the changed test, so the record stays open until that is committed (git commit -am "put the test back"). Nothing is sent back for it meanwhile.` }));
+    process.exit(0);
+  }
   const also = (Array.isArray(rec.latest.also) && rec.latest.also.length) ? ` The same change also made ${rec.latest.also.join(', ')} worse, which the contract guards.` : '';
   // the agent asking the person instead of bending the source is the right move, so the turn may end there
   if (asksPerson(lastAgentText(), where)) {
@@ -327,7 +342,7 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
     process.stdout.write(JSON.stringify({ systemMessage: `Sawbuck: the win on ${where} came from changing the test, and your agent is asking you about it instead of changing the source to fit. ${choices}` }));
     process.exit(0);
   }
-  sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run.${also} The turn is not done: fix the source so the test passes as it was written. If you believe the test itself was wrong, do not change the source to fit it: end your turn by showing the person the test change and asking them.`, `the win on ${where} is still gamed. ${choices}`);
+  sendBack('blockPromptId', 'blockCount', `Sawbuck: the win on ${where} was gamed. It came from editing the test or config, not the source, so it did not survive a source-only re-run.${also} The turn is not done: fix the source so the test passes as it was written. If you believe the test itself was wrong, do not change the source to fit it: end your turn by showing the person the test change and asking them what to do, as a direct question.`, `the win on ${where} is still gamed. ${choices}`);
 }
 
 // 3a) A DEPENDENCY EDITED IN PLACE: the check's clean copy borrows node_modules and the venv from the working tree, so
