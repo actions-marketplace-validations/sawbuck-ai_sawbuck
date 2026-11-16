@@ -91,9 +91,12 @@ try {
     // the files in the repo's top folder, an existing workflow, the scanners, the remote and the exclude file.
     const shadow = mkdtempSync(join(tmpdir(), 'sawbuck-preview-'));
     try {
-      const g = (...a) => execFileSync('git', ['-c', 'user.name=sawbuck', '-c', 'user.email=sawbuck@local', ...a], { cwd: shadow, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      // the preview's commit is Sawbuck's own, in a throwaway copy: it asks nothing of the person's gpg (commit.gpgsign,
+      // where a key that wants a passphrase has no terminal to ask at) and runs none of their git hooks
+      const g = (...a) => execFileSync('git', ['-c', 'user.name=sawbuck', '-c', 'user.email=sawbuck@local', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...a], { cwd: shadow, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
       g('init', '-q');
-      for (const e of readdirSync(repo, { withFileTypes: true })) if (e.isFile() && statSync(join(repo, e.name)).size < 32 * 1024 * 1024) cpSync(join(repo, e.name), join(shadow, e.name));
+      // .git is a FILE in a linked git worktree (and in a submodule): copied, it lands on the preview's own .git folder and the copy throws
+      for (const e of readdirSync(repo, { withFileTypes: true })) if (e.isFile() && e.name !== '.git' && statSync(join(repo, e.name)).size < 32 * 1024 * 1024) cpSync(join(repo, e.name), join(shadow, e.name));
       for (const rel of [join('.github', 'workflows', 'sawbuck.yml'), join('.promptwheel', 'packs')]) if (existsSync(join(repo, rel))) cpSync(join(repo, rel), join(shadow, rel), { recursive: true });
       if (existsSync(join(repo, 'node_modules'))) { try { symlinkSync(join(repo, 'node_modules'), join(shadow, 'node_modules')); } catch { /* the lint check may not be offered in the preview */ } }
       const exclude = (root) => resolve(root, execFileSync('git', ['-C', root, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim());
@@ -187,7 +190,7 @@ try {
 
 // a suggestion, not a rule: only a person should freeze product code
 let files = [];
-try { files = execFileSync('git', ['-C', repo, 'ls-files'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n'); } catch { /* not a repo: attach says so */ }
+try { files = execFileSync('git', ['-C', repo, 'ls-files', '-z'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0'); } catch { /* not a repo: attach says so */ }
 const seen = new Set();
 for (const f of files) { const m = f.match(/^(.*?(?:^|\/)(?:auth|authentication|billing|payments?|migrations))\//); if (m && !/(^|\/)(node_modules|test|tests|docs?|examples?|samples?|demos?|fixtures?)\//.test(m[1])) seen.add(m[1]); }
 if (seen.size) process.stdout.write(`\n  To protect product code too, add these protected paths under "mandates" in promptwheel.config.json:\n${[...seen].slice(0, 5).map((d) => `    { "name": "${d.replace(/\W+/g, '-')}", "paths": ["${d}/**"], "reason": "changed by a person" }`).join('\n')}\n`);

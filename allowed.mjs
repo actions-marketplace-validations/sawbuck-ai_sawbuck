@@ -8,12 +8,13 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { mandateHits } from './contract.mjs';
+import { mandateHits, gitNames } from './contract.mjs';
 import { localDay } from './day.mjs';
 
 const MAX = 500;
 export const allowedPath = (repo) => join(repo, '.sawbuck', 'allowed.jsonl');
 const g = (repo, ...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+const names = (repo, ...a) => { try { return gitNames(repo, a); } catch { return []; } };
 
 export function readAllowed(repo) {
   try { return readFileSync(allowedPath(repo), 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((e) => e && e.reason && Array.isArray(e.files)); } catch { return []; }
@@ -57,8 +58,8 @@ export function recordAllowed(repo, rep, { dirty = false, base = 'HEAD~1', head 
     if (!cleared.length || !reason) return null;
     if (!existsSync(join(repo, '.sawbuck', 'state.json'))) return null;
     const changed = (dirty
-      ? [...g(repo, 'diff', '--name-only', '--no-renames', 'HEAD').split('\n'), ...g(repo, 'ls-files', '--others', '--exclude-standard').split('\n')]
-      : g(repo, 'diff', '--name-only', '--no-renames', base, head).split('\n')).filter(Boolean);
+      ? [...names(repo, 'diff', '--name-only', '--no-renames', 'HEAD'), ...names(repo, 'ls-files', '--others', '--exclude-standard')]
+      : names(repo, 'diff', '--name-only', '--no-renames', base, head));
     const hits = cleared.some((l) => l.startsWith('mandate:')) ? mandateHits(repo, changed, { ref: dirty ? 'HEAD' : base }) : [];
     const things = cleared.map((l) => thing(l, rep, changed, hits));
     const files = [...new Set(things.flatMap((t) => t.files))].slice(0, 20);

@@ -22,9 +22,9 @@ function ledger(repo) { return mergeLedgers(readLocal(repo), readShared(repo)); 
 // whose subject is still reachable was not lost, only rewritten, and a replayed one that is lost is listed once.
 // The body comes along as the why: a revert's reason lives there, and it is the part a squash takes.
 function fromReflog(repo) {
-  const raw = g(repo, 'log', '--reflog', '--not', '--all', '-n', String(MAX), '--format=%x00%H%x09%cI%x09%s%x1f%b%x1f', '--name-only', '--no-renames');
+  const raw = g(repo, '-c', 'core.quotePath=false', 'log', '--no-show-signature', '--reflog', '--not', '--all', '-n', String(MAX), '--format=%x00%H%x09%cI%x09%s%x1f%b%x1f', '--name-only', '--no-renames');
   if (!raw.trim()) return [];
-  const kept = new Set(g(repo, 'log', '--all', '-n', '5000', '--format=%s').split('\n'));
+  const kept = new Set(g(repo, 'log', '--no-show-signature', '--all', '-n', '5000', '--format=%s').split('\n'));
   const bySubject = new Map();
   for (const chunk of raw.split('\0').slice(1)) {
     const [head, body = '', tail = ''] = chunk.split('\x1f');

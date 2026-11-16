@@ -18,6 +18,7 @@ import { readSteers, groupSteers } from './steers.mjs';
 import { ledgerState } from './ledger.mjs';
 import { readUndone } from './undo.mjs';
 import { readAllowed } from './allowed.mjs';
+import { gitRefuses } from './contract.mjs';
 import { localDay } from './day.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -165,7 +166,10 @@ if (isGit) {
 
 // Measuring / next action
 out.push('');
-if (!isGit) {
+const refuses = isGit ? gitRefuses(repo) : '';   // a repo another user owns: git reads nothing in it, so neither can the check
+if (refuses) {
+  out.push(`   ${refuses[0].toUpperCase()}${refuses.slice(1)}`);
+} else if (!isGit) {
   out.push(`   Not a git repo here, so there is nothing to verify or remember. cd into your project.`);
 } else if (state === 'watching' && wired === 'user' && !hasConfig) {
   out.push('   Measuring here  ·  wired in at user level, and that check runs only in a repo that has a promptwheel.config.json. `sawbuck contract` writes one.');
