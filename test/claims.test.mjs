@@ -195,6 +195,24 @@ test('limit: the agent editing that uncommitted contract and committing it is st
   w.prompt(); const p = join(d, 'promptwheel.config.json'); const c = JSON.parse(readFileSync(p, 'utf8')); c.mandates = []; writeFileSync(p, JSON.stringify(c)); save(d, 'loosen');
   assert.ok(blocked(w.stop()));
 });
+// Found 2026-11-16 (proof-bench/swept-in), in every version back to 0.1.64, and NOT fixed in 0.1.72. The two halves of
+// the end of a turn each leave this commit to the other: the engine answers "fail" for the protected path and says in
+// the same report that tests_pass was gamed; reflect.mjs leaves a fail that is only a protected path to the wall; the
+// wall spares the path because it was the person's own, committed as it was. Nobody reads the gamed metric. This test
+// holds today's behaviour so the README's sentence stays true; the fix turns its middle assertion round.
+test('limit: a gamed commit that also carries the person\'s own uncommitted protected file is not sent back at the end of the turn; the check on that commit still sends it back', () => {
+  const cheat = (s) => s.replace('add(2,2),4', 'add(2,2),0');
+  // the control: the same gamed commit with nothing of the person's in it is sent back
+  { const d = signed(false); const w = wired(d); w.prompt(); edit(d, 'test/add.test.js', cheat); save(d, 'make it green'); assert.ok(blocked(w.stop()), 'the gamed commit alone is sent back'); }
+  const d = signed(false); const w = wired(d);
+  put(d, '.npmrc', 'fund=false\n');   // the person's own, there before the prompt, not committed
+  w.prompt(); edit(d, 'test/add.test.js', cheat); save(d, 'make it green');   // the agent's git add -A takes .npmrc along
+  assert.match(git(d, 'show', '--name-only', '--format=', 'HEAD'), /\.npmrc/, 'the person\'s file rode along');
+  assert.ok(!blocked(w.stop()), 'the limit: the turn ends with nothing sent back');
+  const c = check(d); assert.notEqual(c.code, 0, 'the check on that commit does not pass it');
+  assert.ok((c.mandates || []).some((m) => (m.files || []).includes('.npmrc')), 'it is sent back for the protected path');
+  assert.ok((c.metrics || []).some((m) => m.name === 'tests_pass' && m.gamed === true), 'and its report marks the green as gamed');
+});
 test('limit: two sessions in one checkout: the one that touched a protected file is sent back, and so is the other, told not to undo what it did not change', () => {
   const d = signed(true); const a = wired(d, 'A'), b = wired(d, 'B');
   a.prompt(); put(d, '.npmrc', 'x\n'); b.prompt();
