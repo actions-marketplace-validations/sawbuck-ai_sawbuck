@@ -795,6 +795,9 @@ function wireGit(repo) {
     const i = was.indexOf(S_START), j = was.indexOf(S_END, i);
     const cur = j > i ? was.slice(i, j + S_END.length + (was[j + S_END.length] === '\n' ? 1 : 0)) : '';
     const want = hookBlock(repo);
+    // a block for ANOTHER repo: this hooks folder is shared (a global core.hooksPath). Replacing the block would take
+    // that repo's check away without a word, and "already attached" would be untrue of this one. Say what is there.
+    if (cur && !cur.includes(`--repo ${JSON.stringify(repo)}`)) usage(`the post-commit hook at ${pc} already holds sawbuck's block for another repo, so this hooks folder is shared between repos (core.hooksPath) and attach --git changes nothing here: one block cannot watch two repos. Use plain \`${cli('attach')}\` in this repo (Claude Code), or \`${cli('attach --shared')}\` for a team file.`);
     if (cur && cur !== want) {
       if (dry) { out(dryText([`modify  ${pc}  (the post-commit hook block, to run this sawbuck: ${version})`])); return; }
       writeFileSync(pc, was.slice(0, i) + want + was.slice(i + cur.length));

@@ -1750,3 +1750,15 @@ test('claim: run through npx, the look for another copy is not fooled by the fol
   assert.match(sbEnv(d, look(`${npx}:${old.bin}`), 'check').out, lit(`if a person meant this: ${PIN} check --allow`), 'and the line for the person is the pinned one');
   assert.match(sbEnv(d, look(npx), 'check').out, lit(`if a person meant this: ${PIN} check --allow`), 'with nothing behind it, a bare `sawbuck` is still no command in the person\'s shell');
 });
+test('limit: where two repos share one hooks folder (a global core.hooksPath), attach --git in the second says so and leaves the first repo\'s block alone', () => {
+  // attach --git writes its block where git will run it, and under a global core.hooksPath that is one folder for every
+  // repo. Found while running the live check under a person's own git settings (2026-11-15). Not fixed here: the first
+  // attach still writes into that shared folder. What must not happen is the second repo taking the first one's check.
+  const hooks = mkdtempSync(join(tmpdir(), 'shared-hooks-')); const a = hookRepo(), b = hookRepo();
+  for (const d of [a, b]) git(d, 'config', 'core.hooksPath', hooks);
+  assert.equal(sb(a, 'attach', '--git').code, 0); const was = readFileSync(join(hooks, 'post-commit'), 'utf8'); assert.ok(was.includes(`--repo ${JSON.stringify(a)}`));
+  const r = sb(b, 'attach', '--git'); assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /already holds sawbuck's block for another repo/); assert.match(r.out, /shared between repos \(core\.hooksPath\)/);
+  assert.equal(readFileSync(join(hooks, 'post-commit'), 'utf8'), was, 'the first repo\'s block is as it was');
+  assert.match(sb(a, 'attach', '--git').out, /already attached \(git\)/);
+});
