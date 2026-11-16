@@ -39,6 +39,7 @@
   },
   "files": [
     "sawbuck.mjs",
+  "copies.mjs",
     "rewrites.mjs",
     "share.mjs",
     "ledger.mjs",

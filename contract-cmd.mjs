@@ -12,6 +12,7 @@ import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { PW } from './bins.mjs';
+import { cli } from './copies.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // The check's own action is pinned by commit, like GitHub's: the commit the engine's release tag points at. A moving
@@ -176,7 +177,7 @@ try {
     const added = (cfg.mandates.length - before.m) + (cfg.metrics.length - before.g);
     const fresh = added || hardened || ci || (full && !locked);
     process.stdout.write(!fresh ? 'sawbuck: already signed, nothing changed.\n' : full
-      ? `sawbuck: signed. ${counts(cfg)}, and the shape of this repo in promptwheel.lock.json.\n${strict ? (hardened ? `  ${hardened} guards that were notes now block. The contract is a protected path, so the commit that carries this needs a person's reason: sawbuck check --allow "<reason>".\n` : '') : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the rest.\n  On a pull request, a change that takes a reason is let through by a comment from someone with write access who did not open it: sawbuck-allow: <reason>. If you are the only person here, add "allowFromAuthor": true to promptwheel.config.json so your own comment counts.\n' : ''}`
+      ? `sawbuck: signed. ${counts(cfg)}, and the shape of this repo in promptwheel.lock.json.\n${strict ? (hardened ? `  ${hardened} guards that were notes now block. The contract is a protected path, so the commit that carries this needs a person's reason: ${cli('check --allow "<reason>"')}.\n` : '') : '  New dependencies and structure changes show as notes for now; protected paths and install scripts block. --strict blocks them all.\n'}${ci ? '  Added .github/workflows/sawbuck.yml, so pull requests are checked in CI. Commit it with the rest.\n  On a pull request, a change that takes a reason is let through by a comment from someone with write access who did not open it: sawbuck-allow: <reason>. If you are the only person here, add "allowFromAuthor": true to promptwheel.config.json so your own comment counts.\n' : ''}`
       : `sawbuck: signed. ${counts(cfg)}, and the rule in AGENTS.md.\n  --full adds supply-chain guards, a repo lock and a CI check.\n`);
     if (full && !ci && !existsSync(wf)) process.stdout.write(`  No CI check added: ${!/github\.com/.test(remote) ? 'this repo has no github.com origin' : 'there is no real test command yet, and a placeholder would fail every pull request'}. Run sawbuck contract --full again once it has one.\n`);
     const old = ci ? '' : olderCi(wf);
@@ -184,7 +185,7 @@ try {
     // written before it holds its own copy of the rule with no way through (proof-bench/pr-shapes: a pull request with
     // only this line is sent back, with or without a comment), so the words carry the way through too. A claim walks both.
     const hard = (cfg.mandates || []).some((m) => m && m.name === 'workflows-frozen' && !m.allowable);
-    if (old) process.stdout.write(`  .github/workflows/sawbuck.yml runs an older engine (${old}); this sawbuck pins v${PKG.dependencies.promptwheel}. Sawbuck never rewrites a workflow file: it is a protected path, and yours. For the newer check on pull requests, change its line to:\n    uses: ${ACTION}\n  Change it yourself: at the end of a turn an agent's own change to a protected path is sent back, with a reason or without.\n${hard ? '  The "workflows-frozen" rule here takes no reason (contracts written before 0.1.70 do not), so the change is sent back as it stands. It takes two changes, each with a person\'s reason: first add "allowable": "flag" to the "workflows-frozen" rule in promptwheel.config.json, as new contracts have it; then change the line.\n' : '  That is a workflow change, so it takes a person\'s reason: sawbuck check --allow "<reason>", or on a pull request a comment from someone who did not open it.\n'}`);
+    if (old) process.stdout.write(`  .github/workflows/sawbuck.yml runs an older engine (${old}); this sawbuck pins v${PKG.dependencies.promptwheel}. Sawbuck never rewrites a workflow file: it is a protected path, and yours. For the newer check on pull requests, change its line to:\n    uses: ${ACTION}\n  Change it yourself: at the end of a turn an agent's own change to a protected path is sent back, with a reason or without.\n${hard ? '  The "workflows-frozen" rule here takes no reason (contracts written before 0.1.70 do not), so the change is sent back as it stands. It takes two changes, each with a person\'s reason: first add "allowable": "flag" to the "workflows-frozen" rule in promptwheel.config.json, as new contracts have it; then change the line.\n' : '  That is a workflow change, so it takes a person\'s reason: ' + cli('check --allow "<reason>"') + ', or on a pull request a comment from someone who did not open it.\n'}`);
   }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 

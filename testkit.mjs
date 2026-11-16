@@ -18,6 +18,10 @@ export const TMP_HOME = join(ROOT, 'home');
 mkdirSync(TMP_HOME);
 process.env.TMPDIR = ROOT;     // tmpdir() here and in every child this file starts
 process.env.HOME = TMP_HOME;   // every child inherits it, unless a test passes a HOME of its own
+// a sawbuck installed on the machine that runs the suite is not part of any test: the look for "another copy first on
+// PATH" (copies.mjs) reads this list in place of PATH, and it is empty unless a test names a stand-in. On the
+// maintainer's machine a global copy of the last release is always there, and on a CI runner none is.
+process.env.SAWBUCK_PATH_LOOK = '';
 process.on('exit', () => rmSync(ROOT, { recursive: true, force: true }));
 
 // On a clean account (CI, the bare run before a release) a home that had no ~/.sawbuck must still have none.

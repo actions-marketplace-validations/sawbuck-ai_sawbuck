@@ -15,6 +15,7 @@ import { mandateHits, hashOf, protectedAmong, lockState, gitNames } from './cont
 import { dependencyEditsSince, dependencyNotice } from './deps.mjs';
 import { readGuard, writeGuard, clearGuard, OWN, ownOf } from './guard.mjs';
 import { readAllowed } from './allowed.mjs';
+import { cli, olderSaid } from './copies.mjs';
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? process.argv[i + 1] : d; };
 const by = flag('--by', '');   // attribution from the harness wiring: the Claude hook passes 'claude', the raw-git hook passes nothing
 const stop = process.argv.includes('--stop');   // wired as the Claude Code Stop hook: enforce the contract on a gamed turn
@@ -260,7 +261,7 @@ if (stop && !process.env.SAWBUCK_NO_ENFORCE) {
     // contract or revert the path", and a real agent then told its person to grant --allow and ask again, which is
     // sent back again (proof-bench/live/after-0.1.70). So say who can make the change, and what to tell them.
     const reasoned = hits.filter((h) => h.allowable).map((h) => `"${h.name}"`);
-    const person = reasoned.length ? ` ${reasoned.join(', ')} ${reasoned.length === 1 ? 'takes' : 'take'} a person's reason, and a reason is for the person's own edit: it does not make your edit theirs. After you undo yours, tell them to make the edit themselves and run: sawbuck check --allow "<their reason>". Running --allow yourself does not end this.` : '';
+    const person = reasoned.length ? ` ${reasoned.join(', ')} ${reasoned.length === 1 ? 'takes' : 'take'} a person's reason, and a reason is for the person's own edit: it does not make your edit theirs. After you undo yours, tell them to make the edit themselves and run this exact line: ${cli('check --allow "<their reason>"')}. Running --allow yourself does not end this.` : '';
     const accept = (committedHit && hits.some((h) => !h.allowable)) ? ' To accept this change on purpose, change the rule in the contract or revert the path.' : '';
     const upgrade = base ? '' : ' (No prompt baseline is recorded in this repo, so edits a person made before the prompt cannot be told apart from yours: ask them to run sawbuck attach again, which upgrades the hooks.)';
     // one catch per prompt, however many times the turn is sent back. Kept beside rec.latest, never in it:
@@ -292,7 +293,7 @@ if (stop && gamedThisTurn && !process.env.SAWBUCK_NO_ENFORCE) {
   await shareFinding(repo, { kind: 'gamed', title: `gamed: ${where} edited to pass`, text: rec.latest.reason || `A green on ${where} came from editing the test, config or grader, not the source.`, files: [where] }).catch(() => {});
   // the person decides when the agent cannot: the test may be the wrong one. Three ways out, each a command.
   const back = rec.latest.base ? String(rec.latest.base).slice(0, 12) : 'HEAD~1';
-  const choices = `Your call: (1) fix the source and keep the test as it was; (2) put the test back: git checkout ${back} -- ${where}, then commit; (3) if the test change is right, accept it: sawbuck check --allow "<why>".`;
+  const choices = `Your call: (1) fix the source and keep the test as it was; (2) put the test back: git checkout ${back} -- ${where}, then commit; (3) if the test change is right, accept it: ${cli('check --allow "<why>"')}.`;
   // the agent asking the person instead of bending the source is the right move, so the turn may end there
   if (asksPerson(lastAgentText(), where)) {
     saveState('ends');
@@ -342,6 +343,19 @@ if (recordRemoved) {
   st.shownTotal = total; saveState('ends');
   process.stdout.write(JSON.stringify({ systemMessage: 'Sawbuck: its record for this repo (.sawbuck/) was removed or made unreadable during this turn. It was rebuilt from a second copy, and the turn was checked again from the commit it began at. If you did not do that, look at what this turn did.' }));
   process.exit(0);
+}
+
+// 3d) AN OLDER COPY ON THIS MACHINE. A line with no version in it (the rule's own `npx -y sawbuck check`, a bare
+// `sawbuck`) is answered by that copy and not by this one, and the two can disagree (copies.mjs; proof-bench/old-global).
+// The person is told once for each such version, at an end that has nothing else to say. The agent is told with the
+// frame, where the turn starts.
+if (!process.env.SAWBUCK_NO_ENFORCE && !(total > (st.shownTotal || 0))) {
+  const said = olderSaid();
+  if (said && st.olderCopyTold !== said.copy.version) {
+    st.olderCopyTold = said.copy.version; saveState('ends');
+    process.stdout.write(stop ? JSON.stringify({ systemMessage: said.person }) : said.person + '\n');
+    process.exit(0);
+  }
 }
 
 // 4) otherwise, say a fresh catch once (a flag; never blocks). The band and statusline carry the rest.
