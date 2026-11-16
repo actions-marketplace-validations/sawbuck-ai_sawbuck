@@ -66,6 +66,6 @@ export function olderSaid(env) {
   return {
     copy: p,
     agent: `▣ sawbuck here is ${VERSION}. On this machine a line with no version in it (\`sawbuck ...\`, \`npx -y sawbuck ...\`) runs an older copy, ${p.version} (${p.path}). Where the rule says \`npx -y sawbuck check\` or \`context\`, run this exact line instead: npx -y sawbuck@${VERSION} check`,
-    person: `Sawbuck: an older copy of sawbuck is installed on this machine, ${p.version} (${p.path}). A bare \`sawbuck\` and \`npx sawbuck\` run that one, not the ${VERSION} that is watching this repo, and the two can disagree. To update it: npm i -g sawbuck@latest`,
+    person: `Sawbuck: an older copy of sawbuck is installed on this machine, ${p.version} (${p.path}). A bare \`sawbuck\` and \`npx sawbuck\` run that one, not the ${VERSION} that is watching this repo, and the two can disagree. To update it: npm i -g sawbuck@latest (with sudo, if it was installed that way)`,
   };
 }
