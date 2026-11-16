@@ -311,6 +311,13 @@ test('claim: the check says a win was gamed even when its word for the change is
   d = signed(false); edit(d, 'test/add.test.js', game); save(d, 'make it green'); r = sb(d, 'check'); assert.equal(r.code, 2); assert.doesNotMatch(r.out, /as well/);
   d = signed(true); put(d, '.npmrc', 'x\n'); save(d, 'registry'); r = sb(d, 'check'); assert.equal(r.code, 1); assert.doesNotMatch(r.out, /gamed/);
 });
+test('limit: a test deleted from a green suite, a count worse with nothing gamed, is said once at the end of the turn and not sent back; the check on the commit fails it', () => {
+  const d = signed(true); const w = wired(d); w.prompt('tidy the tests');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'mul'")).join('\n')); save(d, 'drop the mul test');
+  const c = check(d); assert.equal(c.code, 1, JSON.stringify(c.metrics)); assert.ok(!c.metrics.some((m) => m.gamed === true), 'nothing was won, so nothing is gamed');
+  const o = w.stop(); assert.ok(!blocked(o), o); assert.match(o, /Sawbuck caught a problem/); assert.equal(latest(d).kind, 'regression');
+  assert.doesNotMatch(w.stop(), /Sawbuck caught/, 'said once');
+});
 test('claim: the git hook records a gamed test as gamed when the same commit drops the test or touches a protected path', () => {
   let d = hookRepo(); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');
   edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); let o = commit(d, 'make it green');
