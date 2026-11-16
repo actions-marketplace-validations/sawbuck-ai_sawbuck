@@ -1738,3 +1738,15 @@ test('claim: the README says a global copy does not update itself, how to see wh
   assert.match(readme, /npm i -g sawbuck@latest/); assert.match(readme, /does not update itself/); assert.match(readme, /sawbuck --version/);
   assert.match(readme, /\*\*Which copy answers\.\*\*/);
 });
+test('claim: run through npx, the look for another copy is not fooled by the folder npm puts first on PATH for the length of that run', () => {
+  // `npx sawbuck@<v> attach` runs with <npm cache>/_npx/<hash>/node_modules/.bin first on PATH, and the sawbuck there is
+  // this very copy. A person's own shell never has that folder. Seen in the rehearsal of 0.1.72 (2026-11-15): attach
+  // through the plugin's pinned line said nothing about the global 0.1.46 behind it, and the hint named a bare `sawbuck`.
+  const npx = join(mkdtempSync(join(tmpdir(), 'npm-cache-')), '_npx', 'abc123', 'node_modules', '.bin'); mkdirSync(npx, { recursive: true }); symlinkSync(CLI, join(npx, 'sawbuck'));
+  const old = otherCopy('0.1.46'); const d = signed(true);
+  const at = sbEnv(d, look(`${npx}:${old.bin}`), 'attach', '--claude'); assert.equal(at.code, 0, at.out);
+  assert.match(at.out, /an older copy of sawbuck is installed on this machine, 0\.1\.46/, 'the older copy behind npx\'s own folder is seen');
+  put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'a workflow');
+  assert.match(sbEnv(d, look(`${npx}:${old.bin}`), 'check').out, lit(`if a person meant this: ${PIN} check --allow`), 'and the line for the person is the pinned one');
+  assert.match(sbEnv(d, look(npx), 'check').out, lit(`if a person meant this: ${PIN} check --allow`), 'with nothing behind it, a bare `sawbuck` is still no command in the person\'s shell');
+});

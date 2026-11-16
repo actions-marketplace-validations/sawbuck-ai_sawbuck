@@ -28,7 +28,7 @@ export function older(a, b) {
   return false;
 }
 
-// The first sawbuck on PATH: { path, real, version, self }, or null. `self` when it is this very copy; `version` is
+// The first sawbuck on the person's PATH: { path, real, version, self }, or null. `self` when it is this very copy; `version` is
 // '' when what is there is not an npm install of sawbuck (a wrapper script: nothing is claimed about it).
 // SAWBUCK_PATH_LOOK, when set, is the list looked at in place of PATH (empty: look nowhere). The suites set it, so a
 // sawbuck installed on the machine that runs them is not taken for part of a test.
@@ -37,6 +37,10 @@ export function onPath(env = process.env) {
   const list = env.SAWBUCK_PATH_LOOK !== undefined ? env.SAWBUCK_PATH_LOOK : env.PATH;
   for (const d of String(list || '').split(delimiter)) {
     if (!d) continue;
+    // not a folder of npm's own: `npx sawbuck@<v> ...` runs with <cache>/_npx/<hash>/node_modules/.bin first on PATH for
+    // the length of that run, and the sawbuck there is the one running. A person's shell never has that folder, so
+    // what a bare `sawbuck` reaches for them is whatever comes after it.
+    if (/[\\/]_npx[\\/]/.test(d)) continue;
     const f = join(d, 'sawbuck');
     if (!existsSync(f)) continue;
     const r = real(f);
