@@ -90,22 +90,24 @@ if (standing) {
   // `settled` is this run's answer about the standing verdict, kept beside `latest` because what the span holds now may
   // be recorded over `latest` below. The Stop hook reads it back to take its second copy down.
   const settle = (kind, reason, more = {}) => { const at = new Date().toISOString(); rec.latest = { sha: headSha.slice(0, 8), kind, base: baseSha, file: rec.latest.file, reason, at, by: by || null, ...more }; rec.settled = { base: baseSha, how: more.takenBack ? 'taken back' : 'earned', at }; writeRec(); };
-  // the metrics the verdict was about, when the record says (0.1.73 on): each is a win again, and this time the
-  // source-only re-run carries it. A record from before names none; then any win the source carries counts.
+  // The metrics the verdict was about, by name (the record says since 0.1.73). It comes down when THOSE are a win again
+  // and the source-only re-run carries it. The engine's "pass" alone is not that: it does not let a guard that is red
+  // at both ends bury a real win elsewhere, so with the gamed test still edited, the suite broken again and another
+  // metric improved from the source, the word over the span was "pass", the verdict came down, and the weakened test
+  // stood (proof-bench/beside-guard/second-metric.sh, every version before this one; only in a contract with a
+  // second metric that has its source check on). A record that names no metric (one from before 0.1.73, or a
+  // weakened gate with no gamed metric) cannot say, and keeps the old rule: the engine's pass.
   const was = Array.isArray(rec.latest.metrics) ? rec.latest.metrics : [];
   const earned = (m) => m.status === 'improved' && m.gamed === false;
-  const earnedNow = !gamedHere && !metrics.some((m) => m.unprovable === true) && (was.length ? was.every((n) => metrics.some((m) => m.name === n && earned(m))) : metrics.some(earned));
-  if (alone === 'pass') {
-    // the span the gamed verdict was measured over now passes from the source: the wall comes down. A protected path
-    // still changed in the span is not this verdict's business: the wall has it under the hooks, and the git hook
-    // records it below, once.
-    settle('verified', 'the source earned the green over the span the gamed verdict was measured on');
+  const allEarned = was.length > 0 && !gamedHere && !metrics.some((m) => m.unprovable === true) && was.every((n) => metrics.some((m) => m.name === n && earned(m)));
+  if (allEarned || (alone === 'pass' && was.length === 0)) {
+    // the span the gamed verdict was measured over is earned from the source now: the wall comes down. What else the
+    // span holds is not this verdict's business: a protected path still changed is the wall's under the hooks (or the
+    // person's own file), and the git hook records it below, once; a count that got worse (the failing test is
+    // still deleted) is a regression like any other, recorded below and said once. Holding the gamed verdict for
+    // that sent a turn back for good over a test a person had asked to have removed.
+    settle('verified', alone === 'pass' ? 'the source earned the green over the span the gamed verdict was measured on' : 'the source earned the green over the span the gamed verdict was measured on; what else the span made worse is recorded on its own');
     if (verdict === 'pass') process.exit(0);
-  } else if (earnedNow) {
-    // the source carries the win now, and something else in the span is worse (the failing test is still deleted, so
-    // the count of tests is down). That is a regression like any other: recorded below and said once, not a wall.
-    // Holding the gamed verdict here sent a turn back for good over a test a person had asked to have removed.
-    settle('verified', 'the source earned the green over the span the gamed verdict was measured on; what else the span made worse is recorded on its own');
   } else if (!gamedHere && goalposts && goalposts.length === 0) {
     // the test was put back: this span moves no goalpost any more, so there is no win here to doubt. With the suite red
     // as it was before, the engine can certify nothing ("inconclusive"), and until 0.1.73 that kept the verdict up for
@@ -113,7 +115,8 @@ if (standing) {
     // below like any other.
     settle('put back', 'the test change was taken back: this span moves no test, config or grader any more', { takenBack: true });
   } else {
-    // gamed again, or a span that cannot be certified with the test still edited: the source has not earned the green
+    // gamed again, a span that cannot be certified with the test still edited, or a pass that came from another
+    // metric while this one won nothing: the source has not earned the green
     // over the span the verdict was measured on, so the gamed record holds, advanced to this head (the Stop hook keeps
     // the wall up), its file and attribution untouched (a commit the person made in between is not the catch), and
     // nothing is counted or noted a second time

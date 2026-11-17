@@ -95,6 +95,9 @@ if (own) {
 // this history, a person's reason for it is on record, or (below) the engine's own pass over the span in this run.
 let gs = (enforcing && guard.standing && guard.standing.sha && guard.standing.base) ? guard.standing : null;
 const dropStanding = () => { writeGuard(repo, { standing: null }); gs = null; };
+// the fields of a gamed record that decide how it comes down, kept in the second copy with it (0.1.73)
+const DECIDES = ['metrics', 'goalposts', 'goalpostsMore'];
+const decides = (o) => { const out = {}; for (const k of DECIDES) if (o && o[k] !== undefined) out[k] = o[k]; return out; };
 if (gs && !(inHead(gs.sha) && hasCommit(gs.base))) dropStanding();   // reset or rebased away, or its base pruned: nothing left to prove
 if (gs) {
   const inRecord = !!(rec && rec.latest && rec.latest.kind === 'allowed' && rec.latest.allowed && rec.latest.allowed.reason && String(gs.sha).startsWith(String(rec.latest.sha || '-')));
@@ -113,10 +116,19 @@ if (gs) {
 // the same span, so nothing but the source fix takes it down.
 if (gs && !(rec && rec.latest && rec.latest.kind === 'gamed')) {
   rec = { regressions: 0, gamed: 0, ...(rec && typeof rec === 'object' ? rec : {}) };
-  rec.latest = { sha: String(gs.sha).slice(0, 8), kind: 'gamed', base: gs.base, file: gs.file || '', reason: gs.reason || 'a win that came from editing the test, not the source', at: gs.at || new Date().toISOString(), by: gs.by || null };
+  rec.latest = { sha: String(gs.sha).slice(0, 8), kind: 'gamed', base: gs.base, file: gs.file || '', reason: gs.reason || 'a win that came from editing the test, not the source', at: gs.at || new Date().toISOString(), by: gs.by || null, ...decides(gs) };
   if (!rec.gamed) rec.gamed = 1;
   writeRec(rec);
   logActivity({ kind: 'note', sha: (head || '').slice(0, 8), file: gs.file || '', reason: 'the record of a gamed verdict was changed outside sawbuck; it was put back from the second copy, and only a pass from the source takes it down', by: by || 'hook' });
+}
+// The same for a record that still says gamed and has had one of those fields edited: which metrics the verdict was
+// about (what takes it down, in reflect.mjs) and which goalposts it moved (a restore in the working tree, below). A
+// record changed to name another file, or no metric, is put right from the second copy before anything reads it. A
+// second copy from before 0.1.73 holds neither, and then the record's are left as they are.
+if (gs && rec && rec.latest && rec.latest.kind === 'gamed' && (gs.metrics !== undefined || gs.goalposts !== undefined)) {
+  const want = decides(gs); let put = false;
+  for (const k of DECIDES) if (JSON.stringify(rec.latest[k]) !== JSON.stringify(want[k])) { if (want[k] === undefined) delete rec.latest[k]; else rec.latest[k] = want[k]; put = true; }
+  if (put) { writeRec(rec); logActivity({ kind: 'note', sha: (head || '').slice(0, 8), file: gs.file || '', reason: 'the record of a standing gamed verdict was edited outside sawbuck (the files or metrics it names); it was put right from the second copy', by: by || 'hook' }); }
 }
 const startedAt = Date.now();
 const tb = (st.turnBaseline && st.turnBaseline.sha) || '';
@@ -223,7 +235,7 @@ const sendBack = (idKey, countKey, reason, stillOpen) => {
 // a gamed test committed beside a protected path was never read again once the path had been put back in a new
 // commit (proof-bench/beside-guard, 2026-11-16).
 const gamedAtHead = () => !!(rec && rec.latest && rec.latest.kind === 'gamed' && rec.latest.sha === (head || '').slice(0, 8));
-if (enforcing && gamedAtHead() && rec.latest.base && head) writeGuard(repo, { standing: { sha: head, base: rec.latest.base, file: rec.latest.file || '', reason: rec.latest.reason || '', at: rec.latest.at || new Date().toISOString(), by: rec.latest.by || null } });
+if (enforcing && gamedAtHead() && rec.latest.base && head) writeGuard(repo, { standing: { sha: head, base: rec.latest.base, file: rec.latest.file || '', reason: rec.latest.reason || '', at: rec.latest.at || new Date().toISOString(), by: rec.latest.by || null, ...decides(rec.latest) } });
 
 // 2b) THE WALL AT TURN LEVEL (Claude Code Stop hook only): a mandate is checked against the WORKING
 // tree on every stop, not only on commits, because an agent usually ends a turn with uncommitted
