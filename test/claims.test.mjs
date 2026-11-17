@@ -15,6 +15,11 @@ import { createRequire } from 'node:module';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = process.env.CLAIMS_SAWBUCK || join(HERE, '..', 'sawbuck.mjs');
+// the line a person is given to type names the version that printed it (copies.mjs). The suites look for no other
+// sawbuck on PATH (testkit.mjs), so here it is always the pinned form.
+const VERSION = JSON.parse(readFileSync(join(dirname(CLI), 'package.json'), 'utf8')).version;
+const PIN = `npx -y sawbuck@${VERSION}`;
+const lit = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 const HOME = mkdtempSync(join(tmpdir(), 'claims-home-'));
 const ENV = { ...process.env, HOME, XDG_CONFIG_HOME: join(HOME, 'cfg'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
   GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b.c', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b.c', PROMPTWHEEL_NO_ALLOW_TRAILER: '' };
@@ -190,6 +195,214 @@ test('limit: the agent editing that uncommitted contract and committing it is st
   w.prompt(); const p = join(d, 'promptwheel.config.json'); const c = JSON.parse(readFileSync(p, 'utf8')); c.mandates = []; writeFileSync(p, JSON.stringify(c)); save(d, 'loosen');
   assert.ok(blocked(w.stop()));
 });
+// Found 2026-11-16 (proof-bench/swept-in, then proof-bench/beside-guard), in every version from 0.1.64 to 0.1.72. The
+// engine answers "fail" for a change that touches a protected path or makes a guard worse, and "gamed" only when
+// neither is so; a win in the same change that came from editing the test is then in the report (the metric is marked
+// gamed) and not in the word. reflect.mjs read the word, and the end of a turn sends back only what is recorded as
+// gamed. Fixed in 0.1.73: a gamed win is recorded as gamed whatever else the change holds. Each claim below failed on
+// 0.1.72.
+const game = (s) => s.replace('add(2,2),4', 'add(2,2),0');
+const ungame = (s) => s.replace('add(2,2),0', 'add(2,2),4');
+const latest = (d) => { try { return JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest || {}; } catch { return {}; } };
+test('claim: a gamed commit that also carries the person\'s own uncommitted protected file is sent back for the gamed test, the file is not blamed on the agent, and the real fix ends it with that file still in the span', () => {
+  const d = signed(false); const w = wired(d);
+  put(d, '.npmrc', 'fund=false\n');   // the person's own, there before the prompt, not committed
+  w.prompt(); edit(d, 'test/add.test.js', game); save(d, 'make it green');   // the agent's git add -A takes .npmrc along
+  assert.match(git(d, 'show', '--name-only', '--format=', 'HEAD'), /\.npmrc/, 'the person\'s file rode along');
+  const o = w.stop(); assert.ok(blocked(o), `the gamed test is sent back: ${o}`);
+  assert.match(o, /the win on test\/add\.test\.js was gamed/); assert.doesNotMatch(o, /protected path/, 'the person\'s own file is not blamed on the agent');
+  assert.equal(latest(d).kind, 'gamed'); assert.equal(latest(d).file, 'test/add.test.js', 'the catch names the test, not the file that rode along');
+  const c = check(d); assert.notEqual(c.code, 0); assert.ok((c.mandates || []).some((m) => (m.files || []).includes('.npmrc')), 'the check on that commit still names the protected path');
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', ungame); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the source fix ends it, with .npmrc still in the span'); assert.equal(latest(d).kind, 'verified');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+});
+test('claim: a person\'s reason for the test change ends the send-back even where their own protected file in the same commit still fails the check on it', () => {
+  const d = signed(false); const w = wired(d); put(d, '.npmrc', 'fund=false\n');
+  w.prompt(); edit(d, 'test/add.test.js', game); save(d, 'make it green'); assert.ok(blocked(w.stop()));
+  const r = sb(d, 'check', '--allow', 'the spec changed: add subtracts now');
+  assert.equal(r.code, 1, 'the check on the commit still fails for the protected path'); assert.match(r.out, /sent back: a protected path changed/);
+  assert.match(r.out, /your reason is kept for tests_pass/, r.out);
+  assert.ok(!blocked(w.stop()), 'the test change was a person\'s call'); assert.equal(latest(d).kind, 'allowed');
+});
+test('claim: a gamed test committed beside the agent\'s own protected edit: the first send-back names both, and putting the path back in a new commit does not end the turn', () => {
+  const d = signed(false); const w = wired(d);
+  w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); put(d, '.npmrc', 'fund=false\n'); save(d, 'make it green');
+  let o = w.stop(); assert.ok(blocked(o)); assert.match(o, /protected path/); assert.match(o, /\.npmrc/);
+  assert.match(o, /also has a win on test\/add\.test\.js that came from editing the test/, `the gamed test is named in the same message: ${o}`);
+  git(d, 'rm', '-q', '.npmrc'); git(d, 'commit', '-qm', 'take .npmrc out');   // what the message asked for, as a new commit
+  o = w.stop(); assert.ok(blocked(o), `the gamed test is sent back once the path is out: ${o}`); assert.match(o, /the win on test\/add\.test\.js was gamed/);
+  rmSync(join(d, '.sawbuck', 'results.json')); assert.ok(blocked(w.stop()), 'and it holds with the results file deleted');
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', ungame); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the real fix ends it');
+  // the control: the same protected edit beside an honest fix is sent back for the path, and ends once the path is out
+  const e = signed(false); const x = wired(e); x.prompt('make the add test pass'); edit(e, 'src/add.js', fixAdd); put(e, '.npmrc', 'fund=false\n'); save(e, 'fix add');
+  o = x.stop(); assert.ok(blocked(o)); assert.doesNotMatch(o, /also has a win/, 'an honest fix is not called gamed');
+  git(e, 'rm', '-q', '.npmrc'); git(e, 'commit', '-qm', 'take .npmrc out'); assert.ok(!blocked(x.stop()), 'an honest fix ends once the path is out');
+});
+test('claim: with a contract written, a failing test that is deleted or skipped is sent back at the end of the turn, like an edited assertion, and so is an edited assertion beside a new suppression', () => {
+  const ways = [
+    ['deleted', (d) => edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n'))],
+    ['skipped', (d) => edit(d, 'test/add.test.js', (s) => s.replace("t.test('add'", "t.test.skip('add'"))],
+    ['edited beside a new suppression', (d) => { edit(d, 'test/add.test.js', game); edit(d, 'src/add.js', (s) => '// eslint-disable-next-line no-unused-vars\n' + s); }],
+  ];
+  for (const [what, cheatIt] of ways) for (const flags of [['--full'], []]) {
+    const d = repo(false); assert.equal(sb(d, 'contract', ...flags).code, 0); save(d, 'sign');
+    const how = `the failing test ${what}, sawbuck contract ${flags.join(' ') || '(plain)'}`;
+    const w = wired(d); w.prompt('make the add test pass'); cheatIt(d); save(d, 'make it green');
+    const c = check(d); assert.equal(c.verdict, 'fail', `${how}: the engine's word is fail, a guard got worse`); assert.ok(c.metrics.some((m) => m.gamed === true), `${how}: and its report marks the green as gamed`);
+    const o = w.stop(); assert.ok(blocked(o), `${how}: sent back, said: ${o}`); assert.match(o, /was gamed/, how);
+    assert.equal(latest(d).kind, 'gamed', how);
+    git(d, 'checkout', '-q', 'HEAD~1', '--', '.'); edit(d, 'src/add.js', fixAdd); save(d, 'put it all back, fix add');
+    assert.ok(!blocked(w.stop()), `${how}: the real fix ends it`);
+  }
+});
+test('claim: the source fixed with the failing test still deleted: the gamed verdict comes down, and the count that got worse is said once like any regression, not walled', () => {
+  const d = signed(false); const w = wired(d); w.prompt('make the add test pass');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'make it green'); assert.ok(blocked(w.stop()));
+  edit(d, 'src/add.js', fixAdd); save(d, 'fix add');   // the source is right now; the test is still gone
+  const o = w.stop(); assert.ok(!blocked(o), `the green is earned from the source now: ${o}`); assert.match(o, /Sawbuck caught a problem/);
+  assert.equal(latest(d).kind, 'regression', JSON.stringify(latest(d))); assert.ok(!existsSync(guardFile(d)) || !JSON.parse(readFileSync(guardFile(d), 'utf8')).standing, 'the second copy is down too');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+  // the control: the test still deleted and the source NOT fixed stays sent back, turn after turn
+  const e = signed(false); const x = wired(e); x.prompt('make the add test pass');
+  edit(e, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(e, 'make it green'); assert.ok(blocked(x.stop()));
+  edit(e, 'src/add.js', (s) => s + 'exports.sub=(a,b)=>a-b\n'); save(e, 'something else'); assert.ok(blocked(x.stop()), 'a source edit that does not earn the green changes nothing');
+});
+test('claim: a failing test a person asked to have deleted: their reason ends the send-back, though the count of tests still fails the check on the commit', () => {
+  const d = signed(false); const w = wired(d); w.prompt('that add test is wrong, delete it');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'delete the add test'); assert.ok(blocked(w.stop()));
+  const r = sb(d, 'check', '--allow', 'I asked for that test to go'); assert.equal(r.code, 1, r.out); assert.match(r.out, /your reason is kept for tests_pass/, r.out);
+  assert.ok(!blocked(w.stop()), 'a person\'s call'); assert.equal(latest(d).kind, 'allowed');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+});
+test('claim: putting the test back ends a gamed send-back, even when the suite is red again and a try at the source is left in', () => {
+  let { d, w } = sentBackTurn(); git(d, 'checkout', '-q', 'HEAD~1', '--', 'test/add.test.js'); save(d, 'put the test back');
+  assert.ok(!blocked(w.stop()), 'the test is back as it was: nothing is gamed any more');
+  assert.equal(latest(d).kind, 'put back', 'the record says what happened in the words the message uses');
+  w.prompt('next'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes'); assert.ok(!blocked(w.stop()), 'and the next turn is not sent back');
+  ({ d, w } = sentBackTurn()); git(d, 'checkout', '-q', 'HEAD~1', '--', 'test/add.test.js'); edit(d, 'src/add.js', (s) => s.replace('a-b', 'b-a')); save(d, 'put the test back; a try that does not fix it');
+  assert.ok(!blocked(w.stop()), 'a source edit that fixes nothing is not a gamed test');
+  // the control: the test is still edited, and mul is broken so the suite is red: nothing was put back
+  ({ d, w } = sentBackTurn()); edit(d, 'src/add.js', (s) => s.replace('a*b', 'a/b')); save(d, 'break mul');
+  assert.ok(blocked(w.stop()), 'the test is still edited: the verdict stands while the suite is red');
+});
+// Found by the rehearsal of 2026-11-16 (proof-bench/live/rehearse-0.1.73): the person said "put the test back and stop
+// there", the agent restored the file and did not commit, and the turn was sent back three times for a gamed green that
+// was no longer in the tree. The verdict stays up until a commit settles it, so throwing the restore away brings it back.
+test('claim: the test put back in the working tree and not committed yet: the turn is not sent back, the person is told the commit settles it, and throwing the restore away brings the send-back back', () => {
+  const { d, w } = sentBackTurn(); const base = git(d, 'rev-parse', 'HEAD~1');
+  git(d, 'checkout', '-q', base, '--', 'test/add.test.js'); git(d, 'reset', '-q');   // back as it was, in the working tree only
+  assert.match(git(d, 'status', '--porcelain'), /M test\/add\.test\.js/);
+  const o = w.stop(); assert.ok(!blocked(o), `not sent back: ${o}`);
+  assert.match(o, /test\/add\.test\.js is back as it was in your working tree, not committed yet/); assert.match(o, /commit/);
+  assert.equal(latest(d).kind, 'gamed', 'the verdict stays up until a commit settles it');
+  assert.doesNotMatch(w.stop(), /back as it was/, 'said once for this state');
+  git(d, 'checkout', '-q', '--', 'test/add.test.js');   // the restore thrown away: the gamed test is in the tree again
+  w.prompt('next'); assert.ok(blocked(w.stop()), 'the gamed test is in the tree again: sent back');
+  git(d, 'checkout', '-q', base, '--', 'test/add.test.js'); save(d, 'put the test back'); assert.ok(!blocked(w.stop()), 'committed: settled');
+  assert.equal(latest(d).kind, 'put back'); assert.equal(latest(d).takenBack, true);
+});
+test('claim: the gamed send-back asks the agent for a direct question to the person, the form the end of a turn waits for', () => {
+  const { w } = gamedTurn(); const o = w.stop(); assert.ok(blocked(o));
+  assert.match(o, /end your turn by showing the person the test change and asking them what to do, as a direct question/);
+});
+// Roadmap L43, read in the code and then run (proof-bench/beside-guard/second-metric.sh, 2026-11-16): on every version
+// that keeps a standing verdict, the engine's "pass" over the span took it down even when that pass came from another
+// metric. The engine, rightly, does not let a guard that is red at both ends bury a real win elsewhere. Only in a
+// contract with a second metric that has its source check on, which `sawbuck contract` does not write.
+test('claim: a standing gamed verdict does not come down on another metric\'s win while the gamed test is still edited', () => {
+  const d = repo(false);
+  put(d, 'src/add.js', '// TODO tidy\n' + readFileSync(join(d, 'src/add.js'), 'utf8'));
+  put(d, 'promptwheel.config.json', JSON.stringify({ repeat: 1, metrics: [
+    { name: 'tests_pass', cmd: `${JSON.stringify(process.execPath)} --test 2>&1`, extract: 'exit', direction: 'pass', guard: true },
+    { name: 'todos', cmd: 'grep -rn TODO src | wc -l', extract: 'number', direction: 'down', guard: true }] }) + '\n');
+  save(d, 'a contract with a second metric');
+  const w = wired(d); const base = git(d, 'rev-parse', 'HEAD');
+  w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); save(d, 'make it green'); assert.ok(blocked(w.stop()));
+  assert.deepEqual(latest(d).metrics, ['tests_pass'], 'the record names the metric the verdict is about');
+  // the suite red again (mul broken) and a real win on the other metric (the TODO gone)
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a-b\nexports.mul=(a,b)=>a/b\n'); save(d, 'tidy; rework mul');
+  assert.equal(check(d, '--base', base).verdict, 'pass', 'the engine\'s word over the span is pass: a red guard does not bury a real win elsewhere');
+  assert.ok(blocked(w.stop()), 'the weakened test is still in the tree: the verdict stands');
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a-b\nexports.mul=(a,b)=>a*b\n'); save(d, 'fix mul');
+  assert.ok(blocked(w.stop()), 'green again on the weakened test: still sent back');
+  edit(d, 'src/add.js', fixAdd); edit(d, 'test/add.test.js', ungame); save(d, 'fix add, put the test back');
+  assert.ok(!blocked(w.stop()), 'the test\'s own win earned from the source ends it'); assert.equal(latest(d).kind, 'verified');
+});
+// The record under .sawbuck/ is a file an agent can rewrite unseen (proof-bench/record-tamper). Two of the rules of
+// 0.1.73 read fields of a standing verdict: which goalposts it moved (a restore in the working tree is not sent back)
+// and which metrics it was about (what takes it down). Both are kept in the second copy and put right from it.
+test('claim: a record edited to name another file as the goalpost, or to name no metric, does not end a gamed send-back', () => {
+  let { d, w } = sentBackTurn();
+  json(d, '.sawbuck/results.json', (o) => { o.latest.goalposts = ['package.json']; });   // a file the turn never touched
+  assert.ok(blocked(w.stop()), 'the test is still edited: naming another file as the goalpost changes nothing');
+  assert.deepEqual(latest(d).goalposts, ['test/add.test.js'], 'the record is put right from the second copy');
+  json(d, '.sawbuck/results.json', (o) => { delete o.latest.goalposts; }); assert.ok(blocked(w.stop()), 'the list removed');
+  // the metric names removed, then the pass that comes from another metric
+  d = repo(false);
+  put(d, 'src/add.js', '// TODO tidy\n' + readFileSync(join(d, 'src/add.js'), 'utf8'));
+  put(d, 'promptwheel.config.json', JSON.stringify({ repeat: 1, metrics: [
+    { name: 'tests_pass', cmd: `${JSON.stringify(process.execPath)} --test 2>&1`, extract: 'exit', direction: 'pass', guard: true },
+    { name: 'todos', cmd: 'grep -rn TODO src | wc -l', extract: 'number', direction: 'down', guard: true }] }) + '\n');
+  save(d, 'a contract with a second metric'); w = wired(d);
+  w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); save(d, 'make it green'); assert.ok(blocked(w.stop()));
+  json(d, '.sawbuck/results.json', (o) => { delete o.latest.metrics; });
+  put(d, 'src/add.js', 'exports.add=(a,b)=>a-b\nexports.mul=(a,b)=>a/b\n'); save(d, 'tidy; rework mul');
+  assert.ok(blocked(w.stop()), 'the names are read from the second copy: another metric\'s win does not take it down');
+  rmSync(join(d, '.sawbuck', 'results.json')); assert.ok(blocked(w.stop()), 'and with the record deleted');
+});
+test('claim: accepting the test change in a turn that made more than one commit: the message gives the line with the span, a reason for the last commit alone does not end it, and the line does', () => {
+  const d = signed(false); const w = wired(d); w.prompt('make the add test pass'); edit(d, 'test/add.test.js', game); save(d, 'make it green'); put(d, 'NOTES.md', 'n\n'); save(d, 'notes');
+  for (let i = 0; i < 3; i++) assert.ok(blocked(w.stop()));
+  const base = git(d, 'rev-parse', 'HEAD~2').slice(0, 12);
+  const told = w.stop(); assert.match(told, lit(`${PIN} check --base ${base} --allow \\"<why>\\"`), `the person is given the line that names the span: ${told}`);
+  const r1 = sb(d, 'check', '--allow', 'the spec changed'); assert.match(r1.out, lit(`${PIN} check --base ${base} --allow "<reason>"`), `a reason for the last commit alone says what to type: ${r1.out}`);
+  w.prompt('again'); assert.ok(blocked(w.stop()), 'and the verdict still stands');
+  mkdirSync(join(d, 'src', 'deep'), { recursive: true });
+  const r2 = sb(join(d, 'src', 'deep'), 'check', '--base', base, '--allow', 'the spec changed'); assert.equal(r2.code, 0, r2.out);
+  assert.ok(!blocked(w.stop()), 'the reason for the whole span ends it, typed from a subfolder'); assert.equal(latest(d).kind, 'allowed');
+  // one commit: the line has no span in it, as before
+  const one = gamedTurn(); for (let i = 0; i < 3; i++) one.w.stop();
+  const t1 = one.w.stop(); assert.match(t1, lit(`${PIN} check --allow \\"<why>\\"`)); assert.doesNotMatch(t1, /check --base/);
+});
+test('claim: the check says a win was gamed even when its word for the change is "sent back" for something else', () => {
+  // a deleted failing test in a signed repo: the count of tests fails the check, and the green was gamed as well
+  let d = signed(false); edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); save(d, 'make it green');
+  let r = sb(d, 'check'); assert.equal(r.code, 1); assert.match(r.out, /sent back: this change made something worse/); assert.match(r.out, /a win in this change was gamed as well/, r.out);
+  // a gamed test beside a path that takes no reason: only one thing takes a reason, so no list was printed, and the gamed test went unsaid
+  d = signed(false); edit(d, 'test/add.test.js', game); put(d, '.npmrc', 'x\n'); save(d, 'make it green');
+  r = sb(d, 'check'); assert.equal(r.code, 1); assert.match(r.out, /sent back: a protected path changed/); assert.match(r.out, /a win in this change was gamed as well/, r.out);
+  // the controls: a plain gamed commit says gamed once, and a change that only makes something worse does not say gamed
+  d = signed(false); edit(d, 'test/add.test.js', game); save(d, 'make it green'); r = sb(d, 'check'); assert.equal(r.code, 2); assert.doesNotMatch(r.out, /as well/);
+  d = signed(true); put(d, '.npmrc', 'x\n'); save(d, 'registry'); r = sb(d, 'check'); assert.equal(r.code, 1); assert.doesNotMatch(r.out, /gamed/);
+});
+test('limit: a test deleted from a green suite, a count worse with nothing gamed, is said once at the end of the turn and not sent back; the check on the commit fails it', () => {
+  const d = signed(true); const w = wired(d); w.prompt('tidy the tests');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'mul'")).join('\n')); save(d, 'drop the mul test');
+  const c = check(d); assert.equal(c.code, 1, JSON.stringify(c.metrics)); assert.ok(!c.metrics.some((m) => m.gamed === true), 'nothing was won, so nothing is gamed');
+  const o = w.stop(); assert.ok(!blocked(o), o); assert.match(o, /Sawbuck caught a problem/); assert.equal(latest(d).kind, 'regression');
+  assert.doesNotMatch(w.stop(), /Sawbuck caught/, 'said once');
+});
+// Found in the same rehearsal, and NOT fixed in 0.1.73 (roadmap L41). In Claude Code 2.1.318 a line the person runs with
+// `!` starts a model turn of its own, and no prompt event reaches the hooks for it: the baseline is the one the last
+// typed prompt took. This holds today's behaviour so the README's sentence stays true; the fix turns its middle round.
+test('limit: a shell line a person runs inside a session starts a turn with no prompt event, so their own protected edit made that way is sent back as the agent\'s; made between two typed prompts it is theirs', () => {
+  const d = signed(true); const w = wired(d); w.prompt('look around'); assert.ok(!blocked(w.stop()), 'a quiet turn ends');
+  put(d, '.npmrc', 'fund=false\n');   // the person's own edit, by a `!` line: the next thing the hooks see is the end of a turn
+  const o = w.stop(); assert.ok(blocked(o), 'the limit: read as the agent\'s'); assert.match(o, /Undo the changes YOU made/);
+  const e = signed(true); const x = wired(e); x.prompt('look around'); x.stop(); put(e, '.npmrc', 'fund=false\n');
+  x.prompt('next'); assert.ok(!blocked(x.stop()), 'with a typed prompt after it, the same edit is the person\'s');
+});
+test('claim: the git hook records a gamed test as gamed when the same commit drops the test or touches a protected path', () => {
+  let d = hookRepo(); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');
+  edit(d, 'test/add.test.js', (s) => s.split('\n').filter((l) => !l.includes("'add'")).join('\n')); let o = commit(d, 'make it green');
+  assert.equal(latest(d).kind, 'gamed', `the failing test deleted: ${JSON.stringify(latest(d))}`); assert.match(o, /gamed/);
+  d = hookRepo(); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); sb(d, 'attach', '--git');
+  edit(d, 'test/add.test.js', game); put(d, '.npmrc', 'x\n'); o = commit(d, 'make it green');
+  assert.equal(latest(d).kind, 'gamed', `beside a protected path: ${JSON.stringify(latest(d))}`); assert.equal(latest(d).file, 'test/add.test.js');
+  assert.match(String(latest(d).reason), /protected path/, 'and the reason still names the protected path, which the git hook has no wall for');
+});
 test('limit: two sessions in one checkout: the one that touched a protected file is sent back, and so is the other, told not to undo what it did not change', () => {
   const d = signed(true); const a = wired(d, 'A'), b = wired(d, 'B');
   a.prompt(); put(d, '.npmrc', 'x\n'); b.prompt();
@@ -197,7 +410,7 @@ test('limit: two sessions in one checkout: the one that touched a protected file
   const o = b.stop(); assert.ok(blocked(o), 'the other session is sent back too (one shared record)'); assert.match(o, /do not revert anything you did not change/);
 });
 test('claim: a person editing a protected path between turns is not the agent', () => { const d = signed(true); const w = wired(d); w.prompt(); w.stop(); put(d, '.npmrc', 'x\n'); w.prompt(); assert.ok(!blocked(w.stop())); });
-test('claim: a sent-back protected path says how a person accepts it: --allow for the rules file and the hooks, removing the rule for the rest', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'Dockerfile', 'FROM node:22\n'); save(d, 'docker'); let o = sb(d, 'check').out; assert.match(o, /sent back/); assert.match(o, /remove that rule from promptwheel\.config\.json in a commit of its own/); assert.doesNotMatch(o, /sawbuck check --allow/); assert.equal(sb(d, 'check', '--allow', 'I asked for it').code, 1, 'and --allow really does not clear it'); git(d, 'reset', '-q', '--hard', 'HEAD~1'); put(d, '.claude/settings.json', '{}\n'); save(d, 'hooks'); o = sb(d, 'check').out; assert.match(o, /sawbuck check --allow "<reason>"/); assert.doesNotMatch(o, /remove that rule/); assert.equal(sb(d, 'check', '--allow', 'team hooks').code, 0); });
+test('claim: a sent-back protected path says how a person accepts it: --allow for the rules file and the hooks, removing the rule for the rest', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); put(d, 'Dockerfile', 'FROM node:22\n'); save(d, 'docker'); let o = sb(d, 'check').out; assert.match(o, /sent back/); assert.match(o, /remove that rule from promptwheel\.config\.json in a commit of its own/); assert.doesNotMatch(o, /if a person meant this|check --allow "<reason>" accepts/); assert.equal(sb(d, 'check', '--allow', 'I asked for it').code, 1, 'and --allow really does not clear it'); git(d, 'reset', '-q', '--hard', 'HEAD~1'); put(d, '.claude/settings.json', '{}\n'); save(d, 'hooks'); o = sb(d, 'check').out; assert.match(o, lit(`${PIN} check --allow "<reason>"`)); assert.doesNotMatch(o, /remove that rule/); assert.equal(sb(d, 'check', '--allow', 'team hooks').code, 0); });
 test('claim: attach --shared in a repo that already has its rules says the commit of that file needs --allow; with no rules it does not', () => { const d = repo(true); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign'); assert.match(sb(d, 'attach', '--shared').out, /protected path in this repo[^\n]*--allow "team hooks"/); const e = repo(true); assert.doesNotMatch(sb(e, 'attach', '--shared').out, /protected path in this repo/); });
 test('claim: it sends a turn back up to three times by default, then lets it end', () => { const d = signed(true); const w = wired(d); w.prompt(); put(d, '.npmrc', 'x\n'); const seen = []; for (let i = 0; i < 4; i++) seen.push(blocked(w.stop())); assert.deepEqual(seen, [true, true, true, false]); });
 
@@ -402,7 +615,7 @@ test('claim: an agent that asks the person about the test may end the turn, and 
   const { d } = gamedTurn();
   const o = stopSaying(d, 'I changed test/add.test.js to expect 0 because add subtracts. That may be the wrong call: should add really return 4 for add(2,2)?');
   assert.ok(!blocked(o), o); const m = JSON.parse(o).systemMessage;
-  assert.match(m, /your agent is asking you about it/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow "<why>"/);
+  assert.match(m, /your agent is asking you about it/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, lit(`accept it: ${PIN} check --allow "<why>"`));
   assert.equal(JSON.parse(readFileSync(join(d, '.sawbuck/results.json'), 'utf8')).latest.kind, 'gamed', 'asking does not clear the verdict');
 });
 test('limit: an agent that says it is done, with no question to the person, is still sent back', () => {
@@ -411,13 +624,13 @@ test('limit: an agent that says it is done, with no question to the person, is s
 test('claim: after three send-backs the person is told the three choices', () => {
   const { w } = gamedTurn(); for (let i = 0; i < 3; i++) assert.ok(blocked(w.stop()));
   const o = w.stop(); assert.ok(!blocked(o)); const m = JSON.parse(o).systemMessage;
-  assert.match(m, /stopped blocking after 3 tries/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
+  assert.match(m, /stopped blocking after 3 tries/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, lit(`${PIN} check --allow`));
 });
 test('claim: enforce.maxBlocks 0 asks the person first: a gamed turn is not sent back, and the person gets the three choices at once', () => {
   const d = signed(false); put(d, 'sawbuck.config.json', JSON.stringify({ enforce: { maxBlocks: 0 } }) + '\n'); save(d, 'ask me first');
   const w = wired(d); w.prompt('make add pass'); edit(d, 'test/add.test.js', (s) => s.replace('add(2,2),4', 'add(2,2),0')); save(d, 'make it green');
   const o = w.stop(); assert.ok(!blocked(o), o); const m = JSON.parse(o).systemMessage;
-  assert.match(m, /set to ask you first/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, /sawbuck check --allow/);
+  assert.match(m, /set to ask you first/); assert.match(m, /git checkout [0-9a-f]+ -- test\/add\.test\.js/); assert.match(m, lit(`${PIN} check --allow`));
 });
 test('claim: the person accepting the test change with --allow ends the send-back, and the hold asks before anyone types --allow', () => {
   const { d, w } = gamedTurn(); assert.ok(blocked(w.stop()));
@@ -627,7 +840,7 @@ test('claim: doctor says a team file written before the session-start line is in
   const d = repo(true); assert.equal(sb(d, 'attach', '--shared').code, 0); const f = join(d, '.claude/settings.json');
   const cfg = JSON.parse(readFileSync(f, 'utf8')); cfg.hooks.SessionStart = cfg.hooks.SessionStart.filter((e) => e.matcher === 'compact');   // as 0.1.68 wrote it
   writeFileSync(f, JSON.stringify(cfg, null, 2) + '\n');
-  const r = sb(d, 'doctor'); assert.match(r.out, /PART\s+claude-shared/); assert.match(r.out, /missing: SessionStart\[startup\], SessionStart\[resume\]/); assert.match(r.out, /sawbuck attach --shared again/);
+  const r = sb(d, 'doctor'); assert.match(r.out, /PART\s+claude-shared/); assert.match(r.out, /missing: SessionStart\[startup\], SessionStart\[resume\]/); assert.match(r.out, lit(`${PIN} attach --shared again`));
   assert.match(sb(d, 'attach', '--shared').out, /updated the shared project Claude Code hooks/);
   assert.equal(JSON.parse(readFileSync(f, 'utf8')).hooks.SessionStart.length, 3);
 });
@@ -703,7 +916,7 @@ test('claim: a reason written about one change does not wave through another: wi
   // a reason about the rules file, and the gamed test rides along: nothing is let through
   let r = sb(d, 'check', '--allow', 'more repeats');
   assert.notEqual(r.code, 0); assert.doesNotMatch(r.out, /allowed with --allow/);
-  assert.match(r.out, /your reason did not let .* through/); assert.ok(r.out.includes(`sawbuck check --allow "${names}: <reason>"`), r.out);
+  assert.match(r.out, /your reason did not let .* through/); assert.ok(r.out.includes(`${PIN} check --allow "${names}: <reason>"`), r.out);
   assert.deepEqual(check(d, '--allow', 'more repeats').allowed.cleared, []);
   // naming one lets that one through and says what is left
   r = sb(d, 'check', '--allow', 'contract-frozen: more repeats');
@@ -1334,7 +1547,7 @@ test('claim: a CI check that pins an older engine keeps it; contract says so, gi
   assert.match(r.out, /\.github\/workflows\/sawbuck\.yml runs an older engine \(v0\.8\.9\); this sawbuck pins v/);
   assert.ok(r.out.includes(`uses: ${line}`), 'with the line to change it to');
   assert.ok(readFileSync(wf, 'utf8').includes(OLD_PIN[0]), 'and the file is left as it was');
-  assert.match(r.out, /That is a workflow change, so it takes a person's reason: sawbuck check --allow "<reason>", or on a pull request a comment from someone who did not open it\./);
+  assert.match(r.out, lit(`That is a workflow change, so it takes a person's reason: ${PIN} check --allow "<reason>", or on a pull request a comment from someone who did not open it.`));
   assert.match(r.out, /Change it yourself: at the end of a turn an agent's own change to a protected path is sent back, with a reason or without\./);
   assert.doesNotMatch(r.out, /takes no reason/);
   assert.match(sb(d, 'contract').out, /runs an older engine/, 'plain contract says it too');
@@ -1364,7 +1577,7 @@ test('claim: a workflow change is sent back until a person gives a reason; --all
   const d = repo(true); put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign');
   put(d, '.github/workflows/ci.yml', 'name: ci\non: [push, pull_request]\njobs: {}\n'); save(d, 'ci: on pull requests too');
   let o = sb(d, 'check'); assert.equal(o.code, 1, o.out); assert.match(o.out, /protected path "workflows-frozen" touched/); assert.match(o.out, /sent back/);
-  assert.match(o.out, /if a person meant this: sawbuck check --allow "<reason>" accepts "workflows-frozen"/); assert.doesNotMatch(o.out, /takes no --allow/);
+  assert.match(o.out, lit(`if a person meant this: ${PIN} check --allow "<reason>" accepts "workflows-frozen"`)); assert.doesNotMatch(o.out, /takes no --allow/);
   git(d, 'commit', '-q', '--amend', '-m', 'ci: on pull requests too\n\nSawbuck-Allow: I meant it');
   assert.equal(sb(d, 'check').code, 1, 'a commit message is not a person');
   o = sb(d, 'check', '--allow', 'CI runs on pull requests now'); assert.equal(o.code, 0, o.out); assert.match(o.out, /CI runs on pull requests now/, 'the reason shows in the result');
@@ -1615,7 +1828,7 @@ test('claim: the send-back for a path that takes a reason says who can make the 
   const { prompt, stop } = ownHooks(d);
   prompt('run CI on pull requests too'); put(d, '.github/workflows/ci.yml', 'name: ci\non: [push, pull_request]\njobs: {}\n'); save(d, 'ci: on pull requests too');
   const wf = stop(); assert.match(wf, /"decision":"block"/); assert.match(wf, /workflows-frozen/);
-  assert.match(wf, /takes a person's reason/); assert.match(wf, /tell them to make the edit themselves and run: sawbuck check --allow/);
+  assert.match(wf, /takes a person's reason/); assert.match(wf, lit(`tell them to make the edit themselves and run this exact line: ${PIN} check --allow `));   // the reason's quotes are escaped inside the hook's JSON
   assert.match(wf, /Running --allow yourself does not end this/);
   assert.doesNotMatch(wf, /change the rule in the contract or revert the path/, 'the old last line sent an agent, and through it a person, to a way that is sent back again');
   put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'undo'); assert.doesNotMatch(stop(), /"decision":"block"/);
@@ -1644,4 +1857,116 @@ test('claim: in a repo git refuses because another user owns it, check, contract
     assert.doesNotMatch(r.out, /not a git repo|git init|Try it now/i, `${a.join(' ')}: ${r.out}`);
   }
   assert.ok(!existsSync(join(d, '.claude')), 'and attach wrote nothing');
+});
+
+// --- which copy answers (0.1.72) ---------------------------------------------------------------------------------
+// A line with no version in it is answered by whatever sawbuck the machine holds, and a global copy does not update
+// itself. Measured on 2026-11-15 (proof-bench/old-global): beside a global 0.1.46, a bare `sawbuck`, `npx sawbuck` and
+// the rule's own `npx -y sawbuck check` ran 0.1.46 on npm 8 to 11; a repo wired by the newest copy with attach --git
+// had every commit checked by 0.1.46, and an honest fix was recorded as gamed; nothing said so.
+// A stand-in for another sawbuck installed on the machine: bin/sawbuck -> ../lib/node_modules/sawbuck/sawbuck.mjs with
+// a package.json beside it, as npm lays a global install out. It writes down each call and does nothing else.
+function otherCopy(version) {
+  const root = mkdtempSync(join(tmpdir(), 'other-copy-')); const pkg = join(root, 'lib', 'node_modules', 'sawbuck');
+  mkdirSync(pkg, { recursive: true }); mkdirSync(join(root, 'bin'));
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'sawbuck', version }) + '\n');
+  writeFileSync(join(pkg, 'sawbuck.mjs'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(join(root, 'calls.log'))}\n`); chmodSync(join(pkg, 'sawbuck.mjs'), 0o755);
+  symlinkSync(join('..', 'lib', 'node_modules', 'sawbuck', 'sawbuck.mjs'), join(root, 'bin', 'sawbuck'));
+  return { bin: join(root, 'bin'), calls: () => { try { return readFileSync(join(root, 'calls.log'), 'utf8'); } catch { return ''; } } };
+}
+// this very copy as the first sawbuck on PATH: what a person has who installed it globally and runs it bare
+function thisCopyOnPath() { const bin = mkdtempSync(join(tmpdir(), 'this-copy-')); symlinkSync(CLI, join(bin, 'sawbuck')); return bin; }
+// the machine as it really is for these claims: PATH is read (the suite's own "look nowhere" is taken out)
+const realPath = (bin) => { const { SAWBUCK_PATH_LOOK, ...e } = ENV; return { ...e, PATH: `${bin}:/usr/bin:/bin` }; };
+const look = (bin) => ({ ...ENV, SAWBUCK_PATH_LOOK: bin });
+const sbEnv = (d, env, ...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: d, encoding: 'utf8', env }); return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }; };
+const hookWith = (d, env, ev, session = 's', text = 'x') => { const h = JSON.parse(readFileSync(join(d, '.claude/settings.local.json'), 'utf8')).hooks; return spawnSync('sh', ['-c', h[ev][0].hooks[0].command], { cwd: d, encoding: 'utf8', env, input: JSON.stringify({ hook_event_name: ev, cwd: d, session_id: session, prompt: text }) }).stdout || ''; };
+
+test('claim: a repo wired with attach --git is checked by the sawbuck that wired it, also where an older sawbuck is first on PATH', () => {
+  const d = hookRepo(); const old = otherCopy('0.1.46');
+  assert.equal(sbEnv(d, realPath(old.bin), 'attach', '--git').code, 0);
+  edit(d, 'test/add.test.js', cheat); git(d, 'add', '-A');
+  spawnSync('git', ['commit', '-qm', 'make it green'], { cwd: d, encoding: 'utf8', env: realPath(old.bin) });
+  assert.equal(old.calls(), '', 'the older copy on PATH was not asked about the commit');
+  assert.ok((record(d).gamed || 0) >= 1, 'the copy that wired the hook checked the commit and caught it');
+});
+test('claim: a git hook wired by this sawbuck stands aside for a NEWER one on PATH, so a person who updates their copy is followed', () => {
+  const d = hookRepo(); assert.equal(sb(d, 'attach', '--git').code, 0); const newer = otherCopy('99.0.0');
+  edit(d, 'test/add.test.js', cheat); git(d, 'add', '-A');
+  spawnSync('git', ['commit', '-qm', 'make it green'], { cwd: d, encoding: 'utf8', env: realPath(newer.bin) });
+  assert.match(newer.calls(), /^__hook --repo /, 'the newer copy was handed the commit');
+  assert.ok(!(record(d).gamed), 'and this copy did not check it a second time');
+});
+test('claim: attach --git again moves a hook block another sawbuck wrote to the copy that runs it, in place, and doctor says when an older copy would answer a hook', () => {
+  const d = hookRepo(); const old = otherCopy('0.1.46'); const pc = join(d, '.git/hooks/post-commit');
+  assert.equal(sb(d, 'attach', '--git').code, 0);
+  // the block as every sawbuck before 0.1.72 wrote it: PATH first
+  const mine = readFileSync(pc, 'utf8'); const self = /\[ -f ("[^"]+sawbuck\.mjs") \]/.exec(mine)[1];
+  writeFileSync(pc, `#!/bin/sh\n# >>> sawbuck >>>\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${JSON.stringify(d)}; elif [ -f ${self} ]; then node ${self} __hook --repo ${JSON.stringify(d)}; else npx -y sawbuck@0.1.71 __hook --repo ${JSON.stringify(d)}; fi) || true\n# <<< sawbuck <<<\necho mine\n`);
+  const doc = sbEnv(d, look(old.bin), 'doctor');
+  assert.equal(doc.code, 1, doc.out); assert.match(doc.out, /OLD\s+git/); assert.match(doc.out, /an older sawbuck answers this hook: 0\.1\.46 at /); assert.match(doc.out, lit(`${PIN} attach --git again`));
+  assert.equal(sbEnv(d, look(''), 'doctor').code, 0, 'with no older copy on PATH the same block is in order');
+  const again = sbEnv(d, look(old.bin), 'attach', '--git'); assert.equal(again.code, 0); assert.match(again.out, /the git hook in .* now runs this sawbuck/);
+  const now = readFileSync(pc, 'utf8');
+  assert.ok(now.indexOf('[ -f ') < now.indexOf('command -v sawbuck'), 'the block asks for the copy that wired it first'); assert.match(now, /\necho mine\n$/, 'the person\'s own hook lines are as they were');
+  assert.equal((now.match(/>>> sawbuck >>>/g) || []).length, 1, 'one block, not two');
+  const after = sbEnv(d, look(old.bin), 'doctor'); assert.match(after.out, /OK\s+git/); assert.match(after.out, /NOTE\s+an older copy of sawbuck is installed on this machine, 0\.1\.46/);
+  assert.match(sb(d, 'attach', '--git').out, /already attached \(git\)/, 'a block this copy wrote is left alone');
+});
+test('claim: where an older sawbuck is first on PATH, attach says so, the agent is told once a session which line reaches the copy that is watching, and the person is told once', () => {
+  const d = signed(true); const old = otherCopy('0.1.46'); const env = look(old.bin);
+  const at = sbEnv(d, env, 'attach', '--claude'); assert.equal(at.code, 0, at.out);
+  assert.match(at.out, /an older copy of sawbuck is installed on this machine, 0\.1\.46 \(.*\/bin\/sawbuck\)/); assert.match(at.out, /To update it: npm i -g sawbuck@latest/);
+  const first = hookWith(d, env, 'UserPromptSubmit', 's1', 'add a sub function');
+  assert.match(first, /rules \(sawbuck\)/, 'the frame is there as before');
+  assert.match(first, /runs an older copy, 0\.1\.46/); assert.match(first, lit(`run this exact line instead: ${PIN} check`));
+  assert.doesNotMatch(hookWith(d, env, 'UserPromptSubmit', 's1', 'and a test for it'), /older copy/, 'once a session, with the frame');
+  assert.match(hookWith(d, env, 'UserPromptSubmit', 's2', 'a new session'), /runs an older copy, 0\.1\.46/);
+  const end = hookWith(d, env, 'Stop', 's2'); assert.doesNotMatch(end, /"decision":"block"/);
+  assert.match(JSON.parse(end).systemMessage, /an older copy of sawbuck is installed on this machine, 0\.1\.46/); assert.match(JSON.parse(end).systemMessage, /To update it: npm i -g sawbuck@latest/);
+  assert.equal(hookWith(d, env, 'Stop', 's2'), '', 'the person is told once for that version');
+  // nothing is said where no other copy is on PATH, where the copy on PATH is this one, or where it is newer
+  const e = signed(true); assert.equal(sb(e, 'attach', '--claude').code, 0);
+  for (const bin of ['', thisCopyOnPath(), otherCopy('99.0.0').bin]) {
+    assert.doesNotMatch(hookWith(e, look(bin), 'UserPromptSubmit', `q${bin.length}`), /older copy/); assert.equal(hookWith(e, look(bin), 'Stop', `q${bin.length}`), '');
+  }
+});
+test('claim: a line Sawbuck gives a person to type reaches the copy that printed it: pinned by version, and a bare `sawbuck` only where that is this copy', () => {
+  const d = repo(true); put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'ci'); assert.equal(sb(d, 'contract').code, 0); save(d, 'sign');
+  put(d, '.github/workflows/ci.yml', 'name: ci\non: [push, pull_request]\njobs: {}\n'); save(d, 'ci: on pull requests too');
+  const hint = (env) => sbEnv(d, env, 'check').out;
+  assert.match(hint(look('')), lit(`if a person meant this: ${PIN} check --allow "<reason>" accepts`), 'no sawbuck on PATH (a person who has only the plugin): a bare `sawbuck` is no command at all');
+  assert.match(hint(look(otherCopy('0.1.46').bin)), lit(`if a person meant this: ${PIN} check --allow "<reason>" accepts`), 'an older copy on PATH: a bare `sawbuck` would be that one');
+  assert.match(hint(look(thisCopyOnPath())), /if a person meant this: sawbuck check --allow "<reason>" accepts/, 'this copy on PATH: the short form is right');
+  const st = sbEnv(d, look(otherCopy('0.1.46').bin), 'status').out;
+  assert.match(st, /Another copy\s+·\s+an older copy of sawbuck is installed on this machine, 0\.1\.46/); assert.doesNotMatch(sbEnv(d, look(''), 'status').out, /Another copy/);
+});
+test('claim: the README says a global copy does not update itself, how to see which copy answers, and the line that updates it', () => {
+  const readme = readFileSync(join(HERE, '..', 'README.md'), 'utf8');
+  assert.match(readme, /npm i -g sawbuck@latest/); assert.match(readme, /does not update itself/); assert.match(readme, /sawbuck --version/);
+  assert.match(readme, /\*\*Which copy answers\.\*\*/);
+});
+test('claim: run through npx, the look for another copy is not fooled by the folder npm puts first on PATH for the length of that run', () => {
+  // `npx sawbuck@<v> attach` runs with <npm cache>/_npx/<hash>/node_modules/.bin first on PATH, and the sawbuck there is
+  // this very copy. A person's own shell never has that folder. Seen in the rehearsal of 0.1.72 (2026-11-15): attach
+  // through the plugin's pinned line said nothing about the global 0.1.46 behind it, and the hint named a bare `sawbuck`.
+  const npx = join(mkdtempSync(join(tmpdir(), 'npm-cache-')), '_npx', 'abc123', 'node_modules', '.bin'); mkdirSync(npx, { recursive: true }); symlinkSync(CLI, join(npx, 'sawbuck'));
+  const old = otherCopy('0.1.46'); const d = signed(true);
+  const at = sbEnv(d, look(`${npx}:${old.bin}`), 'attach', '--claude'); assert.equal(at.code, 0, at.out);
+  assert.match(at.out, /an older copy of sawbuck is installed on this machine, 0\.1\.46/, 'the older copy behind npx\'s own folder is seen');
+  put(d, '.github/workflows/ci.yml', 'name: ci\non: push\njobs: {}\n'); save(d, 'a workflow');
+  assert.match(sbEnv(d, look(`${npx}:${old.bin}`), 'check').out, lit(`if a person meant this: ${PIN} check --allow`), 'and the line for the person is the pinned one');
+  assert.match(sbEnv(d, look(npx), 'check').out, lit(`if a person meant this: ${PIN} check --allow`), 'with nothing behind it, a bare `sawbuck` is still no command in the person\'s shell');
+});
+test('limit: where two repos share one hooks folder (a global core.hooksPath), attach --git in the second says so and leaves the first repo\'s block alone', () => {
+  // attach --git writes its block where git will run it, and under a global core.hooksPath that is one folder for every
+  // repo. Found while running the live check under a person's own git settings (2026-11-15). Not fixed here: the first
+  // attach still writes into that shared folder. What must not happen is the second repo taking the first one's check.
+  const hooks = mkdtempSync(join(tmpdir(), 'shared-hooks-')); const a = hookRepo(), b = hookRepo();
+  for (const d of [a, b]) git(d, 'config', 'core.hooksPath', hooks);
+  assert.equal(sb(a, 'attach', '--git').code, 0); const was = readFileSync(join(hooks, 'post-commit'), 'utf8'); assert.ok(was.includes(`--repo ${JSON.stringify(a)}`));
+  const r = sb(b, 'attach', '--git'); assert.notEqual(r.code, 0, r.out);
+  assert.match(r.out, /already holds sawbuck's block for another repo/); assert.match(r.out, /shared between repos \(core\.hooksPath\)/);
+  assert.equal(readFileSync(join(hooks, 'post-commit'), 'utf8'), was, 'the first repo\'s block is as it was');
+  assert.match(sb(a, 'attach', '--git').out, /already attached \(git\)/);
 });

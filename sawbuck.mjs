@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { PW } from './bins.mjs';
 import { frameBlock, mandatesInForce, protectedDirty, protectedAmong, blobAt, lockState, gitNames, gitRefuses } from './contract.mjs';
+import { cli, onPath, olderOnPath, newerOnPath, olderSaid } from './copies.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 // the npx form a hook runs: offline or on a bad network a plain `npx -y` asks the registry first and retries for about
@@ -285,17 +286,34 @@ switch (cmd) {
     const args = dirty ? ['run', '--working'] : ['run', '--base', base || 'HEAD~1', '--head', head || 'HEAD'];
     const { rep, code, why } = gateReport(repo, [...args, ...pass]);
     if (!rep || !rep.verdict) { out(`sawbuck: could not run the check here: ${why || 'the engine gave no verdict'}`); process.exit(64); }
-    // a person's --allow on the last commit clears the gamed verdict standing there, so the end-of-turn check stops
-    // sending the turn back (the hold asks before an agent can type --allow). Only that commit, only a gamed verdict.
-    if (rep.verdict === 'pass' && rep.allowed && !dirty && !base && !head) {
-      const rp = join(repo, '.sawbuck', 'results.json');
+    // A person's --allow clears the gamed verdict standing here, so the end of a turn stops sending it back (the hold
+    // asks before an agent can type --allow). Three things changed in 0.1.73, each typed on 0.1.72 first
+    // (proof-bench/beside-guard):
+    // - The reason has to be for the span the verdict stands on: the last commit when that is the span, `--base <where
+    //   it begins>` when the turn made more commits. Before, a reason for the last commit cleared a verdict measured
+    //   over more, and one given with --base cleared nothing.
+    // - It counts when it let the gamed part through, even where something a reason cannot reach still fails this
+    //   check (a protected path the person's own file rode in on, a count of tests that went down). That is another
+    //   matter, said below, and the end of a turn has its own rule for it.
+    // - The record is found from the top of the repo, so the line works from a subfolder.
+    const top = g('rev-parse', '--show-toplevel') || repo;
+    const gateWeak = !!(rep.gate && Array.isArray(rep.gate.weakened) && rep.gate.weakened.length && !rep.gate.allowed);
+    const gamedLeft = (rep.metrics || []).some((x) => x.gamed === true || x.unprovable === true) || gateWeak;
+    const letGamedThrough = !!rep.allowed && (rep.allowed.cleared || []).some((l) => !l.startsWith('mandate:')) && !gamedLeft;
+    let cleared = false, standingHint = '';
+    if (!dirty && (!head || g('rev-parse', `${head}^{commit}`) === g('rev-parse', 'HEAD'))) {
+      const rp = join(top, '.sawbuck', 'results.json');
       try { const r = JSON.parse(readFileSync(rp, 'utf8')); const sha8 = g('rev-parse', 'HEAD').slice(0, 8);
-        if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); }
+        if (r.latest && r.latest.kind === 'gamed' && r.latest.sha === sha8) {
+          const sameSpan = !r.latest.base || r.latest.base === g('rev-parse', `${base || 'HEAD~1'}^{commit}`);
+          if (letGamedThrough && sameSpan) { r.latest = { ...r.latest, kind: 'allowed', allowed: { reason: rep.allowed.reason, at: new Date().toISOString() } }; writeFileSync(rp, JSON.stringify(r, null, 2) + '\n'); cleared = true; }
+          else if (!sameSpan && pass.includes('--allow')) { const from = String(r.latest.base).slice(0, 12); standingHint = `sawbuck: a gamed verdict on ${r.latest.file} stands here over more than ${base ? 'that span' : 'the last commit'} (it begins at ${from}), and a reason covers only the span it is given for. To accept that test change: ${cli(`check --base ${from} --allow "<reason>"`)}`; }
+        }
       } catch { /* not attached here: nothing stands to clear */ }
     }
     // what a person let through, and why, joins the record where sawbuck is attached (allowed.mjs): kept, and shown
     // with the prompt that names the test or path, the way a revert is. Under --json too; the output stays the report.
-    const kept = (rep.verdict === 'pass' && rep.allowed) ? recordAllowed(g('rev-parse', '--show-toplevel') || repo, rep, { dirty, base: base || 'HEAD~1', head: head || 'HEAD' }) : null;
+    const kept = (rep.allowed && (rep.verdict === 'pass' || letGamedThrough)) ? recordAllowed(top, rep, { dirty, base: base || 'HEAD~1', head: head || 'HEAD' }) : null;
     if (json) { out(JSON.stringify(rep)); process.exit(code); }
     const m = (rep.metrics || [])[0];
     // --allow as a person should type it here: one thing needs no name; with more than one, the reason names each one
@@ -328,7 +346,7 @@ switch (cmd) {
       // from 0.1.70 on) a workflow change take a reason; the rest are lifted first
       const names = (l) => l.map((x) => `"${x.name}"`).join(', ');
       const soft = rep.mandates.filter((x) => x.allowable), hard = rep.mandates.filter((x) => !x.allowable);
-      if (soft.length && !left.length) out(`sawbuck: if a person meant this: sawbuck check ${allowHow} accepts ${allowNames ? 'each thing it names' : names(soft)}, and the result shows the reason.`);
+      if (soft.length && !left.length) out(`sawbuck: if a person meant this: ${cli(`check ${allowHow}`)} accepts ${allowNames ? 'each thing it names' : names(soft)}, and the result shows the reason.`);
       if (hard.length) out(`sawbuck: ${names(hard)} ${hard.length > 1 ? 'take' : 'takes'} no --allow. To change that path on purpose, remove that rule from promptwheel.config.json in a commit of its own (that edit takes --allow), then make the change.${hard.some((x) => x.name === 'workflows-frozen') ? ' A contract written from 0.1.70 on lets a workflow change through with a reason: add "allowable": "flag" to the "workflows-frozen" rule here to get the same.' : ''}`);
     }
     else if (rep.verdict === 'fail') out('✗ sent back: this change made something worse.');
@@ -336,7 +354,13 @@ switch (cmd) {
     // more than one thing needs a person's reason: say what each one is, then (when a reason was given and did not
     // cover them all) what it let through, what it did not, and the line that would
     if (rep.verdict !== 'pass') many();
-    if (left.length) out(`sawbuck: your reason${(rep.allowed.cleared || []).length ? ` let ${rep.allowed.cleared.map(bare).join(', ')} through, and` : ''} did not let ${left.map(bare).join(', ')} through: a reason covers only what it names. To accept them all: sawbuck check ${allowHow}`);
+    if (left.length) out(`sawbuck: your reason${(rep.allowed.cleared || []).length ? ` let ${rep.allowed.cleared.map(bare).join(', ')} through, and` : ''} did not let ${left.map(bare).join(', ')} through: a reason covers only what it names. To accept them all: ${cli(`check ${allowHow}`)}`);
+    // "sent back" for a protected path or a count, with a gamed win in the same change: say that too. Where only one thing
+    // takes a reason no list is printed above, so a person saw the path or the count and never the gamed test.
+    if (rep.verdict === 'fail' && gamedLeft) out('🚩 a win in this change was gamed as well: it came from editing the test, config, or grader, not the source, and does not survive a source-only re-run. At the end of a turn that is sent back whatever else the change holds.');
+    // the reason let the gamed part through and this check still fails for something a reason cannot reach here
+    if (rep.verdict !== 'pass' && letGamedThrough && (cleared || kept)) out(`✎ your reason is kept for ${(rep.allowed.cleared || []).filter((l) => !l.startsWith('mandate:')).map(bare).join(', ')}: "${rep.allowed.reason}". That part is a person's call now, not a proof${cleared ? ', and the end of a turn no longer sends it back' : ''}. What is left still fails this check.`);
+    if (standingHint) out(standingHint);
     if (rep.verdict !== 'inconclusive' && setupFailure(rep)) out(`⚠ the setup command failed ${setupFailure(rep)}. The check still ran, so see whether "setup" in promptwheel.config.json is still right.`);
     if ((rep.metrics || []).some((x) => x.heldByTestEdit)) out('⚠ your tests changed too, and the old tests fail on this source. Fine for an intended change. Otherwise check the tests were not weakened: a green that stays green is not proved.');
     for (const x of rep.explained || []) out(`sawbuck: ${x.noted ? 'note' : 'needs a look'}: ${x.what}${x.items ? ': ' + x.items.join(', ') : ''}${!x.noted && x.allowable ? `. If you meant this: ${allowHow}, or on a pull request someone who did not open it comments sawbuck-allow: ${allowNames}<reason>` : ''}`);
@@ -447,7 +471,10 @@ switch (cmd) {
     // redid a reverted change and 27 of 27 asked first; on demand after the first edit, the agent checked once per
     // session and redid it 27 of 27; shown after the edit, 0 blind but only 19 of 27 held. Timing is the product.
     const named = hookEvent === 'UserPromptSubmit' && top ? namedFiles(repo, promptText) : [];
-    const o = [framed ? '' : frameBlock(repo), history ? contextBlock(repo, false, named) : (named.length ? [erasedBlock(repo, named), allowedBlock(repo, named)].filter(Boolean).join('\n') : '')].filter(Boolean).join('\n');
+    // with the frame, once a session: the rule in AGENTS.md gives the agent a line with no version in it, and beside an
+    // older global copy that line is answered by the older copy (copies.mjs). Say which line reaches this one.
+    const elder = framed || !top ? null : olderSaid();
+    const o = [framed ? '' : frameBlock(repo), elder ? elder.agent : '', history ? contextBlock(repo, false, named) : (named.length ? [erasedBlock(repo, named), allowedBlock(repo, named)].filter(Boolean).join('\n') : '')].filter(Boolean).join('\n');
     if (o) out(o);
     break;
   }
@@ -457,6 +484,12 @@ switch (cmd) {
       let o = ''; try { o = execFileSync(process.execPath, [HOOK, ...rest], { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] }); } catch (e) { o = String(e.stdout || ''); }
       o = o.trim(); if (o) process.stdout.write(o.startsWith('{') ? o : JSON.stringify({ systemMessage: o }));
       break;
+    }
+    // the git hook (no --stop): a newer sawbuck on PATH answers in this copy's place. The person updated their global
+    // copy after this one was wired in; an older one on PATH is never handed to. Once only (SAWBUCK_HANDED).
+    if (!rest.includes('--stop') && !process.env.SAWBUCK_HANDED) {
+      const newer = newerOnPath();
+      if (newer) { try { execFileSync(newer.path, ['__hook', ...rest], { stdio: 'inherit', env: { ...process.env, SAWBUCK_HANDED: '1' } }); } catch (e) { process.exit(e.status || 0); } break; }
     }
     try { execFileSync(process.execPath, [HOOK, ...rest], { stdio: 'inherit' }); } catch (e) { process.exit(e.status || 0); }
     break;
@@ -692,7 +725,10 @@ function contextBlock(repo, speak, extra = []) {
 function verifyAttach(repo) {
   // stderr ignored: a benign failing probe (rev-parse HEAD~1 on a one-commit repo) must not leak a "fatal:" line
   const g = (...a) => { try { return execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
-  if (!g('rev-parse', 'HEAD')) { out('   attached. Make a commit, then run `sawbuck check` to see it work.'); return; }
+  // an older sawbuck first on PATH: a bare `sawbuck` and `npx sawbuck` run that one, not the copy that just wired this
+  // repo, and nothing else would tell the person (copies.mjs)
+  { const said = olderSaid(); if (said) out(`   ⚠ ${said.person.replace(/^Sawbuck: /, '')}`); }
+  if (!g('rev-parse', 'HEAD')) { out(`   attached. Make a commit, then run \`${cli('check')}\` to see it work.`); return; }
   out('   verifying I can measure here (one-time)...');
   const base = g('rev-parse', '--verify', 'HEAD~1') ? 'HEAD~1' : 'HEAD';
   const { rep, why } = gateReport(repo, ['run', '--base', base, '--head', 'HEAD']);
@@ -746,14 +782,18 @@ function hiddenLeft(repo) {
 }
 
 // --- git post-commit (attach --git) -----------------------------------------
-// For any agent or none: every commit is checked, whatever made it. The hook prefers a `sawbuck` on PATH (so it
-// survives a reinstall), then the absolute path of the sawbuck that attached, then the same version through npx.
+// For any agent or none: every commit is checked, whatever made it. The hook runs the sawbuck that attached, by its
+// absolute path; a `sawbuck` on PATH when that file is gone (so it survives a reinstall); then the same version
+// through npx. Until 0.1.72 PATH came first, and where an older global copy was on PATH a repo wired by the newest
+// copy had every commit checked by the old one (proof-bench/old-global, part D: an honest fix recorded as gamed).
+// The copy that attached hands over to a NEWER one on PATH (`__hook`, below), so a person who updates their
+// global copy is followed, as before.
 function hookBlock(repo) {
   const r = JSON.stringify(repo);
   // git exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE into its hooks. The check shells out to git and would
   // inherit them, operate on the wrong repo, and silently catch nothing. Clear them first, in a subshell: the block
   // sits above the person's own hook lines, and those keep what git gave them.
-  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; elif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; else ${NPX} sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
+  return `${S_START}\n(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR\nif [ -f ${JSON.stringify(SELF)} ]; then ${nodeCmd()} ${JSON.stringify(SELF)} __hook --repo ${r}; elif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${r}; else ${NPX} sawbuck@${version} __hook --repo ${r}; fi) || true\n${S_END}\n`;
 }
 // The first commit after attach is checked only if there is a commit to check it from: HEAD as it stands now.
 // A baseline other hooks are keeping (Claude hooks wired here or at user level, a turn in flight) is left alone;
@@ -772,7 +812,23 @@ function wireGit(repo) {
   if (!relative(repo, pc).startsWith('..') && relative(gitDir(repo), pc).startsWith('..')) usage(`git hooks here live in ${relative(repo, dirname(pc))}/, inside the work tree (core.hooksPath), where the team or a hook tool owns the files, so attach --git writes nothing. Use plain \`sawbuck attach\`, or add this line by hand to the post-commit hook kept there (with husky: .husky/post-commit): (unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR; npx -y sawbuck@${version} __hook --repo "$PWD") || true`);
   const existed = existsSync(pc);
   const was = existed ? readFileSync(pc, 'utf8') : '';
-  if (was.includes(S_START)) { out(`sawbuck: already attached (git) in ${repo}`); return; }
+  if (was.includes(S_START)) {
+    // a block another sawbuck wrote is replaced by this one's, in place and with nothing else touched. Until 0.1.72 the
+    // block asked PATH first, so "attach --git again" has to be the way to move an older hook to the copy that runs it.
+    const i = was.indexOf(S_START), j = was.indexOf(S_END, i);
+    const cur = j > i ? was.slice(i, j + S_END.length + (was[j + S_END.length] === '\n' ? 1 : 0)) : '';
+    const want = hookBlock(repo);
+    // a block for ANOTHER repo: this hooks folder is shared (a global core.hooksPath). Replacing the block would take
+    // that repo's check away without a word, and "already attached" would be untrue of this one. Say what is there.
+    if (cur && !cur.includes(`--repo ${JSON.stringify(repo)}`)) usage(`the post-commit hook at ${pc} already holds sawbuck's block for another repo, so this hooks folder is shared between repos (core.hooksPath) and attach --git changes nothing here: one block cannot watch two repos. Use plain \`${cli('attach')}\` in this repo (Claude Code), or \`${cli('attach --shared')}\` for a team file.`);
+    if (cur && cur !== want) {
+      if (dry) { out(dryText([`modify  ${pc}  (the post-commit hook block, to run this sawbuck: ${version})`])); return; }
+      writeFileSync(pc, was.slice(0, i) + want + was.slice(i + cur.length));
+      out(`sawbuck: the git hook in ${repo} now runs this sawbuck (${version}). The block there was written by another copy.`);
+      return;
+    }
+    out(`sawbuck: already attached (git) in ${repo}`); return;
+  }
   // our block is shell, and git only runs an executable hook: a hook in another language, or one git is not running,
   // is left exactly as it is
   if (existed && was.startsWith('#!') && !/^#!\s*\S*\/(env\s+)?(ba|da|z|k)?sh\b/.test(was.split('\n')[0])) usage(`the post-commit hook here is not a shell script (${was.split('\n')[0]}). Add this line to it by hand: npx -y sawbuck@${version} __hook`);
@@ -1115,9 +1171,15 @@ function hookRuns(command) {
 }
 function doctorRepo(repo) {
   const checks = [];
-  // the git hook tries a sawbuck on PATH first, then the baked path, then npx
+  // the git hook runs the copy that wired it, then a sawbuck on PATH, then npx. A block written before 0.1.72 asks PATH
+  // first: where an older copy is on PATH, that copy answers every commit, and "the hook runs" is not the whole answer.
   const pc = gitPath(repo, 'hooks/post-commit');
-  try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) { const baked = extractBaked(b); let onPath = false; try { onPath = !!execFileSync('sh', ['-c', 'command -v sawbuck'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch {} checks.push({ mode: 'git', file: pc, ok: onPath || (!!baked && existsSync(baked)) || /npx -y sawbuck@/.test(b) }); } } } catch {}
+  try { if (existsSync(pc)) { const b = readFileSync(pc, 'utf8'); if (b.includes(S_START)) {
+    const baked = extractBaked(b); const bakedHere = !!baked && existsSync(baked); const p = onPath();
+    const pathFirst = /command -v sawbuck/.test(b) && (b.indexOf('command -v sawbuck') < b.indexOf('[ -f ') || !/\[ -f /.test(b));
+    const elder = p && !p.self && olderOnPath() && (pathFirst || !bakedHere) ? p : null;
+    checks.push({ mode: 'git', file: pc, ok: !!p || bakedHere || /npx -y sawbuck@/.test(b), elder });
+  } } } catch {}
   for (const [mode, f] of [['claude', join(repo, '.claude', 'settings.local.json')], ['claude-shared', join(repo, '.claude', 'settings.json')], ['user', join(homedir(), '.claude', 'settings.json')]]) {
     let cfg = null; try { cfg = JSON.parse(readFileSync(f, 'utf8')); } catch { continue; }
     const ours = (list) => (Array.isArray(list) ? list : []).flatMap((h) => (h && Array.isArray(h.hooks) ? h.hooks : [])).map((x) => x && x.command).filter((c) => typeof c === 'string' && OURS.test(c));
@@ -1134,13 +1196,16 @@ function doctorRepo(repo) {
   const receipt = Object.keys(readManifest(manifestPath(repo)).attachments || {}).filter((m) => !checks.some((c) => c.mode === m));
   if (!checks.length && !receipt.length) { out(`sawbuck: no attachment in ${repo}, nothing to check.`); return; }
   let bad = receipt.length;
-  const again = (m) => `sawbuck attach${{ git: ' --git', 'claude-shared': ' --shared', user: ' --user' }[m] || ''} again`;
+  const again = (m) => `${cli(`attach${{ git: ' --git', 'claude-shared': ' --shared', user: ' --user' }[m] || ''}`)} again`;
   out(`sawbuck doctor, ${repo}:`);
   for (const c of checks) {
-    if (!c.ok) bad++;
-    const why = c.ok ? '' : c.missing && c.missing.length ? `  (the hook set is incomplete, missing: ${c.missing.join(', ')}; run ${again(c.mode)})` : `  (the hook does not run: what it calls is gone; run ${again(c.mode)})`;
-    out(`  ${c.ok ? 'OK   ' : c.missing && c.missing.length ? 'PART ' : 'STALE'} ${c.mode.padEnd(14)} ${c.file}${why}`);
+    if (!c.ok || c.elder) bad++;
+    const why = c.ok && c.elder ? `  (an older sawbuck answers this hook: ${c.elder.version} at ${c.elder.path}, and this one is ${version}; run ${again(c.mode)}, or update that copy: npm i -g sawbuck@latest)`
+      : c.ok ? '' : c.missing && c.missing.length ? `  (the hook set is incomplete, missing: ${c.missing.join(', ')}; run ${again(c.mode)})` : `  (the hook does not run: what it calls is gone; run ${again(c.mode)})`;
+    out(`  ${c.ok && c.elder ? 'OLD  ' : c.ok ? 'OK   ' : c.missing && c.missing.length ? 'PART ' : 'STALE'} ${c.mode.padEnd(14)} ${c.file}${why}`);
   }
+  // a line with no version in it (the rule's own check, a bare `sawbuck`) is answered by that copy too, hooks or not
+  { const said = olderSaid(); if (said) out(`  NOTE  ${said.person.replace(/^Sawbuck: /, '')}`); }
   for (const m of receipt) out(`  GONE  ${m.padEnd(14)} the receipt says ${m === 'git' ? 'a post-commit hook was wired here, but our block is gone' : 'hooks were wired here, but the hooks are gone'}. Run ${again(m)}, or sawbuck detach to drop the receipt.`);
   if (bad) process.exitCode = 1;
 }

@@ -20,6 +20,7 @@ import { readUndone } from './undo.mjs';
 import { readAllowed } from './allowed.mjs';
 import { gitRefuses } from './contract.mjs';
 import { localDay } from './day.mjs';
+import { cli, olderSaid } from './copies.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const flag = (n, d) => { const i = process.argv.indexOf(n); return i > -1 ? (process.argv[i + 1] ?? true) : d; };
@@ -139,9 +140,9 @@ if (debt && debt.total) {
 } else if (debt) {
   out.push(`   Debt accruing now  ·  none live in HEAD (nothing silenced in src/test/config). A clean tree.`);
 } else if (debtErr === 'timeout') {
-  out.push(`   Debt accruing now  ·  scan did not finish in time here (a large repo); run \`sawbuck debt\` directly.`);
+  out.push(`   Debt accruing now  ·  scan did not finish in time here (a large repo); run \`${cli('debt')}\` directly.`);
 } else if (isGit) {
-  out.push(`   Debt accruing now  ·  could not read the ledger; run \`sawbuck debt\` for the detail.`);
+  out.push(`   Debt accruing now  ·  could not read the ledger; run \`${cli('debt')}\` for the detail.`);
 }
 
 // What git threw away: the erased attempts kept here, and whether the team has them
@@ -172,13 +173,16 @@ if (refuses) {
 } else if (!isGit) {
   out.push(`   Not a git repo here, so there is nothing to verify or remember. cd into your project.`);
 } else if (state === 'watching' && wired === 'user' && !hasConfig) {
-  out.push('   Measuring here  ·  wired in at user level, and that check runs only in a repo that has a promptwheel.config.json. `sawbuck contract` writes one.');
+  out.push('   Measuring here  ·  wired in at user level, and that check runs only in a repo that has a promptwheel.config.json. \`' + cli('contract') + '\` writes one.');
 } else if (state === 'watching') {
   out.push(`   Measuring here  ·  ${hasConfig ? '✓ wired in with a contract (promptwheel.config.json)' : '✓ wired in (zero-config auto-detect)'}. Protected paths are checked at the end of each turn, and each commit is re-proved from the source.`);
 } else if (state === 'ready') {
-  out.push(`   Measuring here  ·  checkable but not wired yet. Try it now: \`sawbuck check\`  •  make it automatic: \`sawbuck attach\``);
+  out.push(`   Measuring here  ·  checkable but not wired yet. Try it now: \`${cli('check')}\`  •  make it automatic: \`${cli('attach')}\``);
 } else {
-  out.push(`   Measuring here  ·  ${hasConfig ? 'a contract exists' : 'no test command detected yet'}. \`sawbuck init\` to set up the check, or \`sawbuck context\` for the history alone.`);
+  out.push(`   Measuring here  ·  ${hasConfig ? 'a contract exists' : 'no test command detected yet'}. \`${cli('init')}\` to set up the check, or \`${cli('context')}\` for the history alone.`);
 }
+
+// an older copy on this machine: a bare `sawbuck` and the rule's `npx -y sawbuck check` run that one (copies.mjs)
+{ const said = olderSaid(); if (said) { out.push(''); out.push(`   Another copy  ·  ${said.person.replace(/^Sawbuck: /, '')}`); } }
 
 console.log(out.join('\n'));

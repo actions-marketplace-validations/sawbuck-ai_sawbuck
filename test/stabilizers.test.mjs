@@ -137,14 +137,15 @@ test('stabilizer: detach --purge removes the record too', () => {
 });
 
 // ---- 7) doctor + runtime-resolved hook ------------------------------------
-test('stabilizer: the git hook resolves sawbuck at runtime (survives a reinstall)', () => {
+test('stabilizer: the git hook runs the sawbuck that wired it, then one on PATH (survives a reinstall), then the same version through npx', () => {
   const { d } = tmpGit();
   try {
     sawbuck(['attach', '--git', '.'], d);
     const hook = readFileSync(join(d, '.git', 'hooks', 'post-commit'), 'utf8');
-    assert.match(hook, /command -v sawbuck/, 'prefers a sawbuck on PATH');
-    assert.match(hook, /command -v node \|\| echo '[^']+'\)" "/, 'falls back to the absolute path, and finds node without PATH');
-    assert.match(hook, /elif \[ -f "[^"]+sawbuck\.mjs" \]; then .* else npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __hook/, 'and to the same version through npx when that path is gone (an npx cache gets cleared)');
+    assert.match(hook, /\nif \[ -f "[^"]+sawbuck\.mjs" \]; then "\$\(command -v node \|\| echo '[^']+'\)" "[^"]+sawbuck\.mjs" __hook /, 'first the copy that wired it, by its absolute path, finding node without PATH');
+    assert.match(hook, /; elif command -v sawbuck >\/dev\/null 2>&1; then sawbuck __hook /, 'a sawbuck on PATH only when that file is gone');
+    assert.match(hook, /; else npx --prefer-offline --fetch-retries=0 --fetch-timeout=10000 -y sawbuck@\d+\.\d+\.\d+ __hook/, 'and the same version through npx when neither is there (an npx cache gets cleared)');
+    assert.ok(hook.indexOf('[ -f ') < hook.indexOf('command -v sawbuck'), 'PATH is not asked first: an older copy there would answer every commit');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -159,7 +160,7 @@ test('stabilizer: doctor reports a healthy attachment, and flags a stale one', (
     // now simulate sawbuck having moved: a baked path that no longer exists
     const pc = join(d, '.git', 'hooks', 'post-commit');
     writeFileSync(pc, `#!/bin/sh\n# >>> sawbuck >>>\nif command -v sawbuck >/dev/null 2>&1; then sawbuck __hook --repo ${JSON.stringify(d)}; else node "/no/such/sawbuck.mjs" __hook --repo ${JSON.stringify(d)}; fi || true\n# <<< sawbuck <<<\n`);
-    // the git hook tries a sawbuck on PATH first, so it is stale only where there is none
+    // a block of that shape (written before 0.1.72) asks PATH first, so it is stale only where PATH has none
     const bare = { encoding: 'utf8', cwd: d, env: { ...process.env, PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'pipe'] };
     assert.throws(() => execFileSync(process.execPath, [CLI, 'doctor', '.'], bare), 'a stale attachment makes doctor exit nonzero');
   } finally { rmSync(d, { recursive: true, force: true }); }

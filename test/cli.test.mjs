@@ -841,7 +841,7 @@ test('a standing gamed verdict holds through an inconclusive span, a regression 
     r = JSON.parse(hook({ prompt_id: 'p3' }));
     assert.equal(r.decision, 'block', 'a regression over the gamed span keeps the wall up');
     assert.equal(rec().latest.kind, 'gamed', 'the record is not rewritten to a regression');
-    assert.equal(feed().at(-1).kind, 'regression'); assert.equal(feed().at(-1).standing, true);
+    assert.equal(feed().at(-1).kind, 'gamed', 'the feed says gamed for a gamed win under the engine\'s "fail" (0.1.73; it said regression)'); assert.equal(feed().at(-1).standing, true);
     assert.equal(rec().gamed, 1, 'the standing catch is never counted twice'); assert.equal(rec().regressions, 0, 'and the regression over the same span is not a new catch');
     // (c) the person's unrelated commit between turns: the record's file and attribution do not move
     writeFileSync(join(d, 'app.js'), 'export const n = 1;\n'); g('add', '-A'); g('commit', '-q', '-m', 'person: app.js');
